@@ -464,6 +464,108 @@ public sealed class SettingsManagerTests : IDisposable
     }
 
     [Fact]
+    public void Save_should_remove_undecryptable_api_key_when_explicitly_cleared()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        manager.Save(new AppSettings
+        {
+            Provider = new ProviderSettings
+            {
+                ApiKey = "provider-secret",
+            },
+        });
+
+        var undecryptableValue = $"dpapi:v1:{Convert.ToBase64String([5, 6, 7, 8])}";
+        CorruptPersistedValue(undecryptableValue, "provider", "apiKey");
+
+        var loaded = manager.Load();
+        loaded.Provider.ApiKey.Should().BeEmpty();
+
+        var cleared = loaded with
+        {
+            Provider = loaded.Provider.ClearApiKey(),
+        };
+
+        manager.Save(cleared);
+
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["apiKey"]!.GetValue<string>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Save_should_remove_undecryptable_sensitive_header_when_explicitly_cleared()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        manager.Save(new AppSettings
+        {
+            Provider = new ProviderSettings
+            {
+                ExtraHeaders = new Dictionary<string, string>
+                {
+                    ["Authorization"] = "Bearer provider-secret",
+                    ["HTTP-Referer"] = "https://bisik.test",
+                },
+            },
+        });
+
+        var undecryptableValue = $"dpapi:v1:{Convert.ToBase64String([8, 7, 6, 5])}";
+        CorruptPersistedValue(undecryptableValue, "provider", "extraHeaders", "Authorization");
+
+        var loaded = manager.Load();
+        loaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Authorization", string.Empty));
+
+        var cleared = loaded with
+        {
+            Provider = loaded.Provider.ClearHeader("Authorization"),
+        };
+
+        manager.Save(cleared);
+
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["extraHeaders"]!.AsObject().ContainsKey("Authorization").Should().BeFalse();
+        persisted["provider"]!["extraHeaders"]!["HTTP-Referer"]!.GetValue<string>().Should().Be("https://bisik.test");
+    }
+
+    [Fact]
+    public void Save_should_preserve_undecryptable_sensitive_header_ciphertext_when_header_key_case_changes()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        manager.Save(new AppSettings
+        {
+            Provider = new ProviderSettings
+            {
+                ExtraHeaders = new Dictionary<string, string>
+                {
+                    ["Authorization"] = "Bearer provider-secret",
+                    ["HTTP-Referer"] = "https://bisik.test",
+                },
+            },
+        });
+
+        var undecryptableValue = $"dpapi:v1:{Convert.ToBase64String([2, 4, 6, 8])}";
+        CorruptPersistedValue(undecryptableValue, "provider", "extraHeaders", "Authorization");
+
+        var loaded = manager.Load();
+        var rewrittenHeaders = new Dictionary<string, string>
+        {
+            ["authorization"] = string.Empty,
+            ["HTTP-Referer"] = "https://bisik.test",
+        };
+
+        manager.Save(loaded with
+        {
+            Provider = loaded.Provider with
+            {
+                ExtraHeaders = rewrittenHeaders,
+            },
+        });
+
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["extraHeaders"]!["authorization"]!.GetValue<string>().Should().Be(undecryptableValue);
+        persisted["provider"]!["extraHeaders"]!.AsObject().ContainsKey("Authorization").Should().BeFalse();
+    }
+
+    [Fact]
     public void Save_should_not_leave_temp_files_behind_after_atomic_write()
     {
         var manager = new SettingsManager(_baseDirectory);

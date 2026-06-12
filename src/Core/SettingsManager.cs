@@ -79,8 +79,7 @@ public sealed class SettingsManager
         Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!);
 
         var normalized = NormalizeSettings(settings);
-        var merged = MergeUndecryptablePersistedSecrets(normalized);
-        var protectedSettings = ProtectSecrets(merged);
+        var protectedSettings = ProtectSecrets(normalized);
         var json = JsonSerializer.Serialize(protectedSettings, SerializerOptions);
         var settingsDirectory = Path.GetDirectoryName(_settingsPath)!;
         var tempPath = Path.Combine(settingsDirectory, $"{SettingsFileName}.{Guid.NewGuid():N}.tmp");
@@ -123,35 +122,6 @@ public sealed class SettingsManager
 
         var backupPath = Path.Combine(Path.GetDirectoryName(_settingsPath)!, CorruptSettingsBackupFileName);
         File.Copy(_settingsPath, backupPath, overwrite: true);
-    }
-
-    private AppSettings MergeUndecryptablePersistedSecrets(AppSettings settings)
-    {
-        if (!File.Exists(_settingsPath))
-        {
-            return settings;
-        }
-
-        try
-        {
-            var persisted = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(_settingsPath), SerializerOptions);
-            var normalizedPersisted = NormalizeSettings(persisted);
-
-            return settings with
-            {
-                Provider = MergeUndecryptablePersistedProviderSecrets(settings.Provider, normalizedPersisted.Provider),
-                PostProcessor = settings.PostProcessor with
-                {
-                    Provider = MergeUndecryptablePersistedProviderSecrets(
-                        settings.PostProcessor.Provider,
-                        normalizedPersisted.PostProcessor.Provider),
-                },
-            };
-        }
-        catch (JsonException)
-        {
-            return settings;
-        }
     }
 
     private static AppSettings NormalizeSettings(AppSettings? settings)
@@ -268,11 +238,15 @@ public sealed class SettingsManager
             {
                 ApiKey = apiKeyRecovery.InMemoryValue,
                 ExtraHeaders = headersRecovery.InMemoryHeaders,
+                PersistedUndecryptableApiKeyCiphertext = apiKeyRecovery.PersistedUndecryptableCiphertext,
+                PersistedUndecryptableHeaderCiphertexts = headersRecovery.PersistedUndecryptableHeaderCiphertexts,
             },
             PersistedProvider: provider with
             {
                 ApiKey = apiKeyRecovery.PersistedValue,
                 ExtraHeaders = headersRecovery.PersistedHeaders,
+                PersistedUndecryptableApiKeyCiphertext = null,
+                PersistedUndecryptableHeaderCiphertexts = null,
             },
             HadHealedSecrets: apiKeyRecovery.ShouldHealPersistedValue || headersRecovery.HadHealedSecrets);
     }
@@ -286,25 +260,20 @@ public sealed class SettingsManager
     {
         return provider with
         {
-            ApiKey = ProtectApiKey(provider.ApiKey),
-            ExtraHeaders = ProtectExtraHeaders(provider.ExtraHeaders),
+            ApiKey = ProtectApiKey(provider.ApiKey, provider.PersistedUndecryptableApiKeyCiphertext),
+            ExtraHeaders = ProtectExtraHeaders(provider.ExtraHeaders, provider.PersistedUndecryptableHeaderCiphertexts),
+            PersistedUndecryptableApiKeyCiphertext = null,
+            PersistedUndecryptableHeaderCiphertexts = null,
         };
     }
 
-    private static ProviderSettings MergeUndecryptablePersistedProviderSecrets(ProviderSettings incoming, ProviderSettings persisted)
-    {
-        return incoming with
-        {
-            ApiKey = MergeUndecryptablePersistedSecretValue(incoming.ApiKey, persisted.ApiKey),
-            ExtraHeaders = MergeUndecryptablePersistedHeaders(incoming.ExtraHeaders, persisted.ExtraHeaders),
-        };
-    }
-
-    private static string ProtectApiKey(string apiKey)
+    private static string ProtectApiKey(string apiKey, string? preservedUndecryptableCiphertext = null)
     {
         if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith(DpapiPrefix, StringComparison.Ordinal))
         {
-            return apiKey;
+            return string.IsNullOrEmpty(apiKey)
+                ? preservedUndecryptableCiphertext ?? apiKey
+                : apiKey;
         }
 
         var secretBytes = Encoding.UTF8.GetBytes(apiKey);
@@ -332,21 +301,17 @@ public sealed class SettingsManager
         }
         catch (CryptographicException)
         {
-            return new SecretValueRecoveryResult(InMemoryValue: string.Empty, PersistedValue: value, ShouldHealPersistedValue: false);
+            return new SecretValueRecoveryResult(
+                InMemoryValue: string.Empty,
+                PersistedValue: value,
+                ShouldHealPersistedValue: false,
+                PersistedUndecryptableCiphertext: value);
         }
     }
 
-    private static string MergeUndecryptablePersistedSecretValue(string incomingValue, string persistedValue)
-    {
-        if (!string.IsNullOrEmpty(incomingValue))
-        {
-            return incomingValue;
-        }
-
-        return IsUndecryptablePersistedSecret(persistedValue) ? persistedValue : incomingValue;
-    }
-
-    private static Dictionary<string, string>? ProtectExtraHeaders(Dictionary<string, string>? headers)
+    private static Dictionary<string, string>? ProtectExtraHeaders(
+        Dictionary<string, string>? headers,
+        Dictionary<string, string>? preservedUndecryptableCiphertexts)
     {
         if (headers is null)
         {
@@ -358,55 +323,32 @@ public sealed class SettingsManager
         foreach (var header in headers)
         {
             protectedHeaders[header.Key] = IsSensitiveHeaderName(header.Key)
-                ? ProtectApiKey(header.Value)
+                ? ProtectApiKey(
+                    header.Value,
+                    TryGetPreservedUndecryptableCiphertext(preservedUndecryptableCiphertexts, header.Key, out var ciphertext)
+                        ? ciphertext
+                        : null)
                 : header.Value;
         }
 
         return protectedHeaders;
     }
 
-    private static Dictionary<string, string>? MergeUndecryptablePersistedHeaders(
-        Dictionary<string, string>? incomingHeaders,
-        Dictionary<string, string>? persistedHeaders)
-    {
-        if (incomingHeaders is null || persistedHeaders is null)
-        {
-            return incomingHeaders;
-        }
-
-        var mergedHeaders = new Dictionary<string, string>(incomingHeaders, incomingHeaders.Comparer);
-
-        foreach (var persistedHeader in persistedHeaders)
-        {
-            if (!IsSensitiveHeaderName(persistedHeader.Key))
-            {
-                continue;
-            }
-
-            if (!mergedHeaders.TryGetValue(persistedHeader.Key, out var incomingValue))
-            {
-                continue;
-            }
-
-            if (string.IsNullOrEmpty(incomingValue) && IsUndecryptablePersistedSecret(persistedHeader.Value))
-            {
-                mergedHeaders[persistedHeader.Key] = persistedHeader.Value;
-            }
-        }
-
-        return mergedHeaders;
-    }
-
     private static HeaderRecoveryResult UnprotectExtraHeaders(Dictionary<string, string>? headers)
     {
         if (headers is null)
         {
-            return new HeaderRecoveryResult(InMemoryHeaders: null, PersistedHeaders: null, HadHealedSecrets: false);
+            return new HeaderRecoveryResult(
+                InMemoryHeaders: null,
+                PersistedHeaders: null,
+                HadHealedSecrets: false,
+                PersistedUndecryptableHeaderCiphertexts: null);
         }
 
         var inMemoryHeaders = new Dictionary<string, string>(headers.Count, headers.Comparer);
         var persistedHeaders = new Dictionary<string, string>(headers.Count, headers.Comparer);
         var hadHealedSecrets = false;
+        Dictionary<string, string>? persistedUndecryptableCiphertexts = null;
 
         foreach (var header in headers)
         {
@@ -421,9 +363,19 @@ public sealed class SettingsManager
             inMemoryHeaders[header.Key] = recovery.InMemoryValue;
             persistedHeaders[header.Key] = recovery.PersistedValue;
             hadHealedSecrets |= recovery.ShouldHealPersistedValue;
+
+            if (recovery.PersistedUndecryptableCiphertext is not null)
+            {
+                persistedUndecryptableCiphertexts ??= new Dictionary<string, string>(StringComparer.Ordinal);
+                persistedUndecryptableCiphertexts[CanonicalizeHeaderName(header.Key)] = recovery.PersistedUndecryptableCiphertext;
+            }
         }
 
-        return new HeaderRecoveryResult(inMemoryHeaders, persistedHeaders, hadHealedSecrets);
+        return new HeaderRecoveryResult(
+            inMemoryHeaders,
+            persistedHeaders,
+            hadHealedSecrets,
+            persistedUndecryptableCiphertexts);
     }
 
     private static bool IsSensitiveHeaderName(string headerName)
@@ -437,13 +389,14 @@ public sealed class SettingsManager
         return SensitiveHeaderTokens.Any(canonicalName.Contains);
     }
 
-    private static bool IsUndecryptablePersistedSecret(string value)
+    private static bool TryGetPreservedUndecryptableCiphertext(
+        Dictionary<string, string>? persistedUndecryptableCiphertexts,
+        string headerName,
+        out string ciphertext)
     {
-        var recovery = UnprotectSecretValue(value);
-        return recovery.InMemoryValue == string.Empty
-            && recovery.PersistedValue == value
-            && !recovery.ShouldHealPersistedValue
-            && value.StartsWith(DpapiPrefix, StringComparison.Ordinal);
+        ciphertext = string.Empty;
+        return persistedUndecryptableCiphertexts is not null
+            && persistedUndecryptableCiphertexts.TryGetValue(CanonicalizeHeaderName(headerName), out ciphertext);
     }
 
     private static string CanonicalizeHeaderName(string headerName)
@@ -463,6 +416,14 @@ public sealed class SettingsManager
 
     private readonly record struct SecretRecoveryResult(AppSettings InMemorySettings, AppSettings PersistedSettings, bool HadHealedSecrets);
     private readonly record struct ProviderRecoveryResult(ProviderSettings InMemoryProvider, ProviderSettings PersistedProvider, bool HadHealedSecrets);
-    private readonly record struct HeaderRecoveryResult(Dictionary<string, string>? InMemoryHeaders, Dictionary<string, string>? PersistedHeaders, bool HadHealedSecrets);
-    private readonly record struct SecretValueRecoveryResult(string InMemoryValue, string PersistedValue, bool ShouldHealPersistedValue);
+    private readonly record struct HeaderRecoveryResult(
+        Dictionary<string, string>? InMemoryHeaders,
+        Dictionary<string, string>? PersistedHeaders,
+        bool HadHealedSecrets,
+        Dictionary<string, string>? PersistedUndecryptableHeaderCiphertexts);
+    private readonly record struct SecretValueRecoveryResult(
+        string InMemoryValue,
+        string PersistedValue,
+        bool ShouldHealPersistedValue,
+        string? PersistedUndecryptableCiphertext = null);
 }

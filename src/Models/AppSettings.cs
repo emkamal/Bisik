@@ -103,6 +103,60 @@ public sealed record ProviderSettings
     [JsonPropertyName("extraHeaders")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, string>? ExtraHeaders { get; init; }
+
+    [JsonIgnore]
+    internal string? PersistedUndecryptableApiKeyCiphertext { get; init; }
+
+    [JsonIgnore]
+    internal Dictionary<string, string>? PersistedUndecryptableHeaderCiphertexts { get; init; }
+
+    public ProviderSettings ClearApiKey()
+    {
+        return this with
+        {
+            ApiKey = string.Empty,
+            PersistedUndecryptableApiKeyCiphertext = null,
+        };
+    }
+
+    public ProviderSettings ClearHeader(string headerName)
+    {
+        var headers = ExtraHeaders is null
+            ? null
+            : new Dictionary<string, string>(ExtraHeaders, StringComparer.OrdinalIgnoreCase);
+        headers?.Remove(headerName);
+        if (headers is { Count: 0 })
+        {
+            headers = null;
+        }
+
+        Dictionary<string, string>? persistedCiphertexts = null;
+        if (PersistedUndecryptableHeaderCiphertexts is not null)
+        {
+            persistedCiphertexts = new Dictionary<string, string>(PersistedUndecryptableHeaderCiphertexts, StringComparer.Ordinal);
+            persistedCiphertexts.Remove(CanonicalizeHeaderName(headerName));
+
+            if (persistedCiphertexts.Count == 0)
+            {
+                persistedCiphertexts = null;
+            }
+        }
+
+        return this with
+        {
+            ExtraHeaders = headers,
+            PersistedUndecryptableHeaderCiphertexts = persistedCiphertexts,
+        };
+    }
+
+    private static string CanonicalizeHeaderName(string headerName)
+    {
+        var chars = headerName.Where(char.IsLetterOrDigit)
+            .Select(char.ToLowerInvariant)
+            .ToArray();
+
+        return new string(chars);
+    }
 }
 
 public sealed record AudioSettings
