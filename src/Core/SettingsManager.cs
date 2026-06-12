@@ -12,10 +12,14 @@ public sealed class SettingsManager
     private const string DpapiPrefix = "dpapi:v1:";
     private static readonly string[] SensitiveHeaderTokens =
     {
+        "auth",
         "authorization",
+        "key",
         "apikey",
         "token",
         "secret",
+        "password",
+        "credential",
     };
     private static readonly HashSet<string> PublicHeaderNames = new(StringComparer.Ordinal)
     {
@@ -75,7 +79,8 @@ public sealed class SettingsManager
         Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!);
 
         var normalized = NormalizeSettings(settings);
-        var protectedSettings = ProtectSecrets(normalized);
+        var merged = MergeUndecryptablePersistedSecrets(normalized);
+        var protectedSettings = ProtectSecrets(merged);
         var json = JsonSerializer.Serialize(protectedSettings, SerializerOptions);
         var settingsDirectory = Path.GetDirectoryName(_settingsPath)!;
         var tempPath = Path.Combine(settingsDirectory, $"{SettingsFileName}.{Guid.NewGuid():N}.tmp");
@@ -118,6 +123,35 @@ public sealed class SettingsManager
 
         var backupPath = Path.Combine(Path.GetDirectoryName(_settingsPath)!, CorruptSettingsBackupFileName);
         File.Copy(_settingsPath, backupPath, overwrite: true);
+    }
+
+    private AppSettings MergeUndecryptablePersistedSecrets(AppSettings settings)
+    {
+        if (!File.Exists(_settingsPath))
+        {
+            return settings;
+        }
+
+        try
+        {
+            var persisted = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(_settingsPath), SerializerOptions);
+            var normalizedPersisted = NormalizeSettings(persisted);
+
+            return settings with
+            {
+                Provider = MergeUndecryptablePersistedProviderSecrets(settings.Provider, normalizedPersisted.Provider),
+                PostProcessor = settings.PostProcessor with
+                {
+                    Provider = MergeUndecryptablePersistedProviderSecrets(
+                        settings.PostProcessor.Provider,
+                        normalizedPersisted.PostProcessor.Provider),
+                },
+            };
+        }
+        catch (JsonException)
+        {
+            return settings;
+        }
     }
 
     private static AppSettings NormalizeSettings(AppSettings? settings)
@@ -257,6 +291,15 @@ public sealed class SettingsManager
         };
     }
 
+    private static ProviderSettings MergeUndecryptablePersistedProviderSecrets(ProviderSettings incoming, ProviderSettings persisted)
+    {
+        return incoming with
+        {
+            ApiKey = MergeUndecryptablePersistedSecretValue(incoming.ApiKey, persisted.ApiKey),
+            ExtraHeaders = MergeUndecryptablePersistedHeaders(incoming.ExtraHeaders, persisted.ExtraHeaders),
+        };
+    }
+
     private static string ProtectApiKey(string apiKey)
     {
         if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith(DpapiPrefix, StringComparison.Ordinal))
@@ -293,6 +336,16 @@ public sealed class SettingsManager
         }
     }
 
+    private static string MergeUndecryptablePersistedSecretValue(string incomingValue, string persistedValue)
+    {
+        if (!string.IsNullOrEmpty(incomingValue))
+        {
+            return incomingValue;
+        }
+
+        return IsUndecryptablePersistedSecret(persistedValue) ? persistedValue : incomingValue;
+    }
+
     private static Dictionary<string, string>? ProtectExtraHeaders(Dictionary<string, string>? headers)
     {
         if (headers is null)
@@ -310,6 +363,38 @@ public sealed class SettingsManager
         }
 
         return protectedHeaders;
+    }
+
+    private static Dictionary<string, string>? MergeUndecryptablePersistedHeaders(
+        Dictionary<string, string>? incomingHeaders,
+        Dictionary<string, string>? persistedHeaders)
+    {
+        if (incomingHeaders is null || persistedHeaders is null)
+        {
+            return incomingHeaders;
+        }
+
+        var mergedHeaders = new Dictionary<string, string>(incomingHeaders, incomingHeaders.Comparer);
+
+        foreach (var persistedHeader in persistedHeaders)
+        {
+            if (!IsSensitiveHeaderName(persistedHeader.Key))
+            {
+                continue;
+            }
+
+            if (!mergedHeaders.TryGetValue(persistedHeader.Key, out var incomingValue))
+            {
+                continue;
+            }
+
+            if (string.IsNullOrEmpty(incomingValue) && IsUndecryptablePersistedSecret(persistedHeader.Value))
+            {
+                mergedHeaders[persistedHeader.Key] = persistedHeader.Value;
+            }
+        }
+
+        return mergedHeaders;
     }
 
     private static HeaderRecoveryResult UnprotectExtraHeaders(Dictionary<string, string>? headers)
@@ -350,6 +435,15 @@ public sealed class SettingsManager
         }
 
         return SensitiveHeaderTokens.Any(canonicalName.Contains);
+    }
+
+    private static bool IsUndecryptablePersistedSecret(string value)
+    {
+        var recovery = UnprotectSecretValue(value);
+        return recovery.InMemoryValue == string.Empty
+            && recovery.PersistedValue == value
+            && !recovery.ShouldHealPersistedValue
+            && value.StartsWith(DpapiPrefix, StringComparison.Ordinal);
     }
 
     private static string CanonicalizeHeaderName(string headerName)

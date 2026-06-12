@@ -171,6 +171,8 @@ public sealed class SettingsManagerTests : IDisposable
                 {
                     ["Client-Secret"] = "client-secret-value",
                     ["X-OpenAI-Api-Key"] = "provider-header-secret",
+                    ["X-Auth-Key"] = "auth-key-secret",
+                    ["Private-Key"] = "private-key-secret",
                     ["HTTP-Referer"] = "https://bisik.test",
                     ["User-Agent"] = "BisikTests/1.0",
                 },
@@ -182,12 +184,16 @@ public sealed class SettingsManagerTests : IDisposable
         var persisted = File.ReadAllText(Path.Combine(_baseDirectory, "settings.json"));
         persisted.Should().NotContain("client-secret-value");
         persisted.Should().NotContain("provider-header-secret");
+        persisted.Should().NotContain("auth-key-secret");
+        persisted.Should().NotContain("private-key-secret");
         persisted.Should().Contain("\"HTTP-Referer\": \"https://bisik.test\"");
         persisted.Should().Contain("\"User-Agent\": \"BisikTests/1.0\"");
 
         var reloaded = manager.Load();
         reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Client-Secret", "client-secret-value"));
         reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("X-OpenAI-Api-Key", "provider-header-secret"));
+        reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("X-Auth-Key", "auth-key-secret"));
+        reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Private-Key", "private-key-secret"));
         reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("HTTP-Referer", "https://bisik.test"));
         reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("User-Agent", "BisikTests/1.0"));
     }
@@ -398,6 +404,59 @@ public sealed class SettingsManagerTests : IDisposable
         loaded.TriggerMode.Should().Be(TriggerMode.Toggle);
         loaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Authorization", string.Empty));
         loaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("HTTP-Referer", "https://bisik.test"));
+
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["extraHeaders"]!["Authorization"]!.GetValue<string>().Should().Be(undecryptableValue);
+        persisted["provider"]!["extraHeaders"]!["HTTP-Referer"]!.GetValue<string>().Should().Be("https://bisik.test");
+    }
+
+    [Fact]
+    public void Save_should_preserve_undecryptable_api_key_ciphertext_after_loading_empty_in_memory_value()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        manager.Save(new AppSettings
+        {
+            Provider = new ProviderSettings
+            {
+                ApiKey = "provider-secret",
+            },
+        });
+
+        var undecryptableValue = $"dpapi:v1:{Convert.ToBase64String([1, 3, 3, 7])}";
+        CorruptPersistedValue(undecryptableValue, "provider", "apiKey");
+
+        var loaded = manager.Load();
+        loaded.Provider.ApiKey.Should().BeEmpty();
+
+        manager.Save(loaded);
+
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["apiKey"]!.GetValue<string>().Should().Be(undecryptableValue);
+    }
+
+    [Fact]
+    public void Save_should_preserve_undecryptable_sensitive_header_ciphertext_after_loading_empty_in_memory_value()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        manager.Save(new AppSettings
+        {
+            Provider = new ProviderSettings
+            {
+                ExtraHeaders = new Dictionary<string, string>
+                {
+                    ["Authorization"] = "Bearer provider-secret",
+                    ["HTTP-Referer"] = "https://bisik.test",
+                },
+            },
+        });
+
+        var undecryptableValue = $"dpapi:v1:{Convert.ToBase64String([4, 2, 4, 2])}";
+        CorruptPersistedValue(undecryptableValue, "provider", "extraHeaders", "Authorization");
+
+        var loaded = manager.Load();
+        loaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Authorization", string.Empty));
+
+        manager.Save(loaded);
 
         var persisted = ReadPersistedSettingsJson();
         persisted["provider"]!["extraHeaders"]!["Authorization"]!.GetValue<string>().Should().Be(undecryptableValue);
