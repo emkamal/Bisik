@@ -485,27 +485,27 @@
 - Create: `src/Core/HotkeyManager.cs`
 - Create: `tests/Bisik.Tests/HotkeyManagerTests.cs`
 
-- [ ] **Step 1: Write hotkey parsing tests**
+- [x] **Step 1: Write hotkey parsing tests**
 
   Cover parsing configured strings such as `Ctrl+Win`, validating unsupported combinations, and formatting captured hotkeys back to settings.
 
-- [ ] **Step 2: Implement Win32 registration wrapper**
+- [x] **Step 2: Implement Win32 registration wrapper**
 
   Use `RegisterHotKey` and `UnregisterHotKey` through P/Invoke. Keep OS calls behind an interface so tests can use a fake registrar.
 
-- [ ] **Step 3: Implement push-to-talk behavior**
+- [x] **Step 3: Implement push-to-talk behavior**
 
   Press starts recording. Release stops recording and begins transcription.
 
-- [ ] **Step 4: Implement toggle behavior**
+- [x] **Step 4: Implement toggle behavior**
 
   First press starts recording. Second press stops recording and begins transcription.
 
-- [ ] **Step 5: Implement VAD enable/disable behavior**
+- [x] **Step 5: Implement VAD enable/disable behavior**
 
   Hotkey toggles VAD listening. VAD starts/stops recordings based on `AudioRecorder` level and silence helpers.
 
-- [ ] **Step 6: Run hotkey tests**
+- [x] **Step 6: Run hotkey tests**
 
   Run:
 
@@ -515,7 +515,7 @@
 
   Expected: parser and state-machine tests pass without registering real global hotkeys.
 
-- [ ] **Step 7: Commit hotkeys**
+- [x] **Step 7: Commit hotkeys**
 
   Run:
 
