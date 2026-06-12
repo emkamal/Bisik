@@ -34,6 +34,8 @@ public enum IndicatorStyle
     DotNearCursor,
     [EnumMember(Value = "bar-overlay")]
     BarOverlay,
+    [EnumMember(Value = "tray-icon-only")]
+    TrayIconOnly,
 }
 
 [JsonConverter(typeof(EnumMemberJsonConverter<ProviderType>))]
@@ -58,8 +60,8 @@ public enum AudioFormat
     Wav,
     [EnumMember(Value = "mp3")]
     Mp3,
-    [EnumMember(Value = "m4a")]
-    M4a,
+    [EnumMember(Value = "ogg")]
+    Ogg,
 }
 
 [JsonConverter(typeof(EnumMemberJsonConverter<PostProcessorPreset>))]
@@ -93,6 +95,14 @@ public sealed record ProviderSettings
 
     [JsonPropertyName("apiVersion")]
     public string ApiVersion { get; init; } = "2024-06-01";
+
+    [JsonPropertyName("model")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Model { get; init; }
+
+    [JsonPropertyName("extraHeaders")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Dictionary<string, string>? ExtraHeaders { get; init; }
 }
 
 public sealed record AudioSettings

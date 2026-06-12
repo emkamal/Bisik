@@ -53,4 +53,41 @@ public sealed class AppSettingsTests
         json.Should().Contain("\"format\":\"wav\"");
         json.Should().Contain("\"presetName\":\"clean-up\"");
     }
+
+    [Fact]
+    public void Indicator_and_audio_enums_should_match_the_spec_surface()
+    {
+        Enum.GetValues<IndicatorStyle>().Should().Contain(IndicatorStyle.TrayIconOnly);
+        Enum.GetValues<AudioFormat>().Should().Contain(AudioFormat.Ogg);
+        Enum.GetNames<AudioFormat>().Should().NotContain("M4a");
+
+        JsonSerializer.Serialize(IndicatorStyle.TrayIconOnly).Should().Be("\"tray-icon-only\"");
+        JsonSerializer.Serialize(AudioFormat.Ogg).Should().Be("\"ogg\"");
+    }
+
+    [Fact]
+    public void Provider_settings_should_support_shared_openai_compatible_fields()
+    {
+        var provider = new ProviderSettings
+        {
+            Type = ProviderType.OpenAi,
+            Endpoint = "https://api.example.test/v1",
+            ApiKey = "key",
+            DeploymentName = string.Empty,
+            ApiVersion = "2024-06-01",
+            Model = "gpt-4o-mini-transcribe",
+            ExtraHeaders = new Dictionary<string, string>
+            {
+                ["HTTP-Referer"] = "https://bisik.test",
+            },
+        };
+
+        provider.Model.Should().Be("gpt-4o-mini-transcribe");
+        provider.ExtraHeaders.Should().ContainSingle()
+            .Which.Should().BeEquivalentTo(new KeyValuePair<string, string>("HTTP-Referer", "https://bisik.test"));
+
+        var json = JsonSerializer.Serialize(provider);
+        json.Should().Contain("\"model\":\"gpt-4o-mini-transcribe\"");
+        json.Should().Contain("\"extraHeaders\":{\"HTTP-Referer\":\"https://bisik.test\"}");
+    }
 }
