@@ -29,9 +29,6 @@ public sealed record TranscriptionEntry
     [JsonPropertyName("text")]
     public string Text { get; init; }
 
-    [JsonPropertyName("processedText")]
-    public string ProcessedText => Text;
-
     [JsonPropertyName("rawText")]
     public string? RawText { get; init; }
 

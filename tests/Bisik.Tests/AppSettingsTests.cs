@@ -55,6 +55,17 @@ public sealed class AppSettingsTests
     }
 
     [Fact]
+    public void Trigger_mode_enum_should_match_the_spec_surface()
+    {
+        Enum.GetValues<TriggerMode>().Should().Contain([TriggerMode.PushToTalk, TriggerMode.Toggle, TriggerMode.Vad]);
+        Enum.GetNames<TriggerMode>().Should().NotContain(["ToggleRecording", "AlwaysListening"]);
+
+        JsonSerializer.Serialize(TriggerMode.PushToTalk).Should().Be("\"push-to-talk\"");
+        JsonSerializer.Serialize(TriggerMode.Toggle).Should().Be("\"toggle\"");
+        JsonSerializer.Serialize(TriggerMode.Vad).Should().Be("\"vad\"");
+    }
+
+    [Fact]
     public void Indicator_and_audio_enums_should_match_the_spec_surface()
     {
         Enum.GetValues<IndicatorStyle>().Should().Contain(IndicatorStyle.TrayIconOnly);
@@ -102,17 +113,16 @@ public sealed class AppSettingsTests
             Language: "id",
             DurationMs: 1234,
             AudioFilePath: @"C:\temp\clip.wav");
-
-        entry.ProcessedText.Should().Be("final text");
+        entry.Text.Should().Be("final text");
 
         var json = JsonSerializer.Serialize(entry);
         json.Should().Contain("\"timestamp\":\"2026-06-12T10:30:00+00:00\"");
         json.Should().Contain("\"text\":\"final text\"");
-        json.Should().Contain("\"processedText\":\"final text\"");
         json.Should().Contain("\"rawText\":\"raw text\"");
         json.Should().Contain("\"provider\":\"azure-openai\"");
         json.Should().Contain("\"language\":\"id\"");
         json.Should().Contain("\"duration_ms\":1234");
         json.Should().Contain("\"audio_file_path\":\"C:\\\\temp\\\\clip.wav\"");
+        json.Should().NotContain("processedText");
     }
 }

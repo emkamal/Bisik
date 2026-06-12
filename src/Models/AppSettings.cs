@@ -10,10 +10,10 @@ public enum TriggerMode
 {
     [EnumMember(Value = "push-to-talk")]
     PushToTalk,
-    [EnumMember(Value = "toggle-recording")]
-    ToggleRecording,
-    [EnumMember(Value = "always-listening")]
-    AlwaysListening,
+    [EnumMember(Value = "toggle")]
+    Toggle,
+    [EnumMember(Value = "vad")]
+    Vad,
 }
 
 [JsonConverter(typeof(EnumMemberJsonConverter<OutputMode>))]
