@@ -7,6 +7,14 @@ namespace Bisik.Providers;
 
 public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, ProviderSettings settings) : ITranscriptionProvider
 {
+    private static readonly HashSet<string> ReservedHeaderNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Authorization",
+        "api-key",
+        "Content-Type",
+        "Content-Length",
+    };
+
     protected HttpClient HttpClient { get; } = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
 
     protected ProviderSettings Settings { get; } = settings ?? throw new ArgumentNullException(nameof(settings));
@@ -31,7 +39,7 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
         using var request = new HttpRequestMessage(HttpMethod.Post, requestUri);
         using var content = CreateMultipartContent(audioFilePath, model, language);
         request.Content = content;
-        ApplyHeaders(request, content, headers);
+        ApplyHeaders(request, headers);
 
         using var response = await HttpClient.SendAsync(
             request,
@@ -75,15 +83,22 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
 
     protected static Uri AppendPath(Uri baseUri, string path)
     {
-        var baseText = baseUri.ToString().TrimEnd('/');
-        var normalizedPath = path.TrimStart('/');
-
-        if (baseText.EndsWith(normalizedPath, StringComparison.OrdinalIgnoreCase))
+        var normalizedPath = path.Trim('/');
+        if (string.IsNullOrWhiteSpace(normalizedPath))
         {
-            return new Uri(baseText, UriKind.Absolute);
+            return baseUri;
         }
 
-        return new Uri($"{baseText}/{normalizedPath}", UriKind.Absolute);
+        var builder = new UriBuilder(baseUri);
+        var existingPath = builder.Path ?? "/";
+
+        if (PathEndsWith(existingPath, normalizedPath))
+        {
+            return builder.Uri;
+        }
+
+        builder.Path = CombinePath(existingPath, normalizedPath);
+        return builder.Uri;
     }
 
     protected IEnumerable<KeyValuePair<string, string>> MergeHeaders(params IEnumerable<KeyValuePair<string, string>>?[] headerSets)
@@ -128,12 +143,16 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
 
     protected static IEnumerable<KeyValuePair<string, string>>? ToHeaders(Dictionary<string, string>? headers)
     {
-        return headers;
+        if (headers is null || headers.Count == 0)
+        {
+            return null;
+        }
+
+        return headers.Where(header => !ReservedHeaderNames.Contains(header.Key));
     }
 
     private static void ApplyHeaders(
         HttpRequestMessage request,
-        HttpContent content,
         IEnumerable<KeyValuePair<string, string>>? headers)
     {
         if (headers is null)
@@ -143,13 +162,56 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
 
         foreach (var header in headers)
         {
-            if (request.Headers.TryAddWithoutValidation(header.Key, header.Value))
-            {
-                continue;
-            }
-
-            content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            request.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
+    }
+
+    private static string CombinePath(string existingPath, string pathToAppend)
+    {
+        var trimmedBase = string.IsNullOrWhiteSpace(existingPath)
+            ? string.Empty
+            : existingPath.TrimEnd('/');
+
+        if (trimmedBase.Length == 0 || trimmedBase == "/")
+        {
+            return $"/{pathToAppend}";
+        }
+
+        return $"{trimmedBase}/{pathToAppend}";
+    }
+
+    private static bool PathEndsWith(string existingPath, string appendedPath)
+    {
+        var existingSegments = SplitSegments(existingPath);
+        var appendedSegments = SplitSegments(appendedPath);
+
+        if (appendedSegments.Length == 0)
+        {
+            return true;
+        }
+
+        if (existingSegments.Length < appendedSegments.Length)
+        {
+            return false;
+        }
+
+        for (var index = 1; index <= appendedSegments.Length; index++)
+        {
+            if (!string.Equals(
+                    existingSegments[^index],
+                    appendedSegments[^index],
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static string[] SplitSegments(string path)
+    {
+        return path.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)

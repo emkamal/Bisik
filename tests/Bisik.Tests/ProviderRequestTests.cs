@@ -42,6 +42,36 @@ public sealed class ProviderRequestTests : IDisposable
     }
 
     [Fact]
+    public async Task Azure_provider_should_not_allow_extra_headers_to_override_api_key()
+    {
+        using var handler = new CapturingHttpMessageHandler();
+        using var client = new HttpClient(handler);
+        var audioFilePath = CreateAudioFile();
+        var provider = new AzureOpenAIProvider(client, new ProviderSettings
+        {
+            Type = ProviderType.AzureOpenAi,
+            Endpoint = "https://example.openai.azure.com/",
+            ApiKey = "azure-key",
+            DeploymentName = "whisper-prod",
+            ApiVersion = "2024-06-01",
+            ExtraHeaders = new Dictionary<string, string>
+            {
+                ["api-key"] = "wrong-key",
+                ["Content-Length"] = "42",
+                ["X-Client"] = "bisik-tests",
+            },
+        });
+
+        var result = await provider.TranscribeAsync(audioFilePath, "id", CancellationToken.None);
+
+        result.Should().Be("ok");
+        handler.CapturedRequest.Should().NotBeNull();
+        handler.CapturedRequest!.Headers.Should().Contain(new KeyValuePair<string, string>("api-key", "azure-key"));
+        handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("X-Client", "bisik-tests"));
+        handler.CapturedRequest.Headers.Should().NotContainKey("Content-Length");
+    }
+
+    [Fact]
     public async Task OpenAI_provider_should_use_default_model_and_bearer_auth()
     {
         using var handler = new CapturingHttpMessageHandler();
@@ -65,6 +95,34 @@ public sealed class ProviderRequestTests : IDisposable
         handler.CapturedRequest.Parts["file"].FileName.Should().Be(Path.GetFileName(audioFilePath));
         handler.CapturedRequest.Parts["model"].Value.Should().Be("whisper-1");
         handler.CapturedRequest.Parts["language"].Value.Should().Be("en");
+    }
+
+    [Fact]
+    public async Task OpenAI_provider_should_not_allow_extra_headers_to_override_reserved_headers()
+    {
+        using var handler = new CapturingHttpMessageHandler();
+        using var client = new HttpClient(handler);
+        var audioFilePath = CreateAudioFile();
+        var provider = new OpenAIProvider(client, new ProviderSettings
+        {
+            Type = ProviderType.OpenAi,
+            ApiKey = "openai-key",
+            ExtraHeaders = new Dictionary<string, string>
+            {
+                ["Authorization"] = "Bearer overridden",
+                ["Content-Type"] = "application/json",
+                ["X-Trace-Id"] = "trace-123",
+            },
+        });
+
+        var result = await provider.TranscribeAsync(audioFilePath, "en", CancellationToken.None);
+
+        result.Should().Be("ok");
+        handler.CapturedRequest.Should().NotBeNull();
+        handler.CapturedRequest!.Headers.Should().Contain(new KeyValuePair<string, string>("Authorization", "Bearer openai-key"));
+        handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("X-Trace-Id", "trace-123"));
+        handler.CapturedRequest.ContentType.Should().NotBeNull();
+        handler.CapturedRequest.ContentType!.MediaType.Should().Be("multipart/form-data");
     }
 
     [Fact]
@@ -119,6 +177,26 @@ public sealed class ProviderRequestTests : IDisposable
         handler.CapturedRequest.Parts["file"].FileName.Should().Be(Path.GetFileName(audioFilePath));
         handler.CapturedRequest.Parts["model"].Value.Should().Be("tiny");
         handler.CapturedRequest.Parts["language"].Value.Should().Be("ja");
+    }
+
+    [Fact]
+    public async Task Local_provider_should_append_default_path_before_query_string()
+    {
+        using var handler = new CapturingHttpMessageHandler();
+        using var client = new HttpClient(handler);
+        var audioFilePath = CreateAudioFile();
+        var provider = new LocalWhisperProvider(client, new ProviderSettings
+        {
+            Type = ProviderType.LocalWhisper,
+            Endpoint = "http://localhost:8080/base/?client=bisik",
+            Model = "tiny",
+        });
+
+        var result = await provider.TranscribeAsync(audioFilePath, "ja", CancellationToken.None);
+
+        result.Should().Be("ok");
+        handler.CapturedRequest.Should().NotBeNull();
+        handler.CapturedRequest!.RequestUri.Should().Be("http://localhost:8080/base/audio/transcriptions?client=bisik");
     }
 
     [Fact]
@@ -209,6 +287,7 @@ public sealed class ProviderRequestTests : IDisposable
         HttpMethod Method,
         string RequestUri,
         IReadOnlyDictionary<string, string> Headers,
+        MediaTypeHeaderValue? ContentType,
         IReadOnlyDictionary<string, CapturedPart> Parts)
     {
         public static async Task<CapturedRequest> CreateAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -240,6 +319,7 @@ public sealed class ProviderRequestTests : IDisposable
                 request.Method,
                 request.RequestUri!.ToString(),
                 headers,
+                request.Content?.Headers.ContentType,
                 parts);
         }
 
