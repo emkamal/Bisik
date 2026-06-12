@@ -115,6 +115,11 @@ public sealed class SettingsManagerTests : IDisposable
             Provider = new ProviderSettings
             {
                 ApiKey = "top-secret-provider-key",
+                ExtraHeaders = new Dictionary<string, string>
+                {
+                    ["Authorization"] = "Bearer secret-token",
+                    ["HTTP-Referer"] = "https://bisik.test",
+                },
             },
             PostProcessor = new PostProcessorSettings
             {
@@ -122,6 +127,10 @@ public sealed class SettingsManagerTests : IDisposable
                 Provider = new ProviderSettings
                 {
                     ApiKey = "top-secret-postprocessor-key",
+                    ExtraHeaders = new Dictionary<string, string>
+                    {
+                        ["X-API-Key"] = "secondary-secret",
+                    },
                 },
             },
         };
@@ -132,11 +141,17 @@ public sealed class SettingsManagerTests : IDisposable
 
         json.Should().NotContain("top-secret-provider-key");
         json.Should().NotContain("top-secret-postprocessor-key");
+        json.Should().NotContain("Bearer secret-token");
+        json.Should().NotContain("secondary-secret");
+        json.Should().Contain("\"HTTP-Referer\": \"https://bisik.test\"");
         json.Should().Contain("dpapi:v1:");
 
         var reloaded = manager.Load();
         reloaded.Provider.ApiKey.Should().Be("top-secret-provider-key");
         reloaded.PostProcessor.Provider.ApiKey.Should().Be("top-secret-postprocessor-key");
+        reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Authorization", "Bearer secret-token"));
+        reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("HTTP-Referer", "https://bisik.test"));
+        reloaded.PostProcessor.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("X-API-Key", "secondary-secret"));
     }
 
     [Fact]
@@ -270,7 +285,85 @@ public sealed class SettingsManagerTests : IDisposable
 
         var persisted = ReadPersistedSettingsJson();
         persisted["provider"]!["apiKey"]!.GetValue<string>().Should().StartWith("dpapi:v1:");
-        persisted["postProcessor"]!["provider"]!["apiKey"]!.GetValue<string>().Should().BeEmpty();
+        persisted["postProcessor"]!["provider"]!["apiKey"]!.GetValue<string>()
+            .Should().Be($"dpapi:v1:{Convert.ToBase64String([1, 2, 3, 4, 5])}");
+    }
+
+    [Fact]
+    public void Load_should_clear_only_the_corrupted_sensitive_header_when_prefixed_header_has_invalid_base64()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        var expected = new AppSettings
+        {
+            Provider = new ProviderSettings
+            {
+                ApiKey = "provider-secret",
+                ExtraHeaders = new Dictionary<string, string>
+                {
+                    ["Authorization"] = "Bearer provider-secret",
+                    ["HTTP-Referer"] = "https://bisik.test",
+                },
+            },
+            PostProcessor = new PostProcessorSettings
+            {
+                Enabled = true,
+                Provider = new ProviderSettings
+                {
+                    ApiKey = "postprocessor-secret",
+                    ExtraHeaders = new Dictionary<string, string>
+                    {
+                        ["X-API-Key"] = "pp-secret",
+                    },
+                },
+            },
+        };
+
+        manager.Save(expected);
+        CorruptPersistedValue("dpapi:v1:not-valid-base64", "provider", "extraHeaders", "Authorization");
+
+        var loaded = manager.Load();
+
+        loaded.Provider.ApiKey.Should().Be("provider-secret");
+        loaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Authorization", string.Empty));
+        loaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("HTTP-Referer", "https://bisik.test"));
+        loaded.PostProcessor.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("X-API-Key", "pp-secret"));
+
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["extraHeaders"]!["Authorization"]!.GetValue<string>().Should().BeEmpty();
+        persisted["provider"]!["extraHeaders"]!["HTTP-Referer"]!.GetValue<string>().Should().Be("https://bisik.test");
+        persisted["postProcessor"]!["provider"]!["extraHeaders"]!["X-API-Key"]!.GetValue<string>().Should().StartWith("dpapi:v1:");
+    }
+
+    [Fact]
+    public void Load_should_return_empty_for_undecryptable_sensitive_header_but_keep_ciphertext_on_disk()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        var expected = new AppSettings
+        {
+            TriggerMode = TriggerMode.Toggle,
+            Provider = new ProviderSettings
+            {
+                ExtraHeaders = new Dictionary<string, string>
+                {
+                    ["Authorization"] = "Bearer provider-secret",
+                    ["HTTP-Referer"] = "https://bisik.test",
+                },
+            },
+        };
+
+        manager.Save(expected);
+        var undecryptableValue = $"dpapi:v1:{Convert.ToBase64String([9, 8, 7, 6, 5])}";
+        CorruptPersistedValue(undecryptableValue, "provider", "extraHeaders", "Authorization");
+
+        var loaded = manager.Load();
+
+        loaded.TriggerMode.Should().Be(TriggerMode.Toggle);
+        loaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Authorization", string.Empty));
+        loaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("HTTP-Referer", "https://bisik.test"));
+
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["extraHeaders"]!["Authorization"]!.GetValue<string>().Should().Be(undecryptableValue);
+        persisted["provider"]!["extraHeaders"]!["HTTP-Referer"]!.GetValue<string>().Should().Be("https://bisik.test");
     }
 
     public void Dispose()
@@ -282,6 +375,11 @@ public sealed class SettingsManagerTests : IDisposable
     }
 
     private void CorruptPersistedApiKey(string corruptedValue, params string[] keyPath)
+    {
+        CorruptPersistedValue(corruptedValue, keyPath);
+    }
+
+    private void CorruptPersistedValue(string corruptedValue, params string[] keyPath)
     {
         var json = ReadPersistedSettingsJson();
         var current = json;

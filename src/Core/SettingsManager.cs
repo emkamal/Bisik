@@ -9,6 +9,17 @@ public sealed class SettingsManager
 {
     private const string SettingsFileName = "settings.json";
     private const string DpapiPrefix = "dpapi:v1:";
+    private static readonly HashSet<string> SensitiveHeaderNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "api-key",
+        "x-auth-token",
+        "auth-token",
+        "x-access-token",
+        "access-token",
+    };
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
@@ -42,12 +53,12 @@ public sealed class SettingsManager
             var persisted = JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions);
             var recovered = UnprotectSecrets(NormalizeSettings(persisted));
 
-            if (recovered.HadRecoveredSecrets)
+            if (recovered.HadHealedSecrets)
             {
-                Save(recovered.Settings);
+                Save(recovered.PersistedSettings);
             }
 
-            return recovered.Settings;
+            return recovered.InMemorySettings;
         }
         catch (JsonException)
         {
@@ -158,51 +169,47 @@ public sealed class SettingsManager
         var postProcessorProviderRecovery = UnprotectProvider(settings.PostProcessor.Provider);
 
         return new SecretRecoveryResult(
-            settings with
+            InMemorySettings: settings with
             {
-                Provider = providerRecovery.Provider,
+                Provider = providerRecovery.InMemoryProvider,
                 PostProcessor = settings.PostProcessor with
                 {
-                    Provider = postProcessorProviderRecovery.Provider,
+                    Provider = postProcessorProviderRecovery.InMemoryProvider,
                 },
             },
-            providerRecovery.HadRecoveredSecret || postProcessorProviderRecovery.HadRecoveredSecret);
+            PersistedSettings: settings with
+            {
+                Provider = providerRecovery.PersistedProvider,
+                PostProcessor = settings.PostProcessor with
+                {
+                    Provider = postProcessorProviderRecovery.PersistedProvider,
+                },
+            },
+            HadHealedSecrets: providerRecovery.HadHealedSecrets || postProcessorProviderRecovery.HadHealedSecrets);
     }
 
     private static ProviderRecoveryResult UnprotectProvider(ProviderSettings provider)
     {
         var apiKeyRecovery = UnprotectApiKey(provider.ApiKey);
+        var headersRecovery = UnprotectExtraHeaders(provider.ExtraHeaders);
 
         return new ProviderRecoveryResult(
-            provider with
+            InMemoryProvider: provider with
             {
-                ApiKey = apiKeyRecovery.ApiKey,
+                ApiKey = apiKeyRecovery.InMemoryValue,
+                ExtraHeaders = headersRecovery.InMemoryHeaders,
             },
-            apiKeyRecovery.HadRecoveredSecret);
+            PersistedProvider: provider with
+            {
+                ApiKey = apiKeyRecovery.PersistedValue,
+                ExtraHeaders = headersRecovery.PersistedHeaders,
+            },
+            HadHealedSecrets: apiKeyRecovery.ShouldHealPersistedValue || headersRecovery.HadHealedSecrets);
     }
 
-    private static ApiKeyRecoveryResult UnprotectApiKey(string apiKey)
+    private static SecretValueRecoveryResult UnprotectApiKey(string apiKey)
     {
-        if (string.IsNullOrEmpty(apiKey) || !apiKey.StartsWith(DpapiPrefix, StringComparison.Ordinal))
-        {
-            return new ApiKeyRecoveryResult(apiKey, HadRecoveredSecret: false);
-        }
-
-        try
-        {
-            // Prefixed values are treated as persisted secrets and must round-trip back to plain text in memory.
-            var protectedBytes = Convert.FromBase64String(apiKey[DpapiPrefix.Length..]);
-            var plainBytes = ProtectedData.Unprotect(protectedBytes, optionalEntropy: null, DataProtectionScope.CurrentUser);
-            return new ApiKeyRecoveryResult(Encoding.UTF8.GetString(plainBytes), HadRecoveredSecret: false);
-        }
-        catch (FormatException)
-        {
-            return new ApiKeyRecoveryResult(string.Empty, HadRecoveredSecret: true);
-        }
-        catch (CryptographicException)
-        {
-            return new ApiKeyRecoveryResult(string.Empty, HadRecoveredSecret: true);
-        }
+        return UnprotectSecretValue(apiKey);
     }
 
     private static ProviderSettings ProtectProvider(ProviderSettings provider)
@@ -210,6 +217,7 @@ public sealed class SettingsManager
         return provider with
         {
             ApiKey = ProtectApiKey(provider.ApiKey),
+            ExtraHeaders = ProtectExtraHeaders(provider.ExtraHeaders),
         };
     }
 
@@ -225,7 +233,85 @@ public sealed class SettingsManager
         return $"{DpapiPrefix}{Convert.ToBase64String(protectedBytes)}";
     }
 
-    private readonly record struct SecretRecoveryResult(AppSettings Settings, bool HadRecoveredSecrets);
-    private readonly record struct ProviderRecoveryResult(ProviderSettings Provider, bool HadRecoveredSecret);
-    private readonly record struct ApiKeyRecoveryResult(string ApiKey, bool HadRecoveredSecret);
+    private static SecretValueRecoveryResult UnprotectSecretValue(string value)
+    {
+        if (string.IsNullOrEmpty(value) || !value.StartsWith(DpapiPrefix, StringComparison.Ordinal))
+        {
+            return new SecretValueRecoveryResult(InMemoryValue: value, PersistedValue: value, ShouldHealPersistedValue: false);
+        }
+
+        try
+        {
+            var protectedBytes = Convert.FromBase64String(value[DpapiPrefix.Length..]);
+            var plainBytes = ProtectedData.Unprotect(protectedBytes, optionalEntropy: null, DataProtectionScope.CurrentUser);
+            var plainText = Encoding.UTF8.GetString(plainBytes);
+            return new SecretValueRecoveryResult(InMemoryValue: plainText, PersistedValue: plainText, ShouldHealPersistedValue: false);
+        }
+        catch (FormatException)
+        {
+            return new SecretValueRecoveryResult(InMemoryValue: string.Empty, PersistedValue: string.Empty, ShouldHealPersistedValue: true);
+        }
+        catch (CryptographicException)
+        {
+            return new SecretValueRecoveryResult(InMemoryValue: string.Empty, PersistedValue: value, ShouldHealPersistedValue: false);
+        }
+    }
+
+    private static Dictionary<string, string>? ProtectExtraHeaders(Dictionary<string, string>? headers)
+    {
+        if (headers is null)
+        {
+            return null;
+        }
+
+        var protectedHeaders = new Dictionary<string, string>(headers.Count, headers.Comparer);
+
+        foreach (var header in headers)
+        {
+            protectedHeaders[header.Key] = IsSensitiveHeaderName(header.Key)
+                ? ProtectApiKey(header.Value)
+                : header.Value;
+        }
+
+        return protectedHeaders;
+    }
+
+    private static HeaderRecoveryResult UnprotectExtraHeaders(Dictionary<string, string>? headers)
+    {
+        if (headers is null)
+        {
+            return new HeaderRecoveryResult(InMemoryHeaders: null, PersistedHeaders: null, HadHealedSecrets: false);
+        }
+
+        var inMemoryHeaders = new Dictionary<string, string>(headers.Count, headers.Comparer);
+        var persistedHeaders = new Dictionary<string, string>(headers.Count, headers.Comparer);
+        var hadHealedSecrets = false;
+
+        foreach (var header in headers)
+        {
+            if (!IsSensitiveHeaderName(header.Key))
+            {
+                inMemoryHeaders[header.Key] = header.Value;
+                persistedHeaders[header.Key] = header.Value;
+                continue;
+            }
+
+            var recovery = UnprotectSecretValue(header.Value);
+            inMemoryHeaders[header.Key] = recovery.InMemoryValue;
+            persistedHeaders[header.Key] = recovery.PersistedValue;
+            hadHealedSecrets |= recovery.ShouldHealPersistedValue;
+        }
+
+        return new HeaderRecoveryResult(inMemoryHeaders, persistedHeaders, hadHealedSecrets);
+    }
+
+    private static bool IsSensitiveHeaderName(string headerName)
+    {
+        return SensitiveHeaderNames.Contains(headerName);
+    }
+
+    private readonly record struct SecretRecoveryResult(AppSettings InMemorySettings, AppSettings PersistedSettings, bool HadHealedSecrets);
+    private readonly record struct ProviderRecoveryResult(ProviderSettings InMemoryProvider, ProviderSettings PersistedProvider, bool HadHealedSecrets);
+    private readonly record struct HeaderRecoveryResult(Dictionary<string, string>? InMemoryHeaders, Dictionary<string, string>? PersistedHeaders, bool HadHealedSecrets);
+    private readonly record struct SecretValueRecoveryResult(string InMemoryValue, string PersistedValue, bool ShouldHealPersistedValue);
 }
