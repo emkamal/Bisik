@@ -636,43 +636,43 @@
 - Create: `src/UI/OverlayWindow.cs`
 - Create: `src/Core/StartupRegistration.cs`
 
-- [ ] **Step 1: Replace default WinForms startup**
+- [x] **Step 1: Replace default WinForms startup**
 
   Update `src/Program.cs` to use `ApplicationContext` instead of showing a main form. Enable visual styles and high DPI mode before starting the context.
 
-- [ ] **Step 2: Add single-instance guard**
+- [x] **Step 2: Add single-instance guard**
 
   Use a named mutex such as `Global\Bisik.SingleInstance`. If another instance exists, exit cleanly.
 
-- [ ] **Step 3: Implement tray icon states**
+- [x] **Step 3: Implement tray icon states**
 
   Add idle, recording, and transcribing visual states. Use simple generated icons first; replace with designed icons later if desired.
 
-- [ ] **Step 4: Implement tray context menu**
+- [x] **Step 4: Implement tray context menu**
 
   Add Settings, History, About, Exit, current language submenu, and post-processor enabled toggle.
 
-- [ ] **Step 5: Implement language quick-switch menu**
+- [x] **Step 5: Implement language quick-switch menu**
 
   Include Auto-detect, English, Indonesian, Japanese, Chinese, Spanish, French, German, and Other. Store selection for the current session and pass it to the pipeline.
 
-- [ ] **Step 6: Implement dot overlay**
+- [x] **Step 6: Implement dot overlay**
 
   Create a frameless always-on-top window near the cursor with a pulsing dot and live level meter.
 
-- [ ] **Step 7: Implement bar overlay**
+- [x] **Step 7: Implement bar overlay**
 
   Create a small top/bottom horizontal bar with waveform or level display.
 
-- [ ] **Step 8: Implement tray-only indicator mode**
+- [x] **Step 8: Implement tray-only indicator mode**
 
   Suppress overlay windows and use tray icon animation only.
 
-- [ ] **Step 9: Implement launch-at-startup toggle helper**
+- [x] **Step 9: Implement launch-at-startup toggle helper**
 
   Add current-user registry handling under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Do not require admin rights.
 
-- [ ] **Step 10: Manual smoke test tray startup**
+- [x] **Step 10: Manual smoke test tray startup**
 
   Run:
 
@@ -682,7 +682,7 @@
 
   Expected: app appears only in the tray within 2 seconds, no main window opens, and Exit closes the process.
 
-- [ ] **Step 11: Commit shell**
+- [x] **Step 11: Commit shell**
 
   Run:
 
