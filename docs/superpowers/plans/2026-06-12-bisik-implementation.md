@@ -583,31 +583,31 @@
 - Create: `src/Resources/error.wav`
 - Create: `tests/Bisik.Tests/OutputHandlerTests.cs`
 
-- [ ] **Step 1: Write output handler tests**
+- [x] **Step 1: Write output handler tests**
 
   Cover auto-type dispatch, clipboard mode, popup mode, and "do nothing on failed transcription" behavior using fakes for UI-facing dependencies.
 
-- [ ] **Step 2: Implement auto-type output**
+- [x] **Step 2: Implement auto-type output**
 
   Use InputSimulator where possible. Fall back to `SendKeys.SendWait` only if the selected library cannot type the required characters.
 
-- [ ] **Step 3: Implement clipboard output**
+- [x] **Step 3: Implement clipboard output**
 
   Set clipboard text silently on the UI thread.
 
-- [ ] **Step 4: Implement review popup output**
+- [x] **Step 4: Implement review popup output**
 
   Show a small always-on-top form with transcribed text plus Copy and Dismiss actions.
 
-- [ ] **Step 5: Add embedded sound resources**
+- [x] **Step 5: Add embedded sound resources**
 
   Add short success and error WAV files under `src/Resources` and configure them as embedded resources in `src/Bisik.csproj`.
 
-- [ ] **Step 6: Implement sound feedback**
+- [x] **Step 6: Implement sound feedback**
 
   Respect `soundEnabled`; play success on completed transcription and lower error tone on failure.
 
-- [ ] **Step 7: Run output tests**
+- [x] **Step 7: Run output tests**
 
   Run:
 
@@ -617,7 +617,7 @@
 
   Expected: tests pass without interacting with the real clipboard or keyboard.
 
-- [ ] **Step 8: Commit output and sounds**
+- [x] **Step 8: Commit output and sounds**
 
   Run:
 
