@@ -53,7 +53,24 @@ public sealed class AppSettingsTests
         json.Should().Contain("\"type\":\"azure-openai\"");
         json.Should().Contain("\"format\":\"wav\"");
         json.Should().Contain("\"presetName\":\"clean-up\"");
-        json.Should().Contain("\"targetLanguage\":\"\"");
+        json.Should().NotContain("\"targetLanguage\"");
+    }
+
+    [Fact]
+    public void Post_processor_target_language_should_serialize_when_non_empty()
+    {
+        var settings = new AppSettings
+        {
+            PostProcessor = new PostProcessorSettings
+            {
+                Enabled = true,
+                TargetLanguage = "en",
+            },
+        };
+
+        var json = JsonSerializer.Serialize(settings);
+
+        json.Should().Contain("\"targetLanguage\":\"en\"");
     }
 
     [Fact]

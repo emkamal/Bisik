@@ -24,6 +24,7 @@ public sealed class SettingsManagerTests : IDisposable
         var json = File.ReadAllText(settingsPath);
         json.Should().Contain(Environment.NewLine + "  \"triggerMode\": \"push-to-talk\"");
         json.Should().Contain("\"type\": \"azure-openai\"");
+        json.Should().NotContain("\"targetLanguage\"");
     }
 
     [Fact]
@@ -78,6 +79,9 @@ public sealed class SettingsManagerTests : IDisposable
         };
 
         manager.Save(expected);
+
+        var persistedJson = File.ReadAllText(Path.Combine(_baseDirectory, "settings.json"));
+        persistedJson.Should().Contain("\"targetLanguage\": \"en\"");
 
         var actual = manager.Load();
 

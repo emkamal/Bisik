@@ -123,6 +123,7 @@ public sealed record AudioSettings
     public int VadMinSpeechMs { get; init; } = 300;
 }
 
+[JsonConverter(typeof(PostProcessorSettingsJsonConverter))]
 public sealed record PostProcessorSettings
 {
     private const string DefaultSystemPrompt = "You are a transcription editor. Fix grammar, punctuation, and remove filler words. Return only the cleaned text, nothing else.";
@@ -244,5 +245,63 @@ internal sealed class EnumMemberJsonConverter<TEnum> : JsonConverter<TEnum>
         var attribute = Attribute.GetCustomAttribute(member, typeof(EnumMemberAttribute)) as EnumMemberAttribute;
 
         return attribute?.Value ?? memberName;
+    }
+}
+
+internal sealed class PostProcessorSettingsJsonConverter : JsonConverter<PostProcessorSettings>
+{
+    public override PostProcessorSettings Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var document = JsonDocument.ParseValue(ref reader);
+        var root = document.RootElement;
+        var defaults = new PostProcessorSettings();
+
+        var enabled = root.TryGetProperty("enabled", out var enabledElement)
+            ? enabledElement.GetBoolean()
+            : defaults.Enabled;
+        var provider = root.TryGetProperty("provider", out var providerElement)
+            ? providerElement.Deserialize<ProviderSettings>(options) ?? defaults.Provider
+            : defaults.Provider;
+        var model = root.TryGetProperty("model", out var modelElement)
+            ? modelElement.GetString() ?? defaults.Model
+            : defaults.Model;
+        var targetLanguage = root.TryGetProperty("targetLanguage", out var targetLanguageElement)
+            ? targetLanguageElement.GetString() ?? defaults.TargetLanguage
+            : defaults.TargetLanguage;
+        var presetName = root.TryGetProperty("presetName", out var presetNameElement)
+            ? presetNameElement.Deserialize<PostProcessorPreset>(options)
+            : defaults.PresetName;
+        var systemPrompt = root.TryGetProperty("systemPrompt", out var systemPromptElement)
+            ? systemPromptElement.GetString() ?? defaults.SystemPrompt
+            : defaults.SystemPrompt;
+
+        return new PostProcessorSettings
+        {
+            Enabled = enabled,
+            Provider = provider,
+            Model = model,
+            TargetLanguage = targetLanguage,
+            PresetName = presetName,
+            SystemPrompt = systemPrompt,
+        };
+    }
+
+    public override void Write(Utf8JsonWriter writer, PostProcessorSettings value, JsonSerializerOptions options)
+    {
+        writer.WriteStartObject();
+        writer.WriteBoolean("enabled", value.Enabled);
+        writer.WritePropertyName("provider");
+        JsonSerializer.Serialize(writer, value.Provider, options);
+        writer.WriteString("model", value.Model);
+
+        if (!string.IsNullOrEmpty(value.TargetLanguage))
+        {
+            writer.WriteString("targetLanguage", value.TargetLanguage);
+        }
+
+        writer.WritePropertyName("presetName");
+        JsonSerializer.Serialize(writer, value.PresetName, options);
+        writer.WriteString("systemPrompt", value.SystemPrompt);
+        writer.WriteEndObject();
     }
 }
