@@ -90,4 +90,29 @@ public sealed class AppSettingsTests
         json.Should().Contain("\"model\":\"gpt-4o-mini-transcribe\"");
         json.Should().Contain("\"extraHeaders\":{\"HTTP-Referer\":\"https://bisik.test\"}");
     }
+
+    [Fact]
+    public void Transcription_entry_should_serialize_spec_aligned_history_fields()
+    {
+        var entry = new TranscriptionEntry(
+            Timestamp: new DateTimeOffset(2026, 6, 12, 10, 30, 0, TimeSpan.Zero),
+            Text: "final text",
+            RawText: "raw text",
+            Provider: "azure-openai",
+            Language: "id",
+            DurationMs: 1234,
+            AudioFilePath: @"C:\temp\clip.wav");
+
+        entry.ProcessedText.Should().Be("final text");
+
+        var json = JsonSerializer.Serialize(entry);
+        json.Should().Contain("\"timestamp\":\"2026-06-12T10:30:00+00:00\"");
+        json.Should().Contain("\"text\":\"final text\"");
+        json.Should().Contain("\"processedText\":\"final text\"");
+        json.Should().Contain("\"rawText\":\"raw text\"");
+        json.Should().Contain("\"provider\":\"azure-openai\"");
+        json.Should().Contain("\"language\":\"id\"");
+        json.Should().Contain("\"duration_ms\":1234");
+        json.Should().Contain("\"audio_file_path\":\"C:\\\\temp\\\\clip.wav\"");
+    }
 }
