@@ -532,27 +532,27 @@
 - Create: `src/Core/TranscriptionService.cs`
 - Create: `tests/Bisik.Tests/TranscriptionServiceTests.cs`
 
-- [ ] **Step 1: Write pipeline tests**
+- [x] **Step 1: Write pipeline tests**
 
   Cover provider selection, language forwarding, one retry on timeout, no output on failure, raw/final history fields, sound feedback calls, and error logging.
 
-- [ ] **Step 2: Implement provider factory**
+- [x] **Step 2: Implement provider factory**
 
   Convert `ProviderSettings.Type` into the correct `ITranscriptionProvider` instance.
 
-- [ ] **Step 3: Implement transcription orchestration**
+- [x] **Step 3: Implement transcription orchestration**
 
   Run provider transcription, optionally run post-processing, log history, play success sound, and return final output text.
 
-- [ ] **Step 4: Implement retry behavior**
+- [x] **Step 4: Implement retry behavior**
 
   Retry once for timeout/network errors only. Do not retry validation errors such as missing API key or invalid endpoint.
 
-- [ ] **Step 5: Implement failure behavior**
+- [x] **Step 5: Implement failure behavior**
 
   Log the error, play error sound, return a failed result, and leave output text empty.
 
-- [ ] **Step 6: Run pipeline tests**
+- [x] **Step 6: Run pipeline tests**
 
   Run:
 
@@ -562,7 +562,7 @@
 
   Expected: tests pass with fake providers and fake dependencies.
 
-- [ ] **Step 7: Commit pipeline**
+- [x] **Step 7: Commit pipeline**
 
   Run:
 
