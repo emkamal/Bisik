@@ -61,6 +61,8 @@ public sealed class ProviderRequestTests : IDisposable
         handler.CapturedRequest.Should().NotBeNull();
         handler.CapturedRequest!.RequestUri.Should().Be("https://api.openai.com/v1/audio/transcriptions");
         handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("Authorization", "Bearer openai-key"));
+        handler.CapturedRequest.Parts.Should().ContainKey("file");
+        handler.CapturedRequest.Parts["file"].FileName.Should().Be(Path.GetFileName(audioFilePath));
         handler.CapturedRequest.Parts["model"].Value.Should().Be("whisper-1");
         handler.CapturedRequest.Parts["language"].Value.Should().Be("en");
     }
@@ -86,6 +88,8 @@ public sealed class ProviderRequestTests : IDisposable
         handler.CapturedRequest.Should().NotBeNull();
         handler.CapturedRequest!.RequestUri.Should().Be("https://openrouter.ai/api/v1/audio/transcriptions");
         handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("Authorization", "Bearer openrouter-key"));
+        handler.CapturedRequest.Parts.Should().ContainKey("file");
+        handler.CapturedRequest.Parts["file"].FileName.Should().Be(Path.GetFileName(audioFilePath));
         handler.CapturedRequest.Parts["model"].Value.Should().Be("openai/gpt-4o-mini-transcribe");
         handler.CapturedRequest.Parts["language"].Value.Should().Be("auto");
     }
@@ -111,6 +115,8 @@ public sealed class ProviderRequestTests : IDisposable
         handler.CapturedRequest.Should().NotBeNull();
         handler.CapturedRequest!.RequestUri.Should().Be("http://localhost:8080/audio/transcriptions");
         handler.CapturedRequest.Headers.Should().NotContainKey("Authorization");
+        handler.CapturedRequest.Parts.Should().ContainKey("file");
+        handler.CapturedRequest.Parts["file"].FileName.Should().Be(Path.GetFileName(audioFilePath));
         handler.CapturedRequest.Parts["model"].Value.Should().Be("tiny");
         handler.CapturedRequest.Parts["language"].Value.Should().Be("ja");
     }
@@ -144,6 +150,8 @@ public sealed class ProviderRequestTests : IDisposable
         handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("Authorization", "Bearer custom-key"));
         handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("X-App-Id", "bisik-tests"));
         handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("HTTP-Referer", "https://bisik.test"));
+        handler.CapturedRequest.Parts.Should().ContainKey("file");
+        handler.CapturedRequest.Parts["file"].FileName.Should().Be(Path.GetFileName(audioFilePath));
         handler.CapturedRequest.Parts["model"].Value.Should().Be("custom-whisper");
         handler.CapturedRequest.Parts["language"].Value.Should().Be("fr");
     }
