@@ -172,6 +172,73 @@ public sealed class HistoryLoggerTests : IDisposable
         deleted.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Two_instances_for_the_same_history_path_should_coordinate_append_and_delete()
+    {
+        var seedLogger = CreateLogger();
+        var entryToDelete = CreateEntry(
+            text: "seed entry",
+            timestamp: new DateTimeOffset(2026, 6, 12, 13, 0, 0, TimeSpan.Zero));
+        var appendedEntry = CreateEntry(
+            text: "appended entry",
+            timestamp: new DateTimeOffset(2026, 6, 12, 13, 1, 0, TimeSpan.Zero));
+        var rewriteStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowRewrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await seedLogger.AppendAsync(entryToDelete);
+
+        var deletingLogger = CreateLogger(new HistoryLoggerTestHooks
+        {
+            BeforeRewriteAsync = ct =>
+            {
+                rewriteStarted.TrySetResult();
+                return allowRewrite.Task.WaitAsync(ct);
+            },
+        });
+        var appendingLogger = CreateLogger();
+
+        var deleteTask = deletingLogger.DeleteAsync(entryToDelete.Timestamp, entryToDelete.Text);
+        await rewriteStarted.Task;
+        var appendTask = appendingLogger.AppendAsync(appendedEntry);
+        allowRewrite.TrySetResult();
+
+        await Task.WhenAll(deleteTask, appendTask);
+
+        var entries = await seedLogger.ReadAllAsync();
+        entries.Should().Equal(appendedEntry);
+    }
+
+    [Fact]
+    public async Task ReadAllAsync_should_not_prevent_ClearAsync_from_succeeding()
+    {
+        var seedLogger = CreateLogger();
+        var readOpened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowReadToFinish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await seedLogger.AppendAsync(CreateEntry(text: "clear me"));
+
+        var readingLogger = CreateLogger(new HistoryLoggerTestHooks
+        {
+            AfterReadOpenAsync = ct =>
+            {
+                readOpened.TrySetResult();
+                return allowReadToFinish.Task.WaitAsync(ct);
+            },
+        });
+        var clearingLogger = CreateLogger();
+
+        var readTask = readingLogger.ReadAllAsync();
+        await readOpened.Task;
+        var clearTask = clearingLogger.ClearAsync();
+        allowReadToFinish.TrySetResult();
+
+        await readTask;
+        await clearTask;
+
+        var historyPath = Path.Combine(_baseDirectory, "history.jsonl");
+        File.Exists(historyPath).Should().BeFalse();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_baseDirectory))
@@ -183,6 +250,11 @@ public sealed class HistoryLoggerTests : IDisposable
     private HistoryLogger CreateLogger(bool historyEnabled = true)
     {
         return new HistoryLogger(_baseDirectory, historyEnabled);
+    }
+
+    private HistoryLogger CreateLogger(HistoryLoggerTestHooks testHooks, bool historyEnabled = true)
+    {
+        return new HistoryLogger(_baseDirectory, historyEnabled, testHooks);
     }
 
     private static TranscriptionEntry CreateEntry(

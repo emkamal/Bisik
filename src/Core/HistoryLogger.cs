@@ -1,12 +1,17 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Bisik.Models;
+
+[assembly: InternalsVisibleTo("Bisik.Tests")]
 
 namespace Bisik.Core;
 
 public sealed class HistoryLogger
 {
     private const string HistoryFileName = "history.jsonl";
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> PathLocks = new(StringComparer.OrdinalIgnoreCase);
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -14,16 +19,24 @@ public sealed class HistoryLogger
 
     private readonly string _historyPath;
     private readonly bool _historyEnabled;
-    private readonly SemaphoreSlim _mutationLock = new(1, 1);
+    private readonly SemaphoreSlim _pathLock;
+    private readonly HistoryLoggerTestHooks? _testHooks;
 
     public HistoryLogger(string? baseDirectory = null, bool historyEnabled = true)
+        : this(baseDirectory, historyEnabled, testHooks: null)
+    {
+    }
+
+    internal HistoryLogger(string? baseDirectory, bool historyEnabled, HistoryLoggerTestHooks? testHooks)
     {
         var rootDirectory = string.IsNullOrWhiteSpace(baseDirectory)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik")
             : baseDirectory;
 
-        _historyPath = Path.Combine(rootDirectory, HistoryFileName);
+        _historyPath = NormalizeHistoryPath(rootDirectory);
         _historyEnabled = historyEnabled;
+        _pathLock = PathLocks.GetOrAdd(_historyPath, static _ => new SemaphoreSlim(1, 1));
+        _testHooks = testHooks;
     }
 
     public async Task AppendAsync(TranscriptionEntry entry, CancellationToken ct = default)
@@ -33,7 +46,7 @@ public sealed class HistoryLogger
             return;
         }
 
-        await _mutationLock.WaitAsync(ct);
+        await _pathLock.WaitAsync(ct);
 
         try
         {
@@ -47,46 +60,22 @@ public sealed class HistoryLogger
         }
         finally
         {
-            _mutationLock.Release();
+            _pathLock.Release();
         }
     }
 
     public async Task<IReadOnlyList<TranscriptionEntry>> ReadAllAsync(CancellationToken ct = default)
     {
-        if (!File.Exists(_historyPath))
+        await _pathLock.WaitAsync(ct);
+
+        try
         {
-            return [];
+            return await ReadAllCoreAsync(ct);
         }
-
-        var entries = new List<TranscriptionEntry>();
-        using var stream = new FileStream(_historyPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var reader = new StreamReader(stream, Encoding.UTF8);
-
-        while (!reader.EndOfStream)
+        finally
         {
-            ct.ThrowIfCancellationRequested();
-
-            var line = await reader.ReadLineAsync(ct);
-            if (string.IsNullOrWhiteSpace(line))
-            {
-                continue;
-            }
-
-            try
-            {
-                var entry = JsonSerializer.Deserialize<TranscriptionEntry>(line, SerializerOptions);
-                if (entry is not null)
-                {
-                    entries.Add(entry);
-                }
-            }
-            catch (JsonException)
-            {
-                // Best-effort history loading should skip malformed/truncated lines.
-            }
+            _pathLock.Release();
         }
-
-        return entries;
     }
 
     public async Task<IReadOnlyList<TranscriptionEntry>> SearchAsync(string query, CancellationToken ct = default)
@@ -106,11 +95,11 @@ public sealed class HistoryLogger
 
     public async Task<bool> DeleteAsync(DateTimeOffset timestamp, string text, CancellationToken ct = default)
     {
-        await _mutationLock.WaitAsync(ct);
+        await _pathLock.WaitAsync(ct);
 
         try
         {
-            var entries = (await ReadAllAsync(ct)).ToList();
+            var entries = (await ReadAllCoreAsync(ct)).ToList();
             var index = entries.FindIndex(entry => entry.Timestamp == timestamp && string.Equals(entry.Text, text, StringComparison.Ordinal));
             if (index < 0)
             {
@@ -118,18 +107,23 @@ public sealed class HistoryLogger
             }
 
             entries.RemoveAt(index);
+            if (_testHooks?.BeforeRewriteAsync is not null)
+            {
+                await _testHooks.BeforeRewriteAsync(ct);
+            }
+
             await RewriteHistoryAsync(entries, ct);
             return true;
         }
         finally
         {
-            _mutationLock.Release();
+            _pathLock.Release();
         }
     }
 
     public async Task ClearAsync(CancellationToken ct = default)
     {
-        await _mutationLock.WaitAsync(ct);
+        await _pathLock.WaitAsync(ct);
 
         try
         {
@@ -142,7 +136,7 @@ public sealed class HistoryLogger
         }
         finally
         {
-            _mutationLock.Release();
+            _pathLock.Release();
         }
     }
 
@@ -209,8 +203,64 @@ public sealed class HistoryLogger
         }
     }
 
+    private async Task<IReadOnlyList<TranscriptionEntry>> ReadAllCoreAsync(CancellationToken ct)
+    {
+        if (!File.Exists(_historyPath))
+        {
+            return [];
+        }
+
+        var entries = new List<TranscriptionEntry>();
+        using var stream = new FileStream(_historyPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+
+        if (_testHooks?.AfterReadOpenAsync is not null)
+        {
+            await _testHooks.AfterReadOpenAsync(ct);
+        }
+
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+
+        while (!reader.EndOfStream)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var line = await reader.ReadLineAsync(ct);
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            try
+            {
+                var entry = JsonSerializer.Deserialize<TranscriptionEntry>(line, SerializerOptions);
+                if (entry is not null)
+                {
+                    entries.Add(entry);
+                }
+            }
+            catch (JsonException)
+            {
+                // Best-effort history loading should skip malformed/truncated lines.
+            }
+        }
+
+        return entries;
+    }
+
+    private static string NormalizeHistoryPath(string rootDirectory)
+    {
+        return Path.GetFullPath(Path.Combine(rootDirectory, HistoryFileName));
+    }
+
     private static bool Contains(string value, string query)
     {
         return value.Contains(query, StringComparison.OrdinalIgnoreCase);
     }
+}
+
+internal sealed class HistoryLoggerTestHooks
+{
+    public Func<CancellationToken, Task>? AfterReadOpenAsync { get; init; }
+
+    public Func<CancellationToken, Task>? BeforeRewriteAsync { get; init; }
 }
