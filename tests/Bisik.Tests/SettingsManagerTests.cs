@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Bisik.Core;
 using Bisik.Models;
 using FluentAssertions;
@@ -178,11 +179,125 @@ public sealed class SettingsManagerTests : IDisposable
         persisted.Should().Contain("dpapi:v1:");
     }
 
+    [Fact]
+    public void Load_should_clear_only_the_corrupted_secret_when_a_prefixed_key_has_invalid_base64()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        var expected = new AppSettings
+        {
+            TriggerMode = TriggerMode.Toggle,
+            Hotkey = "Ctrl+Shift+Space",
+            DefaultLanguage = "id",
+            Provider = new ProviderSettings
+            {
+                Type = ProviderType.OpenAi,
+                Endpoint = "https://api.openai.com/v1",
+                ApiKey = "provider-secret",
+                ApiVersion = "2024-06-01",
+            },
+            PostProcessor = new PostProcessorSettings
+            {
+                Enabled = true,
+                Provider = new ProviderSettings
+                {
+                    Type = ProviderType.OpenRouter,
+                    Endpoint = "https://openrouter.ai/api/v1",
+                    ApiKey = "postprocessor-secret",
+                    ApiVersion = "2024-06-01",
+                },
+                Model = "gpt-4.1-mini",
+            },
+        };
+
+        manager.Save(expected);
+        CorruptPersistedApiKey("dpapi:v1:not-valid-base64", keyPath: ["provider", "apiKey"]);
+
+        var loaded = manager.Load();
+
+        loaded.TriggerMode.Should().Be(expected.TriggerMode);
+        loaded.Hotkey.Should().Be(expected.Hotkey);
+        loaded.DefaultLanguage.Should().Be(expected.DefaultLanguage);
+        loaded.Provider.Endpoint.Should().Be(expected.Provider.Endpoint);
+        loaded.Provider.ApiKey.Should().BeEmpty();
+        loaded.PostProcessor.Enabled.Should().BeTrue();
+        loaded.PostProcessor.Provider.ApiKey.Should().Be("postprocessor-secret");
+
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["apiKey"]!.GetValue<string>().Should().BeEmpty();
+        persisted["postProcessor"]!["provider"]!["apiKey"]!.GetValue<string>().Should().StartWith("dpapi:v1:");
+    }
+
+    [Fact]
+    public void Load_should_clear_only_the_corrupted_secret_when_a_prefixed_key_cannot_be_decrypted()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        var expected = new AppSettings
+        {
+            OutputMode = OutputMode.Popup,
+            IndicatorStyle = IndicatorStyle.TrayIconOnly,
+            Provider = new ProviderSettings
+            {
+                Type = ProviderType.AzureOpenAi,
+                Endpoint = "https://example.openai.azure.com",
+                ApiKey = "provider-secret",
+                DeploymentName = "whisper-prod",
+                ApiVersion = "2024-06-01",
+            },
+            PostProcessor = new PostProcessorSettings
+            {
+                Enabled = true,
+                Provider = new ProviderSettings
+                {
+                    Type = ProviderType.OpenAi,
+                    Endpoint = "https://api.openai.com/v1",
+                    ApiKey = "postprocessor-secret",
+                    ApiVersion = "2024-06-01",
+                },
+                Model = "gpt-4.1-mini",
+            },
+        };
+
+        manager.Save(expected);
+        CorruptPersistedApiKey($"dpapi:v1:{Convert.ToBase64String([1, 2, 3, 4, 5])}", keyPath: ["postProcessor", "provider", "apiKey"]);
+
+        var loaded = manager.Load();
+
+        loaded.OutputMode.Should().Be(expected.OutputMode);
+        loaded.IndicatorStyle.Should().Be(expected.IndicatorStyle);
+        loaded.Provider.ApiKey.Should().Be("provider-secret");
+        loaded.PostProcessor.Enabled.Should().BeTrue();
+        loaded.PostProcessor.Provider.ApiKey.Should().BeEmpty();
+
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["apiKey"]!.GetValue<string>().Should().StartWith("dpapi:v1:");
+        persisted["postProcessor"]!["provider"]!["apiKey"]!.GetValue<string>().Should().BeEmpty();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_baseDirectory))
         {
             Directory.Delete(_baseDirectory, recursive: true);
         }
+    }
+
+    private void CorruptPersistedApiKey(string corruptedValue, params string[] keyPath)
+    {
+        var json = ReadPersistedSettingsJson();
+        var current = json;
+
+        foreach (var segment in keyPath[..^1])
+        {
+            current = current[segment]!.AsObject();
+        }
+
+        current[keyPath[^1]] = corruptedValue;
+        File.WriteAllText(Path.Combine(_baseDirectory, "settings.json"), json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private JsonObject ReadPersistedSettingsJson()
+    {
+        var settingsPath = Path.Combine(_baseDirectory, "settings.json");
+        return JsonNode.Parse(File.ReadAllText(settingsPath))!.AsObject();
     }
 }

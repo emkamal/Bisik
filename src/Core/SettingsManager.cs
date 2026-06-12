@@ -40,14 +40,16 @@ public sealed class SettingsManager
         {
             var json = File.ReadAllText(_settingsPath);
             var persisted = JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions);
+            var recovered = UnprotectSecrets(NormalizeSettings(persisted));
 
-            return UnprotectSecrets(NormalizeSettings(persisted));
+            if (recovered.HadRecoveredSecrets)
+            {
+                Save(recovered.Settings);
+            }
+
+            return recovered.Settings;
         }
         catch (JsonException)
-        {
-            return SaveDefaults();
-        }
-        catch (CryptographicException)
         {
             return SaveDefaults();
         }
@@ -150,16 +152,57 @@ public sealed class SettingsManager
         };
     }
 
-    private static AppSettings UnprotectSecrets(AppSettings settings)
+    private static SecretRecoveryResult UnprotectSecrets(AppSettings settings)
     {
-        return settings with
-        {
-            Provider = UnprotectProvider(settings.Provider),
-            PostProcessor = settings.PostProcessor with
+        var providerRecovery = UnprotectProvider(settings.Provider);
+        var postProcessorProviderRecovery = UnprotectProvider(settings.PostProcessor.Provider);
+
+        return new SecretRecoveryResult(
+            settings with
             {
-                Provider = UnprotectProvider(settings.PostProcessor.Provider),
+                Provider = providerRecovery.Provider,
+                PostProcessor = settings.PostProcessor with
+                {
+                    Provider = postProcessorProviderRecovery.Provider,
+                },
             },
-        };
+            providerRecovery.HadRecoveredSecret || postProcessorProviderRecovery.HadRecoveredSecret);
+    }
+
+    private static ProviderRecoveryResult UnprotectProvider(ProviderSettings provider)
+    {
+        var apiKeyRecovery = UnprotectApiKey(provider.ApiKey);
+
+        return new ProviderRecoveryResult(
+            provider with
+            {
+                ApiKey = apiKeyRecovery.ApiKey,
+            },
+            apiKeyRecovery.HadRecoveredSecret);
+    }
+
+    private static ApiKeyRecoveryResult UnprotectApiKey(string apiKey)
+    {
+        if (string.IsNullOrEmpty(apiKey) || !apiKey.StartsWith(DpapiPrefix, StringComparison.Ordinal))
+        {
+            return new ApiKeyRecoveryResult(apiKey, HadRecoveredSecret: false);
+        }
+
+        try
+        {
+            // Prefixed values are treated as persisted secrets and must round-trip back to plain text in memory.
+            var protectedBytes = Convert.FromBase64String(apiKey[DpapiPrefix.Length..]);
+            var plainBytes = ProtectedData.Unprotect(protectedBytes, optionalEntropy: null, DataProtectionScope.CurrentUser);
+            return new ApiKeyRecoveryResult(Encoding.UTF8.GetString(plainBytes), HadRecoveredSecret: false);
+        }
+        catch (FormatException)
+        {
+            return new ApiKeyRecoveryResult(string.Empty, HadRecoveredSecret: true);
+        }
+        catch (CryptographicException)
+        {
+            return new ApiKeyRecoveryResult(string.Empty, HadRecoveredSecret: true);
+        }
     }
 
     private static ProviderSettings ProtectProvider(ProviderSettings provider)
@@ -167,14 +210,6 @@ public sealed class SettingsManager
         return provider with
         {
             ApiKey = ProtectApiKey(provider.ApiKey),
-        };
-    }
-
-    private static ProviderSettings UnprotectProvider(ProviderSettings provider)
-    {
-        return provider with
-        {
-            ApiKey = UnprotectApiKey(provider.ApiKey),
         };
     }
 
@@ -190,16 +225,7 @@ public sealed class SettingsManager
         return $"{DpapiPrefix}{Convert.ToBase64String(protectedBytes)}";
     }
 
-    private static string UnprotectApiKey(string apiKey)
-    {
-        if (string.IsNullOrEmpty(apiKey) || !apiKey.StartsWith(DpapiPrefix, StringComparison.Ordinal))
-        {
-            return apiKey;
-        }
-
-        // Prefixed values are treated as persisted secrets and must round-trip back to plain text in memory.
-        var protectedBytes = Convert.FromBase64String(apiKey[DpapiPrefix.Length..]);
-        var plainBytes = ProtectedData.Unprotect(protectedBytes, optionalEntropy: null, DataProtectionScope.CurrentUser);
-        return Encoding.UTF8.GetString(plainBytes);
-    }
+    private readonly record struct SecretRecoveryResult(AppSettings Settings, bool HadRecoveredSecrets);
+    private readonly record struct ProviderRecoveryResult(ProviderSettings Provider, bool HadRecoveredSecret);
+    private readonly record struct ApiKeyRecoveryResult(string ApiKey, bool HadRecoveredSecret);
 }
