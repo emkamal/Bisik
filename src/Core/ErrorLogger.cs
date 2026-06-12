@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -6,22 +7,30 @@ namespace Bisik.Core;
 public sealed partial class ErrorLogger
 {
     private const string ErrorLogFileName = "error.log";
+    private static readonly ConcurrentDictionary<string, object> PathLocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly string _errorLogPath;
+    private readonly object _pathLock;
+    private readonly ErrorLoggerTestHooks? _testHooks;
 
     public ErrorLogger(string? baseDirectory = null)
+        : this(baseDirectory, testHooks: null)
+    {
+    }
+
+    internal ErrorLogger(string? baseDirectory, ErrorLoggerTestHooks? testHooks)
     {
         var rootDirectory = string.IsNullOrWhiteSpace(baseDirectory)
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik")
             : baseDirectory;
 
-        _errorLogPath = Path.Combine(rootDirectory, ErrorLogFileName);
+        _errorLogPath = NormalizeErrorLogPath(rootDirectory);
+        _pathLock = PathLocks.GetOrAdd(_errorLogPath, static _ => new object());
+        _testHooks = testHooks;
     }
 
     public void Log(Exception exception)
     {
         ArgumentNullException.ThrowIfNull(exception);
-
-        Directory.CreateDirectory(Path.GetDirectoryName(_errorLogPath)!);
 
         var builder = new StringBuilder();
         builder.Append(DateTimeOffset.UtcNow.ToString("O"));
@@ -35,7 +44,18 @@ public sealed partial class ErrorLogger
             builder.AppendLine(Sanitize(exception.StackTrace));
         }
 
-        File.AppendAllText(_errorLogPath, builder.ToString(), Encoding.UTF8);
+        _testHooks?.BeforeAcquireLock?.Invoke();
+
+        lock (_pathLock)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_errorLogPath)!);
+
+            using var stream = new FileStream(_errorLogPath, FileMode.Append, FileAccess.Write, FileShare.None);
+            _testHooks?.AfterOpenStream?.Invoke();
+
+            using var writer = new StreamWriter(stream, Encoding.UTF8);
+            writer.Write(builder.ToString());
+        }
     }
 
     private static string Sanitize(string value)
@@ -116,4 +136,16 @@ public sealed partial class ErrorLogger
 
     [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9\-]*\s*:\s*.+$")]
     private static partial Regex HeaderLineRegex();
+
+    private static string NormalizeErrorLogPath(string rootDirectory)
+    {
+        return Path.GetFullPath(Path.Combine(rootDirectory, ErrorLogFileName));
+    }
+}
+
+internal sealed class ErrorLoggerTestHooks
+{
+    public Action? BeforeAcquireLock { get; init; }
+
+    public Action? AfterOpenStream { get; init; }
 }

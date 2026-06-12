@@ -84,6 +84,52 @@ public sealed class ErrorLoggerTests : IDisposable
         log.Should().NotContain("super-secret");
     }
 
+    [Fact]
+    public async Task Log_should_serialize_parallel_writes_for_the_same_error_log_path()
+    {
+        const int taskCount = 12;
+        var beforeLockBarrier = new Barrier(taskCount);
+        var firstWriterOpened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseFirstWriter = new ManualResetEventSlim(false);
+        var firstWriterWaited = 0;
+
+        var hooks = new ErrorLoggerTestHooks
+        {
+            BeforeAcquireLock = () => beforeLockBarrier.SignalAndWait(TimeSpan.FromSeconds(5)),
+            AfterOpenStream = () =>
+            {
+                if (Interlocked.CompareExchange(ref firstWriterWaited, 1, 0) == 0)
+                {
+                    firstWriterOpened.TrySetResult();
+                    releaseFirstWriter.Wait(TimeSpan.FromSeconds(5));
+                }
+            },
+        };
+
+        var tasks = Enumerable.Range(0, taskCount)
+            .Select(index => Task.Run(() =>
+            {
+                var logger = new ErrorLogger(_baseDirectory, hooks);
+                logger.Log(new InvalidOperationException($"parallel failure {index} api_key=secret-{index}"));
+            }))
+            .ToArray();
+
+        await firstWriterOpened.Task;
+        releaseFirstWriter.Set();
+
+        Func<Task> act = () => Task.WhenAll(tasks);
+        await act.Should().NotThrowAsync();
+
+        var lines = File.ReadAllLines(Path.Combine(_baseDirectory, "error.log"));
+        lines.Should().HaveCount(taskCount);
+        lines.Should().OnlyContain(line => line.Contains("parallel failure", StringComparison.Ordinal));
+        lines.Count(line => line.Contains("[REDACTED]", StringComparison.Ordinal)).Should().Be(taskCount);
+
+        var log = File.ReadAllText(Path.Combine(_baseDirectory, "error.log"));
+        log.Should().NotContain("secret-0");
+        log.Should().NotContain("secret-11");
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_baseDirectory))
