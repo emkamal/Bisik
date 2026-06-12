@@ -326,11 +326,11 @@
 - Create: `src/Providers/CustomEndpointProvider.cs`
 - Create: `tests/Bisik.Tests/ProviderRequestTests.cs`
 
-- [ ] **Step 1: Write provider request tests**
+- [x] **Step 1: Write provider request tests**
 
   Use a fake `HttpMessageHandler` to assert each provider sends the correct URL, auth header, multipart `file`, `model`, and `language` fields.
 
-- [ ] **Step 2: Define provider contract**
+- [x] **Step 2: Define provider contract**
 
   `ITranscriptionProvider` should expose provider name/type and:
 
@@ -338,31 +338,31 @@
   Task<string> TranscribeAsync(string audioFilePath, string language, CancellationToken cancellationToken);
   ```
 
-- [ ] **Step 3: Implement shared multipart upload base**
+- [x] **Step 3: Implement shared multipart upload base**
 
   Add protected helpers for `MultipartFormDataContent`, response status validation, and parsing `{ "text": "..." }` responses.
 
-- [ ] **Step 4: Implement Azure provider**
+- [x] **Step 4: Implement Azure provider**
 
   Build URL as `{endpoint}/openai/deployments/{deployment}/audio/transcriptions?api-version={apiVersion}` and authenticate with `api-key`.
 
-- [ ] **Step 5: Implement OpenAI provider**
+- [x] **Step 5: Implement OpenAI provider**
 
   Post to `https://api.openai.com/v1/audio/transcriptions`, authenticate with bearer token, and default model to `whisper-1`.
 
-- [ ] **Step 6: Implement OpenRouter provider**
+- [x] **Step 6: Implement OpenRouter provider**
 
   Post to `https://openrouter.ai/api/v1/audio/transcriptions` with bearer token and configured model.
 
-- [ ] **Step 7: Implement local provider**
+- [x] **Step 7: Implement local provider**
 
   Post to `{baseUrl}/audio/transcriptions` by default. Include optional bearer auth only when an API key is configured.
 
-- [ ] **Step 8: Implement custom endpoint provider**
+- [x] **Step 8: Implement custom endpoint provider**
 
   Post to configured base URL, include optional API key, optional model, language, and configured extra headers.
 
-- [ ] **Step 9: Run provider tests**
+- [x] **Step 9: Run provider tests**
 
   Run:
 
@@ -372,7 +372,7 @@
 
   Expected: tests pass without making network calls.
 
-- [ ] **Step 10: Commit providers**
+- [x] **Step 10: Commit providers**
 
   Run:
 
