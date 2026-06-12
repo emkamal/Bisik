@@ -94,7 +94,8 @@ public sealed class SettingsManagerTests : IDisposable
     {
         Directory.CreateDirectory(_baseDirectory);
         var settingsPath = Path.Combine(_baseDirectory, "settings.json");
-        File.WriteAllText(settingsPath, "{ definitely-not-json");
+        const string malformedJson = "{ definitely-not-json";
+        File.WriteAllText(settingsPath, malformedJson);
 
         var manager = new SettingsManager(_baseDirectory);
 
@@ -104,6 +105,10 @@ public sealed class SettingsManagerTests : IDisposable
 
         var persisted = File.ReadAllText(settingsPath);
         persisted.Should().Contain("\"triggerMode\": \"push-to-talk\"");
+
+        var backupPath = Path.Combine(_baseDirectory, "settings.json.bad");
+        File.Exists(backupPath).Should().BeTrue();
+        File.ReadAllText(backupPath).Should().Be(malformedJson);
     }
 
     [Fact]
@@ -152,6 +157,39 @@ public sealed class SettingsManagerTests : IDisposable
         reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Authorization", "Bearer secret-token"));
         reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("HTTP-Referer", "https://bisik.test"));
         reloaded.PostProcessor.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("X-API-Key", "secondary-secret"));
+    }
+
+    [Fact]
+    public void Save_should_encrypt_secret_like_custom_header_names_but_leave_public_headers_plain()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        var settings = new AppSettings
+        {
+            Provider = new ProviderSettings
+            {
+                ExtraHeaders = new Dictionary<string, string>
+                {
+                    ["Client-Secret"] = "client-secret-value",
+                    ["X-OpenAI-Api-Key"] = "provider-header-secret",
+                    ["HTTP-Referer"] = "https://bisik.test",
+                    ["User-Agent"] = "BisikTests/1.0",
+                },
+            },
+        };
+
+        manager.Save(settings);
+
+        var persisted = File.ReadAllText(Path.Combine(_baseDirectory, "settings.json"));
+        persisted.Should().NotContain("client-secret-value");
+        persisted.Should().NotContain("provider-header-secret");
+        persisted.Should().Contain("\"HTTP-Referer\": \"https://bisik.test\"");
+        persisted.Should().Contain("\"User-Agent\": \"BisikTests/1.0\"");
+
+        var reloaded = manager.Load();
+        reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("Client-Secret", "client-secret-value"));
+        reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("X-OpenAI-Api-Key", "provider-header-secret"));
+        reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("HTTP-Referer", "https://bisik.test"));
+        reloaded.Provider.ExtraHeaders.Should().Contain(new KeyValuePair<string, string>("User-Agent", "BisikTests/1.0"));
     }
 
     [Fact]
@@ -364,6 +402,23 @@ public sealed class SettingsManagerTests : IDisposable
         var persisted = ReadPersistedSettingsJson();
         persisted["provider"]!["extraHeaders"]!["Authorization"]!.GetValue<string>().Should().Be(undecryptableValue);
         persisted["provider"]!["extraHeaders"]!["HTTP-Referer"]!.GetValue<string>().Should().Be("https://bisik.test");
+    }
+
+    [Fact]
+    public void Save_should_not_leave_temp_files_behind_after_atomic_write()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+
+        manager.Save(new AppSettings
+        {
+            Provider = new ProviderSettings
+            {
+                ApiKey = "provider-secret",
+            },
+        });
+
+        Directory.GetFiles(_baseDirectory, "settings.json.*", SearchOption.TopDirectoryOnly)
+            .Should().OnlyContain(path => Path.GetFileName(path) == "settings.json" || Path.GetFileName(path) == "settings.json.bad");
     }
 
     public void Dispose()

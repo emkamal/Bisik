@@ -8,17 +8,20 @@ namespace Bisik.Core;
 public sealed class SettingsManager
 {
     private const string SettingsFileName = "settings.json";
+    private const string CorruptSettingsBackupFileName = "settings.json.bad";
     private const string DpapiPrefix = "dpapi:v1:";
-    private static readonly HashSet<string> SensitiveHeaderNames = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly string[] SensitiveHeaderTokens =
     {
         "authorization",
-        "proxy-authorization",
-        "x-api-key",
-        "api-key",
-        "x-auth-token",
-        "auth-token",
-        "x-access-token",
-        "access-token",
+        "apikey",
+        "token",
+        "secret",
+    };
+    private static readonly HashSet<string> PublicHeaderNames = new(StringComparer.Ordinal)
+    {
+        "httpreferer",
+        "referer",
+        "useragent",
     };
 
     private static readonly JsonSerializerOptions SerializerOptions = new()
@@ -62,6 +65,7 @@ public sealed class SettingsManager
         }
         catch (JsonException)
         {
+            BackupMalformedSettingsFile();
             return SaveDefaults();
         }
     }
@@ -73,8 +77,29 @@ public sealed class SettingsManager
         var normalized = NormalizeSettings(settings);
         var protectedSettings = ProtectSecrets(normalized);
         var json = JsonSerializer.Serialize(protectedSettings, SerializerOptions);
+        var settingsDirectory = Path.GetDirectoryName(_settingsPath)!;
+        var tempPath = Path.Combine(settingsDirectory, $"{SettingsFileName}.{Guid.NewGuid():N}.tmp");
 
-        File.WriteAllText(_settingsPath, json, Encoding.UTF8);
+        try
+        {
+            File.WriteAllText(tempPath, json, Encoding.UTF8);
+
+            if (File.Exists(_settingsPath))
+            {
+                File.Replace(tempPath, _settingsPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+            }
+            else
+            {
+                File.Move(tempPath, _settingsPath, overwrite: true);
+            }
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
     }
 
     private AppSettings SaveDefaults()
@@ -82,6 +107,17 @@ public sealed class SettingsManager
         var defaults = new AppSettings();
         Save(defaults);
         return defaults;
+    }
+
+    private void BackupMalformedSettingsFile()
+    {
+        if (!File.Exists(_settingsPath))
+        {
+            return;
+        }
+
+        var backupPath = Path.Combine(Path.GetDirectoryName(_settingsPath)!, CorruptSettingsBackupFileName);
+        File.Copy(_settingsPath, backupPath, overwrite: true);
     }
 
     private static AppSettings NormalizeSettings(AppSettings? settings)
@@ -307,7 +343,28 @@ public sealed class SettingsManager
 
     private static bool IsSensitiveHeaderName(string headerName)
     {
-        return SensitiveHeaderNames.Contains(headerName);
+        var canonicalName = CanonicalizeHeaderName(headerName);
+        if (PublicHeaderNames.Contains(canonicalName))
+        {
+            return false;
+        }
+
+        return SensitiveHeaderTokens.Any(canonicalName.Contains);
+    }
+
+    private static string CanonicalizeHeaderName(string headerName)
+    {
+        var builder = new StringBuilder(headerName.Length);
+
+        foreach (var ch in headerName)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(char.ToLowerInvariant(ch));
+            }
+        }
+
+        return builder.ToString();
     }
 
     private readonly record struct SecretRecoveryResult(AppSettings InMemorySettings, AppSettings PersistedSettings, bool HadHealedSecrets);
