@@ -72,6 +72,28 @@ public sealed class ProviderRequestTests : IDisposable
     }
 
     [Fact]
+    public async Task Azure_provider_should_normalize_existing_deployment_path_and_preserve_query_string()
+    {
+        using var handler = new CapturingHttpMessageHandler();
+        using var client = new HttpClient(handler);
+        var audioFilePath = CreateAudioFile();
+        var provider = new AzureOpenAIProvider(client, new ProviderSettings
+        {
+            Type = ProviderType.AzureOpenAi,
+            Endpoint = "https://example.openai.azure.com/openai/deployments/whisper-prod/?client=bisik",
+            ApiKey = "azure-key",
+            DeploymentName = "whisper-prod",
+            ApiVersion = "2024-06-01-preview",
+        });
+
+        var result = await provider.TranscribeAsync(audioFilePath, "id", CancellationToken.None);
+
+        result.Should().Be("ok");
+        handler.CapturedRequest.Should().NotBeNull();
+        handler.CapturedRequest!.RequestUri.Should().Be("https://example.openai.azure.com/openai/deployments/whisper-prod/audio/transcriptions?client=bisik&api-version=2024-06-01-preview");
+    }
+
+    [Fact]
     public async Task OpenAI_provider_should_use_default_model_and_bearer_auth()
     {
         using var handler = new CapturingHttpMessageHandler();
@@ -200,6 +222,62 @@ public sealed class ProviderRequestTests : IDisposable
     }
 
     [Fact]
+    public async Task Local_provider_should_allow_auth_style_extra_headers_when_api_key_is_empty()
+    {
+        using var handler = new CapturingHttpMessageHandler();
+        using var client = new HttpClient(handler);
+        var audioFilePath = CreateAudioFile();
+        var provider = new LocalWhisperProvider(client, new ProviderSettings
+        {
+            Type = ProviderType.LocalWhisper,
+            Endpoint = "http://localhost:8080/",
+            Model = "tiny",
+            ExtraHeaders = new Dictionary<string, string>
+            {
+                ["Authorization"] = "Bearer passthrough-token",
+                ["api-key"] = "local-key",
+                ["Content-Type"] = "application/json",
+            },
+        });
+
+        var result = await provider.TranscribeAsync(audioFilePath, "ja", CancellationToken.None);
+
+        result.Should().Be("ok");
+        handler.CapturedRequest.Should().NotBeNull();
+        handler.CapturedRequest!.Headers.Should().Contain(new KeyValuePair<string, string>("Authorization", "Bearer passthrough-token"));
+        handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("api-key", "local-key"));
+        handler.CapturedRequest.ContentType.Should().NotBeNull();
+        handler.CapturedRequest.ContentType!.MediaType.Should().Be("multipart/form-data");
+    }
+
+    [Fact]
+    public async Task Local_provider_should_keep_bearer_auth_authoritative_when_api_key_is_configured()
+    {
+        using var handler = new CapturingHttpMessageHandler();
+        using var client = new HttpClient(handler);
+        var audioFilePath = CreateAudioFile();
+        var provider = new LocalWhisperProvider(client, new ProviderSettings
+        {
+            Type = ProviderType.LocalWhisper,
+            Endpoint = "http://localhost:8080/",
+            ApiKey = "provider-key",
+            Model = "tiny",
+            ExtraHeaders = new Dictionary<string, string>
+            {
+                ["Authorization"] = "Bearer overridden",
+                ["api-key"] = "passthrough-local-key",
+            },
+        });
+
+        var result = await provider.TranscribeAsync(audioFilePath, "ja", CancellationToken.None);
+
+        result.Should().Be("ok");
+        handler.CapturedRequest.Should().NotBeNull();
+        handler.CapturedRequest!.Headers.Should().Contain(new KeyValuePair<string, string>("Authorization", "Bearer provider-key"));
+        handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("api-key", "passthrough-local-key"));
+    }
+
+    [Fact]
     public async Task Custom_provider_should_use_configured_url_optional_auth_and_extra_headers()
     {
         using var handler = new CapturingHttpMessageHandler();
@@ -232,6 +310,34 @@ public sealed class ProviderRequestTests : IDisposable
         handler.CapturedRequest.Parts["file"].FileName.Should().Be(Path.GetFileName(audioFilePath));
         handler.CapturedRequest.Parts["model"].Value.Should().Be("custom-whisper");
         handler.CapturedRequest.Parts["language"].Value.Should().Be("fr");
+    }
+
+    [Fact]
+    public async Task Custom_provider_should_allow_auth_style_extra_headers_when_no_first_class_auth_is_configured()
+    {
+        using var handler = new CapturingHttpMessageHandler();
+        using var client = new HttpClient(handler);
+        var audioFilePath = CreateAudioFile();
+        var provider = new CustomEndpointProvider(client, new ProviderSettings
+        {
+            Type = ProviderType.CustomEndpoint,
+            Endpoint = "https://transcribe.example.test/v2/upload",
+            Model = "custom-whisper",
+            ExtraHeaders = new Dictionary<string, string>
+            {
+                ["Authorization"] = "Bearer passthrough-token",
+                ["api-key"] = "escape-hatch-key",
+                ["Content-Length"] = "42",
+            },
+        });
+
+        var result = await provider.TranscribeAsync(audioFilePath, "fr", CancellationToken.None);
+
+        result.Should().Be("ok");
+        handler.CapturedRequest.Should().NotBeNull();
+        handler.CapturedRequest!.Headers.Should().Contain(new KeyValuePair<string, string>("Authorization", "Bearer passthrough-token"));
+        handler.CapturedRequest.Headers.Should().Contain(new KeyValuePair<string, string>("api-key", "escape-hatch-key"));
+        handler.CapturedRequest.Headers.Should().NotContainKey("Content-Length");
     }
 
     [Fact]

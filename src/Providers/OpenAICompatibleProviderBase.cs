@@ -7,10 +7,16 @@ namespace Bisik.Providers;
 
 public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, ProviderSettings settings) : ITranscriptionProvider
 {
-    private static readonly HashSet<string> ReservedHeaderNames = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> StrictReservedHeaderNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Authorization",
         "api-key",
+        "Content-Type",
+        "Content-Length",
+    };
+
+    private static readonly HashSet<string> MultipartReservedHeaderNames = new(StringComparer.OrdinalIgnoreCase)
+    {
         "Content-Type",
         "Content-Length",
     };
@@ -143,12 +149,38 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
 
     protected static IEnumerable<KeyValuePair<string, string>>? ToHeaders(Dictionary<string, string>? headers)
     {
+        return ToHeaders(headers, StrictReservedHeaderNames);
+    }
+
+    protected static IEnumerable<KeyValuePair<string, string>>? ToHeaders(
+        Dictionary<string, string>? headers,
+        IEnumerable<string>? reservedHeaderNames)
+    {
         if (headers is null || headers.Count == 0)
         {
             return null;
         }
 
-        return headers.Where(header => !ReservedHeaderNames.Contains(header.Key));
+        var blockedHeaders = new HashSet<string>(MultipartReservedHeaderNames, StringComparer.OrdinalIgnoreCase);
+        if (reservedHeaderNames is not null)
+        {
+            blockedHeaders.UnionWith(reservedHeaderNames);
+        }
+
+        return headers.Where(header => !blockedHeaders.Contains(header.Key));
+    }
+
+    protected static Uri AppendQueryParameter(Uri baseUri, string name, string value)
+    {
+        ArgumentNullException.ThrowIfNull(baseUri);
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+
+        var builder = new UriBuilder(baseUri);
+        var parameters = ParseQueryString(builder.Query);
+        parameters[name] = value;
+        builder.Query = BuildQueryString(parameters);
+        return builder.Uri;
     }
 
     private static void ApplyHeaders(
@@ -212,6 +244,39 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
     private static string[] SplitSegments(string path)
     {
         return path.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    private static Dictionary<string, string> ParseQueryString(string query)
+    {
+        var parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return parameters;
+        }
+
+        foreach (var pair in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separatorIndex = pair.IndexOf('=');
+            if (separatorIndex < 0)
+            {
+                parameters[Uri.UnescapeDataString(pair)] = string.Empty;
+                continue;
+            }
+
+            var key = Uri.UnescapeDataString(pair[..separatorIndex]);
+            var value = Uri.UnescapeDataString(pair[(separatorIndex + 1)..]);
+            parameters[key] = value;
+        }
+
+        return parameters;
+    }
+
+    private static string BuildQueryString(Dictionary<string, string> parameters)
+    {
+        return string.Join(
+            "&",
+            parameters.Select(parameter =>
+                $"{Uri.EscapeDataString(parameter.Key)}={Uri.EscapeDataString(parameter.Value)}"));
     }
 
     private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken cancellationToken)

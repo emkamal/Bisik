@@ -18,8 +18,13 @@ public sealed class AzureOpenAIProvider(HttpClient httpClient, ProviderSettings 
 
         var baseUri = RequireAbsoluteUri(Settings.Endpoint, nameof(Settings.Endpoint));
         var deployment = Uri.EscapeDataString(Settings.DeploymentName);
-        var apiVersion = Uri.EscapeDataString(string.IsNullOrWhiteSpace(Settings.ApiVersion) ? "2024-06-01" : Settings.ApiVersion);
-        var requestUri = $"{baseUri.ToString().TrimEnd('/')}/openai/deployments/{deployment}/audio/transcriptions?api-version={apiVersion}";
+        var apiVersion = string.IsNullOrWhiteSpace(Settings.ApiVersion) ? "2024-06-01" : Settings.ApiVersion;
+        var deploymentUri = AppendPath(baseUri, $"openai/deployments/{deployment}");
+        var requestUri = AppendQueryParameter(
+            AppendPath(deploymentUri, "audio/transcriptions"),
+            "api-version",
+            apiVersion)
+            .ToString();
         var model = string.IsNullOrWhiteSpace(Settings.Model) ? Settings.DeploymentName : Settings.Model;
         var headers = MergeHeaders(
             CreateApiKeyHeader("api-key", Settings.ApiKey),

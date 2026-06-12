@@ -5,6 +5,8 @@ namespace Bisik.Providers;
 public sealed class LocalWhisperProvider(HttpClient httpClient, ProviderSettings settings)
     : OpenAICompatibleProviderBase(httpClient, settings)
 {
+    private static readonly string[] ProviderOwnedHeaderNames = ["Authorization"];
+
     public override string Name => "Local Whisper";
 
     public override ProviderType Type => ProviderType.LocalWhisper;
@@ -13,11 +15,14 @@ public sealed class LocalWhisperProvider(HttpClient httpClient, ProviderSettings
     {
         var baseUri = RequireAbsoluteUri(Settings.Endpoint, nameof(Settings.Endpoint));
         var requestUri = AppendPath(baseUri, "audio/transcriptions").ToString();
+        var reservedHeaders = string.IsNullOrWhiteSpace(Settings.ApiKey)
+            ? null
+            : ProviderOwnedHeaderNames;
         var headers = MergeHeaders(
             string.IsNullOrWhiteSpace(Settings.ApiKey)
                 ? null
                 : CreateBearerAuthHeader(Settings.ApiKey),
-            ToHeaders(Settings.ExtraHeaders));
+            ToHeaders(Settings.ExtraHeaders, reservedHeaders));
 
         return SendMultipartRequestAsync(requestUri, audioFilePath, language, Settings.Model, headers, cancellationToken);
     }
