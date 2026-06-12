@@ -37,6 +37,7 @@ public sealed class AppSettingsTests
         settings.PostProcessor.Provider.Type.Should().Be(ProviderType.AzureOpenAi);
         settings.PostProcessor.Provider.ApiVersion.Should().Be("2024-06-01");
         settings.PostProcessor.Model.Should().BeEmpty();
+        settings.PostProcessor.TargetLanguage.Should().BeEmpty();
         settings.PostProcessor.PresetName.Should().Be(PostProcessorPreset.CleanUp);
         settings.PostProcessor.SystemPrompt.Should().Be("You are a transcription editor. Fix grammar, punctuation, and remove filler words. Return only the cleaned text, nothing else.");
     }
@@ -52,6 +53,7 @@ public sealed class AppSettingsTests
         json.Should().Contain("\"type\":\"azure-openai\"");
         json.Should().Contain("\"format\":\"wav\"");
         json.Should().Contain("\"presetName\":\"clean-up\"");
+        json.Should().Contain("\"targetLanguage\":\"\"");
     }
 
     [Fact]
@@ -100,6 +102,63 @@ public sealed class AppSettingsTests
         var json = JsonSerializer.Serialize(provider);
         json.Should().Contain("\"model\":\"gpt-4o-mini-transcribe\"");
         json.Should().Contain("\"extraHeaders\":{\"HTTP-Referer\":\"https://bisik.test\"}");
+    }
+
+    [Fact]
+    public void Settings_should_deserialize_enum_and_string_values_from_spec_surface()
+    {
+        const string json = """
+            {
+              "triggerMode": "vad",
+              "outputMode": "clipboard",
+              "indicatorStyle": "tray-icon-only",
+              "provider": {
+                "type": "openrouter",
+                "endpoint": "https://openrouter.ai/api/v1",
+                "apiKey": "secret",
+                "deploymentName": "",
+                "apiVersion": "2024-06-01",
+                "model": "openai/gpt-4o-mini-transcribe",
+                "extraHeaders": {
+                  "HTTP-Referer": "https://bisik.test"
+                }
+              },
+              "audio": {
+                "deviceId": "default",
+                "format": "ogg",
+                "sampleRate": 16000,
+                "vadSilenceThreshold": 0.01,
+                "vadMinSpeechMs": 300
+              },
+              "postProcessor": {
+                "enabled": true,
+                "provider": {
+                  "type": "openai",
+                  "endpoint": "https://api.openai.com/v1",
+                  "apiKey": "pp-key",
+                  "deploymentName": "",
+                  "apiVersion": "2024-06-01"
+                },
+                "model": "gpt-4.1-mini",
+                "targetLanguage": "en",
+                "presetName": "translate-to-language",
+                "systemPrompt": "Translate the text."
+              }
+            }
+            """;
+
+        var settings = JsonSerializer.Deserialize<AppSettings>(json);
+
+        settings.Should().NotBeNull();
+        settings!.TriggerMode.Should().Be(TriggerMode.Vad);
+        settings.OutputMode.Should().Be(OutputMode.Clipboard);
+        settings.IndicatorStyle.Should().Be(IndicatorStyle.TrayIconOnly);
+        settings.Provider.Type.Should().Be(ProviderType.OpenRouter);
+        settings.Provider.Model.Should().Be("openai/gpt-4o-mini-transcribe");
+        settings.Provider.ExtraHeaders.Should().ContainKey("HTTP-Referer").WhoseValue.Should().Be("https://bisik.test");
+        settings.Audio.Format.Should().Be(AudioFormat.Ogg);
+        settings.PostProcessor.PresetName.Should().Be(PostProcessorPreset.TranslateToLanguage);
+        settings.PostProcessor.TargetLanguage.Should().Be("en");
     }
 
     [Fact]

@@ -136,6 +136,9 @@ public sealed record PostProcessorSettings
     [JsonPropertyName("model")]
     public string Model { get; init; } = string.Empty;
 
+    [JsonPropertyName("targetLanguage")]
+    public string TargetLanguage { get; init; } = string.Empty;
+
     [JsonPropertyName("presetName")]
     public PostProcessorPreset PresetName { get; init; } = PostProcessorPreset.CleanUp;
 
