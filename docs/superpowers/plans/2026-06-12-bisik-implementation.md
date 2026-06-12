@@ -391,15 +391,15 @@
 - Create: `src/PostProcessor/PostProcessorPresets.cs`
 - Create: `tests/Bisik.Tests/PostProcessorTests.cs`
 
-- [ ] **Step 1: Write post-processor tests**
+- [x] **Step 1: Write post-processor tests**
 
   Cover disabled passthrough, preset prompt generation, custom prompt use, provider auth, and parsing chat completion output.
 
-- [ ] **Step 2: Implement preset prompts**
+- [x] **Step 2: Implement preset prompts**
 
   Add clean-up, homogenize-to-English, homogenize-to-Indonesian, translate-to-language, and custom prompt handling.
 
-- [ ] **Step 3: Implement post-processor contract**
+- [x] **Step 3: Implement post-processor contract**
 
   `IPostProcessor` should return both raw and final text context:
 
@@ -407,11 +407,11 @@
   Task<string> ProcessAsync(string rawText, PostProcessorSettings settings, CancellationToken cancellationToken);
   ```
 
-- [ ] **Step 4: Implement OpenAI-compatible chat call**
+- [x] **Step 4: Implement OpenAI-compatible chat call**
 
   Send the selected system prompt and raw transcription as the user message. Return only the model text content.
 
-- [ ] **Step 5: Run post-processor tests**
+- [x] **Step 5: Run post-processor tests**
 
   Run:
 
