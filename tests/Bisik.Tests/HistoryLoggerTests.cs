@@ -150,6 +150,28 @@ public sealed class HistoryLoggerTests : IDisposable
         entries.Should().Equal(persistedEntry);
     }
 
+    [Fact]
+    public async Task ReadAllAsync_should_skip_malformed_trailing_lines()
+    {
+        var logger = CreateLogger();
+        var validEntry = CreateEntry(
+            text: "valid entry",
+            timestamp: new DateTimeOffset(2026, 6, 12, 12, 0, 0, TimeSpan.Zero));
+        var historyPath = Path.Combine(_baseDirectory, "history.jsonl");
+
+        Directory.CreateDirectory(_baseDirectory);
+        var validJson = System.Text.Json.JsonSerializer.Serialize(validEntry);
+        await File.WriteAllTextAsync(historyPath, $"{validJson}{Environment.NewLine}{{\"timestamp\":");
+
+        var entries = await logger.ReadAllAsync();
+        var searchMatches = await logger.SearchAsync("valid");
+        var deleted = await logger.DeleteAsync(validEntry.Timestamp, validEntry.Text);
+
+        entries.Should().Equal(validEntry);
+        searchMatches.Should().Equal(validEntry);
+        deleted.Should().BeTrue();
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_baseDirectory))

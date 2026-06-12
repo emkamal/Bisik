@@ -75,7 +75,8 @@ public sealed partial class ErrorLogger
                 continue;
             }
 
-            var sanitizedLine = SecretAssignmentRegex().Replace(line, "$1[REDACTED]");
+            var sanitizedLine = JsonSecretPropertyRegex().Replace(line, "\"$1\":\"[REDACTED]\"");
+            sanitizedLine = SecretAssignmentRegex().Replace(sanitizedLine, "$1[REDACTED]");
             sanitizedLine = BearerTokenRegex().Replace(sanitizedLine, "$1[REDACTED]");
             sanitizedLines.Add(sanitizedLine);
         }
@@ -103,6 +104,9 @@ public sealed partial class ErrorLogger
 
     [GeneratedRegex(@"(bearer\s+)([^\s\r\n]+)", RegexOptions.IgnoreCase)]
     private static partial Regex BearerTokenRegex();
+
+    [GeneratedRegex(@"""((?:authorization|api[-_ ]?key|token|secret|password))""\s*:\s*""[^""]*""", RegexOptions.IgnoreCase)]
+    private static partial Regex JsonSecretPropertyRegex();
 
     [GeneratedRegex(@"^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+\S+\s+HTTP/\d(?:\.\d)?$", RegexOptions.IgnoreCase)]
     private static partial Regex RequestLineRegex();

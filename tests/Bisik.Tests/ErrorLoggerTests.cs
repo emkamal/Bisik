@@ -67,6 +67,23 @@ public sealed class ErrorLoggerTests : IDisposable
         log.Should().NotContain("X-Trace-Id: trace-123");
     }
 
+    [Fact]
+    public void Log_should_redact_json_shaped_secret_values()
+    {
+        var logger = new ErrorLogger(_baseDirectory);
+        var exception = new InvalidOperationException("{\"apiKey\":\"secret-key\",\"token\":\"secret-token\",\"authorization\":\"Bearer super-secret\"}");
+
+        logger.Log(exception);
+
+        var log = File.ReadAllText(Path.Combine(_baseDirectory, "error.log"));
+        log.Should().Contain("\"apiKey\":\"[REDACTED]\"");
+        log.Should().Contain("\"token\":\"[REDACTED]\"");
+        log.Should().Contain("\"authorization\":\"[REDACTED]\"");
+        log.Should().NotContain("secret-key");
+        log.Should().NotContain("secret-token");
+        log.Should().NotContain("super-secret");
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_baseDirectory))

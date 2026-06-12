@@ -14,6 +14,7 @@ public sealed class HistoryLogger
 
     private readonly string _historyPath;
     private readonly bool _historyEnabled;
+    private readonly SemaphoreSlim _mutationLock = new(1, 1);
 
     public HistoryLogger(string? baseDirectory = null, bool historyEnabled = true)
     {
@@ -32,13 +33,22 @@ public sealed class HistoryLogger
             return;
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(_historyPath)!);
+        await _mutationLock.WaitAsync(ct);
 
-        var json = JsonSerializer.Serialize(entry, SerializerOptions);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_historyPath)!);
 
-        await using var stream = new FileStream(_historyPath, FileMode.Append, FileAccess.Write, FileShare.Read);
-        await using var writer = new StreamWriter(stream, Encoding.UTF8);
-        await writer.WriteLineAsync(json.AsMemory(), ct);
+            var json = JsonSerializer.Serialize(entry, SerializerOptions);
+
+            await using var stream = new FileStream(_historyPath, FileMode.Append, FileAccess.Write, FileShare.Read);
+            await using var writer = new StreamWriter(stream, Encoding.UTF8);
+            await writer.WriteLineAsync(json.AsMemory(), ct);
+        }
+        finally
+        {
+            _mutationLock.Release();
+        }
     }
 
     public async Task<IReadOnlyList<TranscriptionEntry>> ReadAllAsync(CancellationToken ct = default)
@@ -62,10 +72,17 @@ public sealed class HistoryLogger
                 continue;
             }
 
-            var entry = JsonSerializer.Deserialize<TranscriptionEntry>(line, SerializerOptions);
-            if (entry is not null)
+            try
             {
-                entries.Add(entry);
+                var entry = JsonSerializer.Deserialize<TranscriptionEntry>(line, SerializerOptions);
+                if (entry is not null)
+                {
+                    entries.Add(entry);
+                }
+            }
+            catch (JsonException)
+            {
+                // Best-effort history loading should skip malformed/truncated lines.
             }
         }
 
@@ -89,28 +106,44 @@ public sealed class HistoryLogger
 
     public async Task<bool> DeleteAsync(DateTimeOffset timestamp, string text, CancellationToken ct = default)
     {
-        var entries = (await ReadAllAsync(ct)).ToList();
-        var index = entries.FindIndex(entry => entry.Timestamp == timestamp && string.Equals(entry.Text, text, StringComparison.Ordinal));
-        if (index < 0)
-        {
-            return false;
-        }
+        await _mutationLock.WaitAsync(ct);
 
-        entries.RemoveAt(index);
-        await RewriteHistoryAsync(entries, ct);
-        return true;
+        try
+        {
+            var entries = (await ReadAllAsync(ct)).ToList();
+            var index = entries.FindIndex(entry => entry.Timestamp == timestamp && string.Equals(entry.Text, text, StringComparison.Ordinal));
+            if (index < 0)
+            {
+                return false;
+            }
+
+            entries.RemoveAt(index);
+            await RewriteHistoryAsync(entries, ct);
+            return true;
+        }
+        finally
+        {
+            _mutationLock.Release();
+        }
     }
 
-    public Task ClearAsync(CancellationToken ct = default)
+    public async Task ClearAsync(CancellationToken ct = default)
     {
-        ct.ThrowIfCancellationRequested();
+        await _mutationLock.WaitAsync(ct);
 
-        if (File.Exists(_historyPath))
+        try
         {
-            File.Delete(_historyPath);
-        }
+            ct.ThrowIfCancellationRequested();
 
-        return Task.CompletedTask;
+            if (File.Exists(_historyPath))
+            {
+                File.Delete(_historyPath);
+            }
+        }
+        finally
+        {
+            _mutationLock.Release();
+        }
     }
 
     public async Task ExportToTextAsync(string exportPath, CancellationToken ct = default)
