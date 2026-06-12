@@ -63,7 +63,7 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
             content.Add(new StringContent(model), "model");
         }
 
-        if (!string.IsNullOrWhiteSpace(language))
+        if (!string.IsNullOrWhiteSpace(language) && !string.Equals(language.Trim(), "auto", StringComparison.OrdinalIgnoreCase))
         {
             content.Add(new StringContent(language), "language");
         }
@@ -247,13 +247,9 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
         if (document.RootElement.TryGetProperty("text", out var textElement) &&
             textElement.ValueKind == JsonValueKind.String)
         {
-            var text = textElement.GetString();
-            if (!string.IsNullOrWhiteSpace(text))
-            {
-                return text;
-            }
+            return textElement.GetString() ?? string.Empty;
         }
 
-        throw new InvalidOperationException("Provider response did not contain a non-empty 'text' field.");
+        throw new InvalidOperationException("Provider response did not contain a string 'text' field.");
     }
 }

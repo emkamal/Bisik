@@ -149,7 +149,7 @@ public sealed class ProviderRequestTests : IDisposable
         handler.CapturedRequest.Parts.Should().ContainKey("file");
         handler.CapturedRequest.Parts["file"].FileName.Should().Be(Path.GetFileName(audioFilePath));
         handler.CapturedRequest.Parts["model"].Value.Should().Be("openai/gpt-4o-mini-transcribe");
-        handler.CapturedRequest.Parts["language"].Value.Should().Be("auto");
+        handler.CapturedRequest.Parts.Should().NotContainKey("language");
     }
 
     [Fact]
@@ -232,6 +232,44 @@ public sealed class ProviderRequestTests : IDisposable
         handler.CapturedRequest.Parts["file"].FileName.Should().Be(Path.GetFileName(audioFilePath));
         handler.CapturedRequest.Parts["model"].Value.Should().Be("custom-whisper");
         handler.CapturedRequest.Parts["language"].Value.Should().Be("fr");
+    }
+
+    [Fact]
+    public async Task Providers_should_omit_language_part_when_requested_language_is_auto()
+    {
+        using var handler = new CapturingHttpMessageHandler();
+        using var client = new HttpClient(handler);
+        var audioFilePath = CreateAudioFile();
+        var provider = new CustomEndpointProvider(client, new ProviderSettings
+        {
+            Type = ProviderType.CustomEndpoint,
+            Endpoint = "https://transcribe.example.test/v2/upload",
+            ApiKey = "custom-key",
+            Model = "custom-whisper",
+        });
+
+        var result = await provider.TranscribeAsync(audioFilePath, "AUTO", CancellationToken.None);
+
+        result.Should().Be("ok");
+        handler.CapturedRequest.Should().NotBeNull();
+        handler.CapturedRequest!.Parts.Should().NotContainKey("language");
+    }
+
+    [Fact]
+    public async Task Provider_base_should_accept_empty_text_response_as_success()
+    {
+        using var handler = new CapturingHttpMessageHandler("""{"text":""}""");
+        using var client = new HttpClient(handler);
+        var audioFilePath = CreateAudioFile();
+        var provider = new OpenAIProvider(client, new ProviderSettings
+        {
+            Type = ProviderType.OpenAi,
+            ApiKey = "openai-key",
+        });
+
+        var result = await provider.TranscribeAsync(audioFilePath, "en", CancellationToken.None);
+
+        result.Should().BeEmpty();
     }
 
     [Fact]
