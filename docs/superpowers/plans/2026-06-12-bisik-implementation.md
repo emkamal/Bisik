@@ -421,7 +421,7 @@
 
   Expected: tests pass with fake HTTP.
 
-- [ ] **Step 6: Commit post-processing**
+- [x] **Step 6: Commit post-processing**
 
   Run:
 
@@ -438,27 +438,27 @@
 - Create: `src/Core/AudioRecorder.cs`
 - Create: `tests/Bisik.Tests/AudioRecorderTests.cs`
 
-- [ ] **Step 1: Write audio recorder unit tests for pure logic**
+- [x] **Step 1: Write audio recorder unit tests for pure logic**
 
   Keep tests focused on device-independent logic: level calculation, silence detection thresholds, output filename generation, and recording state transitions.
 
-- [ ] **Step 2: Implement recording state model**
+- [x] **Step 2: Implement recording state model**
 
   Track `Idle`, `Recording`, and `Stopping` states so hotkey and VAD code cannot start duplicate recordings.
 
-- [ ] **Step 3: Implement NAudio capture**
+- [x] **Step 3: Implement NAudio capture**
 
   Capture the selected microphone device, convert or write to the configured format, and default to 16000 Hz WAV.
 
-- [ ] **Step 4: Emit live audio level events**
+- [x] **Step 4: Emit live audio level events**
 
   Raise an event with a normalized level from `0.0` to `1.0` for overlay and tray animation.
 
-- [ ] **Step 5: Implement VAD helpers**
+- [x] **Step 5: Implement VAD helpers**
 
   Add silence threshold and minimum speech duration logic using the audio settings. Keep the always-listening loop separate from the UI.
 
-- [ ] **Step 6: Run audio tests**
+- [x] **Step 6: Run audio tests**
 
   Run:
 
@@ -468,7 +468,7 @@
 
   Expected: pure logic tests pass. Manual microphone testing happens after UI wiring.
 
-- [ ] **Step 7: Commit audio recording**
+- [x] **Step 7: Commit audio recording**
 
   Run:
 
