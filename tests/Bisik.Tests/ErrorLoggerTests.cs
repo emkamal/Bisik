@@ -34,7 +34,7 @@ public sealed class ErrorLoggerTests : IDisposable
     public void Log_should_include_a_timestamp_and_redact_secret_values()
     {
         var logger = new ErrorLogger(_baseDirectory);
-        var exception = new InvalidOperationException("Authorization: Bearer super-secret-key");
+        var exception = new InvalidOperationException("request failed with api_key=super-secret-key");
 
         logger.Log(exception);
 
@@ -44,11 +44,39 @@ public sealed class ErrorLoggerTests : IDisposable
         log.Should().NotContain("super-secret-key");
     }
 
+    [Fact]
+    public void Log_should_redact_header_blocks_from_message_and_stack_trace()
+    {
+        var logger = new ErrorLogger(_baseDirectory);
+        var headerBlock = string.Join(Environment.NewLine,
+        [
+            "POST /v1/audio/transcriptions HTTP/1.1",
+            "Authorization: Bearer top-secret-token",
+            "Content-Type: multipart/form-data; boundary=abc123",
+            "X-Trace-Id: trace-123",
+        ]);
+
+        logger.Log(new ExceptionWithStackTrace($"request failed{Environment.NewLine}{headerBlock}", headerBlock));
+
+        var log = File.ReadAllText(Path.Combine(_baseDirectory, "error.log"));
+        log.Should().MatchRegex(@"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}");
+        log.Should().Contain("request failed");
+        log.Should().Contain("[REDACTED HEADERS]");
+        log.Should().NotContain("Authorization: Bearer top-secret-token");
+        log.Should().NotContain("Content-Type: multipart/form-data; boundary=abc123");
+        log.Should().NotContain("X-Trace-Id: trace-123");
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_baseDirectory))
         {
             Directory.Delete(_baseDirectory, recursive: true);
         }
+    }
+
+    private sealed class ExceptionWithStackTrace(string message, string stackTrace) : Exception(message)
+    {
+        public override string StackTrace => stackTrace;
     }
 }
