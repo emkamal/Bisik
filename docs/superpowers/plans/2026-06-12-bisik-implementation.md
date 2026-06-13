@@ -895,7 +895,7 @@
 **Files:**
 - Modify only if verification exposes defects.
 
-- [ ] **Step 1: Run full test suite**
+- [x] **Step 1: Run full test suite**
 
   Run:
 
@@ -905,7 +905,7 @@
 
   Expected: all tests pass.
 
-- [ ] **Step 2: Run release build**
+- [x] **Step 2: Run release build**
 
   Run:
 
@@ -915,7 +915,7 @@
 
   Expected: release build succeeds.
 
-- [ ] **Step 3: Publish single-file executable**
+- [x] **Step 3: Publish single-file executable**
 
   Run:
 
@@ -925,27 +925,31 @@
 
   Expected: single executable is produced under `src/bin/Release/net8.0-windows/win-x64/publish/`.
 
-- [ ] **Step 4: Verify startup requirements**
+- [x] **Step 4: Verify startup requirements**
 
   Launch the published executable and confirm the tray icon appears within 2 seconds and the app does not require admin rights.
 
-- [ ] **Step 5: Verify idle footprint**
+- [x] **Step 5: Verify idle footprint**
 
   Check Task Manager after the app has been idle for one minute. Expected: memory use is under 50 MB or documented with a clear reason if WinForms/NAudio overhead exceeds it.
 
-- [ ] **Step 6: Verify no plaintext API keys**
+  Verification note: published `Bisik.exe` was idle for ~65 seconds with `WorkingSetMB=54.12` and `PrivateMemoryMB=11.00`. The working set is slightly above the 50 MB target, but app-owned private memory stayed low, so the overage is attributable to resident .NET/WinForms single-file runtime pages rather than sustained Bisik heap usage.
+
+- [x] **Step 6: Verify no plaintext API keys**
 
   Save settings with API keys, inspect `%APPDATA%\Bisik\settings.json`, and confirm API key values are stored with `dpapi:v1:` encrypted values.
 
-- [ ] **Step 7: Verify history schema**
+- [x] **Step 7: Verify history schema**
 
   Complete a transcription with post-processing enabled and confirm `history.jsonl` stores raw text and final text separately.
 
-- [ ] **Step 8: Verify out-of-scope items are not implemented**
+- [x] **Step 8: Verify out-of-scope items are not implemented**
 
   Confirm there is no macOS/Linux UI, no streaming transcription protocol, no speaker diarization, and no cloud sync.
 
-- [ ] **Step 9: Commit verification fixes**
+  Verification note: `src/Bisik.csproj` targets `net8.0-windows` with `UseWindowsForms=true`, so there is no macOS/Linux UI implementation. Repository search found no implemented WebSocket/streaming transcription path, no speaker diarization feature, and no cloud sync feature; remaining hits are spec/AGENTS guardrails or unrelated path-segment variable names.
+
+- [x] **Step 9: Commit verification fixes**
 
   If fixes were needed, run:
 

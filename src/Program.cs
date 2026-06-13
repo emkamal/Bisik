@@ -11,7 +11,9 @@ static class Program
 {
     private const string SingleInstanceMutexName = @"Global\Bisik.SingleInstance";
     private const int MainHotkeyId = 0x4249;
+    private static readonly object GlobalExceptionHandlerLock = new();
     private static Mutex? _singleInstanceMutex;
+    private static Action<Exception, string>? _runtimeExceptionHandler;
 
     [STAThread]
     static void Main()
@@ -27,7 +29,20 @@ static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ApplicationExit += HandleApplicationExit;
+        Application.ThreadException += (_, args) => HandleUnhandledException(args.Exception, "UI thread");
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            var exception = args.ExceptionObject as Exception ??
+                new InvalidOperationException("An unknown unhandled exception terminated the app domain.");
+            HandleUnhandledException(exception, "AppDomain");
+        };
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            HandleUnhandledException(args.Exception, "TaskScheduler");
+            args.SetObserved();
+        };
 
         // Start the message loop from an application context so the tray shell can own app lifetime later.
         Application.Run(new BisikApplicationContext());
@@ -38,6 +53,37 @@ static class Program
         _singleInstanceMutex?.ReleaseMutex();
         _singleInstanceMutex?.Dispose();
         _singleInstanceMutex = null;
+    }
+
+    private static void HandleUnhandledException(Exception exception, string source)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        Action<Exception, string>? runtimeHandler;
+        lock (GlobalExceptionHandlerLock)
+        {
+            runtimeHandler = _runtimeExceptionHandler;
+        }
+
+        if (runtimeHandler is not null)
+        {
+            runtimeHandler(exception, source);
+            return;
+        }
+
+        try
+        {
+            new ErrorLogger().Log(WrapUnhandledException(exception, source));
+        }
+        catch
+        {
+            // Logging should never be able to trigger a second fatal exception path.
+        }
+    }
+
+    private static Exception WrapUnhandledException(Exception exception, string source)
+    {
+        return new InvalidOperationException($"Unhandled {source} exception.", exception);
     }
 
     private sealed class BisikApplicationContext : ApplicationContext
@@ -126,57 +172,76 @@ static class Program
                 onExit: ExitThread,
                 onLanguageSelected: static _ => { },
                 onTogglePostProcessor: static _ => { });
+
+            lock (GlobalExceptionHandlerLock)
+            {
+                _runtimeExceptionHandler = HandleRuntimeException;
+            }
         }
 
         private void ShowSettings()
         {
-            if (_settingsForm is null || _settingsForm.IsDisposed)
+            try
             {
-                _settingsForm = new SettingsForm(
-                    audioRecorder: _audioRecorder,
-                    transcriptionService: _transcriptionService,
-                    settingsManager: _settingsManager);
-                _settingsForm.FormClosed += (_, _) => _settingsForm = null;
-                _settingsForm.Show();
-                return;
-            }
+                if (_settingsForm is null || _settingsForm.IsDisposed)
+                {
+                    _settingsForm = new SettingsForm(
+                        audioRecorder: _audioRecorder,
+                        transcriptionService: _transcriptionService,
+                        settingsManager: _settingsManager);
+                    _settingsForm.FormClosed += (_, _) => _settingsForm = null;
+                    _settingsForm.Show();
+                    return;
+                }
 
-            if (!_settingsForm.Visible)
+                if (!_settingsForm.Visible)
+                {
+                    _settingsForm.Show();
+                }
+
+                if (_settingsForm.WindowState == FormWindowState.Minimized)
+                {
+                    _settingsForm.WindowState = FormWindowState.Normal;
+                }
+
+                _settingsForm.BringToFront();
+                _settingsForm.Activate();
+            }
+            catch (Exception exception)
             {
-                _settingsForm.Show();
+                HandleRuntimeException(exception, "Settings window");
             }
-
-            if (_settingsForm.WindowState == FormWindowState.Minimized)
-            {
-                _settingsForm.WindowState = FormWindowState.Normal;
-            }
-
-            _settingsForm.BringToFront();
-            _settingsForm.Activate();
         }
 
         private void ShowHistory()
         {
-            if (_historyForm is null || _historyForm.IsDisposed)
+            try
             {
-                _historyForm = new HistoryForm(_historyLogger);
-                _historyForm.FormClosed += (_, _) => _historyForm = null;
-                _historyForm.Show();
-                return;
-            }
+                if (_historyForm is null || _historyForm.IsDisposed)
+                {
+                    _historyForm = new HistoryForm(_historyLogger);
+                    _historyForm.FormClosed += (_, _) => _historyForm = null;
+                    _historyForm.Show();
+                    return;
+                }
 
-            if (!_historyForm.Visible)
+                if (!_historyForm.Visible)
+                {
+                    _historyForm.Show();
+                }
+
+                if (_historyForm.WindowState == FormWindowState.Minimized)
+                {
+                    _historyForm.WindowState = FormWindowState.Normal;
+                }
+
+                _historyForm.BringToFront();
+                _historyForm.Activate();
+            }
+            catch (Exception exception)
             {
-                _historyForm.Show();
+                HandleRuntimeException(exception, "History window");
             }
-
-            if (_historyForm.WindowState == FormWindowState.Minimized)
-            {
-                _historyForm.WindowState = FormWindowState.Normal;
-            }
-
-            _historyForm.BringToFront();
-            _historyForm.Activate();
         }
 
         protected override void ExitThreadCore()
@@ -196,7 +261,44 @@ static class Program
             _shutdownCancellation.Dispose();
             _messageWindow.Dispose();
             _trayIcon.Dispose();
+            lock (GlobalExceptionHandlerLock)
+            {
+                if (_runtimeExceptionHandler == HandleRuntimeException)
+                {
+                    _runtimeExceptionHandler = null;
+                }
+            }
             base.ExitThreadCore();
+        }
+
+        private void HandleRuntimeException(Exception exception, string source)
+        {
+            var wrappedException = WrapUnhandledException(exception, source);
+
+            try
+            {
+                _errorLogger.Log(wrappedException);
+            }
+            catch
+            {
+                // Avoid cascading failures if the error log path itself is unavailable.
+            }
+
+            try
+            {
+                _overlayWindow.HideOverlay();
+                _trayIcon.SetState(TrayIconState.Idle);
+                _trayIcon.ShowBalloon(
+                    title: "Bisik Error",
+                    message: string.IsNullOrWhiteSpace(exception.Message)
+                        ? $"An unhandled {source} error occurred."
+                        : exception.Message,
+                    icon: ToolTipIcon.Error);
+            }
+            catch
+            {
+                // Best effort only; logging is the primary fallback.
+            }
         }
 
         private async Task HandleRegisteredHotkeyAsync()

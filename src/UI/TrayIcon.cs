@@ -115,6 +115,14 @@ public sealed class TrayIcon : IDisposable
         }
     }
 
+    public void ShowBalloon(string title, string message, ToolTipIcon icon = ToolTipIcon.Info)
+    {
+        _notifyIcon.BalloonTipTitle = title;
+        _notifyIcon.BalloonTipText = message;
+        _notifyIcon.BalloonTipIcon = icon;
+        _notifyIcon.ShowBalloonTip(4000);
+    }
+
     public void Dispose()
     {
         _notifyIcon.Visible = false;
