@@ -802,43 +802,43 @@
 - Modify: `src/Core/TranscriptionService.cs`
 - Modify: `src/Core/OutputHandler.cs`
 
-- [ ] **Step 1: Wire dependencies in `Program.cs`**
+- [x] **Step 1: Wire dependencies in `Program.cs`**
 
   Construct settings, history, error logger, audio recorder, hotkey manager, transcription service, output handler, sound feedback, tray icon, settings form factory, and history form factory.
 
-- [ ] **Step 2: Wire push-to-talk flow**
+- [x] **Step 2: Wire push-to-talk flow**
 
   Hotkey press starts recording and recording indicator. Hotkey release stops recording, switches tray state to transcribing, runs transcription, outputs final text, logs history, and returns to idle.
 
-- [ ] **Step 3: Wire toggle flow**
+- [x] **Step 3: Wire toggle flow**
 
   First hotkey press starts recording. Second press stops and transcribes.
 
-- [ ] **Step 4: Wire VAD flow**
+- [x] **Step 4: Wire VAD flow**
 
   Hotkey toggles VAD listening. Audio level state starts recording on speech and stops after configured silence.
 
-- [ ] **Step 5: Wire error notification**
+- [x] **Step 5: Wire error notification**
 
   On failed transcription, show a tray balloon notification with a concise error reason and do not auto-type anything.
 
-- [ ] **Step 6: Wire cancellation and shutdown**
+- [x] **Step 6: Wire cancellation and shutdown**
 
   Exit should unregister hotkeys, stop recording/listening, dispose tray icon, and cancel in-flight transcription cleanly.
 
-- [ ] **Step 7: Manual end-to-end test with clipboard output**
+- [x] **Step 7: Manual end-to-end test with clipboard output**
 
   Configure a provider, select Clipboard output, record a short phrase, and verify clipboard receives text.
 
-- [ ] **Step 8: Manual end-to-end test with popup output**
+- [x] **Step 8: Manual end-to-end test with popup output**
 
   Switch to Popup output, record a short phrase, and verify the review popup can copy/dismiss text.
 
-- [ ] **Step 9: Manual end-to-end test with auto-type output**
+- [x] **Step 9: Manual end-to-end test with auto-type output**
 
   Open Notepad, switch to Auto-type output, record a short phrase, and verify text appears at the cursor.
 
-- [ ] **Step 10: Commit end-to-end wiring**
+- [x] **Step 10: Commit end-to-end wiring**
 
   Run:
 

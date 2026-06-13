@@ -43,12 +43,14 @@ public sealed class AudioRecorder : IDisposable
 {
     private readonly string _defaultOutputDirectory;
     private WaveInEvent? _waveIn;
+    private WaveInEvent? _monitorWaveIn;
     private MemoryStream? _bufferStream;
     private WaveFileWriter? _waveWriter;
     private TaskCompletionSource<Exception?>? _recordingStopped;
     private AudioSettings _settings;
     private string? _pendingOutputPath;
     private WaveFormat? _captureFormat;
+    private Action<double, int>? _monitorLevelCallback;
 
     public AudioRecorder()
         : this(settings: null, outputDirectory: null)
@@ -131,6 +133,47 @@ public sealed class AudioRecorder : IDisposable
         }
     }
 
+    public void StartVoiceActivityMonitoring(Action<double, int> onLevelSample)
+    {
+        ArgumentNullException.ThrowIfNull(onLevelSample);
+
+        if (_monitorWaveIn is not null)
+        {
+            throw new InvalidOperationException("Voice activity monitoring is already active.");
+        }
+
+        if (State != RecordingState.Idle)
+        {
+            throw new InvalidOperationException("Voice activity monitoring cannot start while recording is active.");
+        }
+
+        var sampleRate = _settings.SampleRate > 0 ? _settings.SampleRate : 16000;
+        _monitorLevelCallback = onLevelSample;
+        _monitorWaveIn = new WaveInEvent
+        {
+            DeviceNumber = ResolveDeviceNumber(_settings.DeviceId),
+            WaveFormat = new WaveFormat(sampleRate, 16, 1),
+            BufferMilliseconds = 100,
+            NumberOfBuffers = 3,
+        };
+        _monitorWaveIn.DataAvailable += HandleMonitorDataAvailable;
+        _monitorWaveIn.StartRecording();
+    }
+
+    public void StopVoiceActivityMonitoring()
+    {
+        if (_monitorWaveIn is null)
+        {
+            return;
+        }
+
+        _monitorWaveIn.DataAvailable -= HandleMonitorDataAvailable;
+        _monitorWaveIn.StopRecording();
+        _monitorWaveIn.Dispose();
+        _monitorWaveIn = null;
+        _monitorLevelCallback = null;
+    }
+
     public async Task<RecordedAudio> StopRecordingAsync(CancellationToken cancellationToken)
     {
         if (!TryTransition(AudioRecorderSignal.Stop))
@@ -173,6 +216,7 @@ public sealed class AudioRecorder : IDisposable
 
     public void Dispose()
     {
+        StopVoiceActivityMonitoring();
         CleanupCaptureResources();
         GC.SuppressFinalize(this);
     }
@@ -246,6 +290,13 @@ public sealed class AudioRecorder : IDisposable
     private void HandleRecordingStopped(object? sender, StoppedEventArgs args)
     {
         _recordingStopped?.TrySetResult(args.Exception);
+    }
+
+    private void HandleMonitorDataAvailable(object? sender, WaveInEventArgs args)
+    {
+        var samples = AudioRecorderLogic.ReadPcm16Samples(args.Buffer, args.BytesRecorded);
+        var level = AudioRecorderLogic.CalculateLevel(samples);
+        _monitorLevelCallback?.Invoke(level, (_monitorWaveIn?.BufferMilliseconds).GetValueOrDefault(100));
     }
 
     private void CleanupCaptureResources()
