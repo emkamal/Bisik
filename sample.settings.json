@@ -1,0 +1,45 @@
+{
+  "triggerMode": "push-to-talk",
+  "hotkey": "Ctrl+Win",
+  "outputMode": "auto-type",
+  "indicatorStyle": "bar-overlay",
+  "defaultLanguage": "auto",
+  "quickLanguages": [
+    "en",
+    "id",
+    "auto"
+  ],
+  "launchAtStartup": false,
+  "soundEnabled": true,
+  "historyEnabled": true,
+  "provider": {
+    "type": "azure-openai",
+    "endpoint": "https://your-resource.openai.azure.com/",
+    "apiKey": "YOUR_API_KEY",
+    "deploymentName": "your-whisper-deployment",
+    "apiVersion": "2024-06-01",
+    "model": "whisper-1"
+  },
+  "audio": {
+    "deviceId": null,
+    "format": "wav",
+    "sampleRate": 16000,
+    "vadSilenceThreshold": 0.01,
+    "vadMinSpeechMs": 300
+  },
+  "postProcessor": {
+    "enabled": false,
+    "provider": {
+      "type": "openai",
+      "endpoint": "",
+      "apiKey": "YOUR_POST_PROCESSOR_API_KEY",
+      "deploymentName": "",
+      "apiVersion": "2024-06-01",
+      "model": "gpt-4o-mini"
+    },
+    "model": "gpt-4o-mini",
+    "targetLanguage": "English",
+    "presetName": "clean-up",
+    "systemPrompt": "You are a transcription editor. Fix grammar, punctuation, and remove filler words. Return only the cleaned text, nothing else."
+  }
+}

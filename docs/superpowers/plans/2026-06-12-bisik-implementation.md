@@ -855,23 +855,23 @@
 - Create: `sample.settings.json`
 - Create: `README.md`
 
-- [ ] **Step 1: Create sample settings file**
+- [x] **Step 1: Create sample settings file**
 
   Add the schema from `spec.md` with placeholder provider values, quick languages, audio defaults, and post-processor defaults.
 
-- [ ] **Step 2: Document setup**
+- [x] **Step 2: Document setup**
 
   In `README.md`, document prerequisites, restore/build/test commands, first launch behavior, and where settings/history/error logs live.
 
-- [ ] **Step 3: Document provider configuration**
+- [x] **Step 3: Document provider configuration**
 
   Add concise setup notes for Azure OpenAI, OpenAI, OpenRouter, local Whisper-compatible servers, and custom endpoints.
 
-- [ ] **Step 4: Document post-processing presets**
+- [x] **Step 4: Document post-processing presets**
 
   Explain cleanup, homogenize-to-English, homogenize-to-Indonesian, translate-to-language, and custom prompt modes.
 
-- [ ] **Step 5: Document publish command**
+- [x] **Step 5: Document publish command**
 
   Include:
 
@@ -879,7 +879,7 @@
   dotnet publish src/Bisik.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
   ```
 
-- [ ] **Step 6: Commit docs**
+- [x] **Step 6: Commit docs**
 
   Run:
 
