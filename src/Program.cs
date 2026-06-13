@@ -39,14 +39,17 @@ static class Program
     {
         private readonly TrayIcon _trayIcon;
         private readonly SettingsManager _settingsManager;
+        private readonly HistoryLogger _historyLogger;
         private SettingsForm? _settingsForm;
+        private HistoryForm? _historyForm;
 
         public BisikApplicationContext()
         {
             _settingsManager = new SettingsManager();
+            _historyLogger = new HistoryLogger();
             _trayIcon = new TrayIcon(
                 onOpenSettings: ShowSettings,
-                onOpenHistory: static () => { },
+                onOpenHistory: ShowHistory,
                 onShowAbout: static () => MessageBox.Show(
                     "Bisik",
                     "About Bisik",
@@ -77,13 +80,38 @@ static class Program
                 _settingsForm.WindowState = FormWindowState.Normal;
             }
 
-            _settingsForm.BringToFront();
-            _settingsForm.Activate();
+                _settingsForm.BringToFront();
+                _settingsForm.Activate();
+        }
+
+        private void ShowHistory()
+        {
+            if (_historyForm is null || _historyForm.IsDisposed)
+            {
+                _historyForm = new HistoryForm(_historyLogger);
+                _historyForm.FormClosed += (_, _) => _historyForm = null;
+                _historyForm.Show();
+                return;
+            }
+
+            if (!_historyForm.Visible)
+            {
+                _historyForm.Show();
+            }
+
+            if (_historyForm.WindowState == FormWindowState.Minimized)
+            {
+                _historyForm.WindowState = FormWindowState.Normal;
+            }
+
+            _historyForm.BringToFront();
+            _historyForm.Activate();
         }
 
         protected override void ExitThreadCore()
         {
             _settingsForm?.Close();
+            _historyForm?.Close();
             _trayIcon.Dispose();
             base.ExitThreadCore();
         }

@@ -754,35 +754,35 @@
 **Files:**
 - Create: `src/UI/HistoryForm.cs`
 
-- [ ] **Step 1: Build history list UI**
+- [x] **Step 1: Build history list UI**
 
   Show timestamp, provider, language, duration, raw text, and final text where available.
 
-- [ ] **Step 2: Add search/filter**
+- [x] **Step 2: Add search/filter**
 
   Filter entries by text, provider, or language without rewriting the history file.
 
-- [ ] **Step 3: Add copy entry action**
+- [x] **Step 3: Add copy entry action**
 
   Copy final text when present, otherwise raw text.
 
-- [ ] **Step 4: Add delete entry action**
+- [x] **Step 4: Add delete entry action**
 
   Remove one entry by rewriting the JSONL file without that record.
 
-- [ ] **Step 5: Add clear all action**
+- [x] **Step 5: Add clear all action**
 
   Confirm once, then clear the JSONL file.
 
-- [ ] **Step 6: Add export to `.txt` action**
+- [x] **Step 6: Add export to `.txt` action**
 
   Export visible entries to a user-selected `.txt` file.
 
-- [ ] **Step 7: Manual smoke test history UI**
+- [x] **Step 7: Manual smoke test history UI**
 
   Seed a few history entries, open History from tray, search, copy, delete, clear, and export.
 
-- [ ] **Step 8: Commit history UI**
+- [x] **Step 8: Commit history UI**
 
   Run:
 
