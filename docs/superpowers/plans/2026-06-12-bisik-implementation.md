@@ -698,47 +698,47 @@
 **Files:**
 - Create: `src/UI/SettingsForm.cs`
 
-- [ ] **Step 1: Create tabbed settings form**
+- [x] **Step 1: Create tabbed settings form**
 
   Add General, Provider, Audio, Language, History, and Post-Processor tabs.
 
-- [ ] **Step 2: Implement General tab**
+- [x] **Step 2: Implement General tab**
 
   Add launch-at-startup toggle, trigger mode dropdown, click-to-capture hotkey control, output mode dropdown, and recording indicator style dropdown.
 
-- [ ] **Step 3: Implement Provider tab**
+- [x] **Step 3: Implement Provider tab**
 
   Add provider selector, dynamic fields for each provider, API key fields, and a Test Connection button.
 
-- [ ] **Step 4: Implement 3-second test transcription**
+- [x] **Step 4: Implement 3-second test transcription**
 
   Test Connection records 3 seconds, sends it through the selected provider, and shows a non-blocking success or failure message.
 
-- [ ] **Step 5: Implement Audio tab**
+- [x] **Step 5: Implement Audio tab**
 
   Add microphone selector, upload format dropdown, sample rate input, VAD silence threshold input, and minimum speech duration input.
 
-- [ ] **Step 6: Implement Language tab**
+- [x] **Step 6: Implement Language tab**
 
   Add default language selector and editable quick-switch language list.
 
-- [ ] **Step 7: Implement History tab**
+- [x] **Step 7: Implement History tab**
 
   Add history enabled toggle, current file path display, open location button, and clear history button.
 
-- [ ] **Step 8: Implement Post-Processor tab**
+- [x] **Step 8: Implement Post-Processor tab**
 
   Add enabled toggle, provider fields, model name, preset selector, target language for translate preset, and system prompt textarea.
 
-- [ ] **Step 9: Save and reload settings**
+- [x] **Step 9: Save and reload settings**
 
   Wire OK/Apply/Cancel behavior through `SettingsManager`. Saving must encrypt API keys.
 
-- [ ] **Step 10: Manual smoke test settings**
+- [x] **Step 10: Manual smoke test settings**
 
   Run the app, open Settings from the tray, change each tab, save, close, reopen, and verify values persist in `%APPDATA%\Bisik\settings.json`.
 
-- [ ] **Step 11: Commit settings UI**
+- [x] **Step 11: Commit settings UI**
 
   Run:
 

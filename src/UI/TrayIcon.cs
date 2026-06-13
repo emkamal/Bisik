@@ -82,6 +82,7 @@ public sealed class TrayIcon : IDisposable
             Icon = _icons[TrayIconState.Idle],
             ContextMenuStrip = _contextMenu,
         };
+        _notifyIcon.DoubleClick += (_, _) => onOpenSettings();
     }
 
     public NotifyIcon NotifyIcon => _notifyIcon;

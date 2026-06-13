@@ -1,4 +1,5 @@
 using Bisik.UI;
+using Bisik.Core;
 
 namespace Bisik;
 
@@ -37,11 +38,14 @@ static class Program
     private sealed class BisikApplicationContext : ApplicationContext
     {
         private readonly TrayIcon _trayIcon;
+        private readonly SettingsManager _settingsManager;
+        private SettingsForm? _settingsForm;
 
         public BisikApplicationContext()
         {
+            _settingsManager = new SettingsManager();
             _trayIcon = new TrayIcon(
-                onOpenSettings: static () => { },
+                onOpenSettings: ShowSettings,
                 onOpenHistory: static () => { },
                 onShowAbout: static () => MessageBox.Show(
                     "Bisik",
@@ -53,8 +57,33 @@ static class Program
                 onTogglePostProcessor: static _ => { });
         }
 
+        private void ShowSettings()
+        {
+            if (_settingsForm is null || _settingsForm.IsDisposed)
+            {
+                _settingsForm = new SettingsForm(audioRecorder: null, transcriptionService: null, settingsManager: _settingsManager);
+                _settingsForm.FormClosed += (_, _) => _settingsForm = null;
+                _settingsForm.Show();
+                return;
+            }
+
+            if (!_settingsForm.Visible)
+            {
+                _settingsForm.Show();
+            }
+
+            if (_settingsForm.WindowState == FormWindowState.Minimized)
+            {
+                _settingsForm.WindowState = FormWindowState.Normal;
+            }
+
+            _settingsForm.BringToFront();
+            _settingsForm.Activate();
+        }
+
         protected override void ExitThreadCore()
         {
+            _settingsForm?.Close();
             _trayIcon.Dispose();
             base.ExitThreadCore();
         }
