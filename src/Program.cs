@@ -88,7 +88,7 @@ static class Program
 
     private sealed class BisikApplicationContext : ApplicationContext
     {
-        private readonly AppSettings _settings;
+        private AppSettings _settings;
         private readonly HttpClient _httpClient;
         private readonly TrayIcon _trayIcon;
         private readonly SettingsManager _settingsManager;
@@ -97,14 +97,14 @@ static class Program
         private readonly AudioRecorder _audioRecorder;
         private readonly HotkeyManager _hotkeyManager;
         private readonly IPostProcessor _postProcessor;
-        private readonly TranscriptionService _transcriptionService;
+        private TranscriptionService _transcriptionService;
         private readonly OutputHandler _outputHandler;
         private readonly SoundFeedback _soundFeedback;
         private readonly StartupRegistration _startupRegistration;
         private readonly OverlayWindow _overlayWindow;
         private readonly HiddenMessageWindow _messageWindow;
         private readonly System.Windows.Forms.Timer _pushToTalkReleaseTimer;
-        private readonly HotkeyGesture _hotkeyGesture;
+        private HotkeyGesture _hotkeyGesture;
         private readonly InputSimulator _inputSimulator;
         private readonly CancellationTokenSource _shutdownCancellation = new();
         private VoiceActivityTracker? _vadTracker;
@@ -189,6 +189,9 @@ static class Program
                         audioRecorder: _audioRecorder,
                         transcriptionService: _transcriptionService,
                         settingsManager: _settingsManager);
+                    // React immediately to both Apply and OK so changes like deployment name,
+                    // hotkey, endpoint, etc. take effect without requiring the form to close.
+                    _settingsForm.SettingsApplied += ApplySettingsAndRebuildProviders;
                     _settingsForm.FormClosed += (_, _) => _settingsForm = null;
                     _settingsForm.Show();
                     return;
@@ -210,6 +213,32 @@ static class Program
             catch (Exception exception)
             {
                 HandleRuntimeException(exception, "Settings window");
+            }
+        }
+
+        private void ApplySettingsAndRebuildProviders(AppSettings fresh)
+        {
+            _settings = fresh;
+            // Rebuild the provider map so the deployment name and other provider fields
+            // take effect immediately without requiring an application restart.
+            _transcriptionService = new TranscriptionService(
+                providers: BuildProviderMap(_httpClient, fresh),
+                postProcessor: _postProcessor,
+                historyLogger: _historyLogger,
+                errorLogger: _errorLogger,
+                playSuccess: _soundFeedback.PlaySuccess,
+                playError: _soundFeedback.PlayError);
+            _hotkeyManager.UnregisterAll();
+            try
+            {
+                _hotkeyGesture = HotkeyManager.ParseHotkey(fresh.Hotkey);
+                _hotkeyManager.Register(MainHotkeyId, _hotkeyGesture);
+            }
+            catch
+            {
+                // If the saved hotkey is invalid, fall back to the default.
+                _hotkeyGesture = HotkeyManager.ParseHotkey(new AppSettings().Hotkey);
+                _hotkeyManager.Register(MainHotkeyId, _hotkeyGesture);
             }
         }
 

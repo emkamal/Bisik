@@ -5,6 +5,9 @@ namespace Bisik.UI;
 
 public sealed class SettingsForm : Form
 {
+    /// <summary>Raised when settings are saved (via Apply or OK).</summary>
+    public event Action<AppSettings>? SettingsApplied;
+
     private readonly TabControl _tabs;
     private readonly Dictionary<ProviderType, Panel> _providerPanels = [];
     private readonly Dictionary<ProviderType, Dictionary<string, TextBox>> _providerFieldInputs = [];
@@ -1083,13 +1086,18 @@ public sealed class SettingsForm : Form
 
     private void SaveWithoutClosing()
     {
-        _settingsManager.Save(BuildSettingsFromForm());
+        var settings = BuildSettingsFromForm();
+        _settingsManager.Save(settings);
         LoadSettingsIntoForm(_settingsManager.Load());
+        SettingsApplied?.Invoke(settings);
     }
 
     private void SaveAndClose()
     {
-        SaveWithoutClosing();
+        var settings = BuildSettingsFromForm();
+        _settingsManager.Save(settings);
+        LoadSettingsIntoForm(_settingsManager.Load());
+        SettingsApplied?.Invoke(settings);
         DialogResult = DialogResult.OK;
         Close();
     }
@@ -1279,14 +1287,24 @@ public sealed class SettingsForm : Form
         }
 
         var keyCode = keyData & Keys.KeyCode;
-        if (IsModifierOnlyKey(keyCode))
+
+        // Win key (LWin/RWin) appears as a key code but should be treated as a modifier.
+        // Detect it here and add the Win modifier flag so the display and registration
+        // work correctly. We keep LWin/RWin as the keyCode because RegisterHotKey
+        // supports using them as virtual keys alongside modifier flags.
+        if (keyCode is Keys.LWin or Keys.RWin)
+        {
+            modifiers |= HotkeyModifiers.Win;
+        }
+        // Reject bare modifier keys (Ctrl, Shift, Alt, Win alone) - they are not valid hotkeys.
+        else if (IsModifierOnlyKey(keyCode))
         {
             return null;
         }
 
-        var gesture = new HotkeyGesture(modifiers, keyCode);
-        return HotkeyManager.IsSupportedHotkey(gesture)
-            ? HotkeyManager.FormatHotkey(gesture)
+        var combined = new HotkeyGesture(modifiers, keyCode);
+        return HotkeyManager.IsSupportedHotkey(combined)
+            ? HotkeyManager.FormatHotkey(combined)
             : null;
     }
 
