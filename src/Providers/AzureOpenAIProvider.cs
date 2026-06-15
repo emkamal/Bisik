@@ -2,14 +2,16 @@ using Bisik.Models;
 
 namespace Bisik.Providers;
 
-public sealed class AzureOpenAIProvider(HttpClient httpClient, ProviderSettings settings)
+public sealed class AzureOpenAIProvider(HttpClient httpClient, ProviderSettings settings, IAzureRealtimeTranscriber? realtimeTranscriber = null)
     : OpenAICompatibleProviderBase(httpClient, settings)
 {
+    private readonly IAzureRealtimeTranscriber _realtimeTranscriber = realtimeTranscriber ?? new AzureRealtimeTranscriber(httpClient);
+
     public override string Name => "Azure OpenAI";
 
     public override ProviderType Type => ProviderType.AzureOpenAi;
 
-    public override Task<string> TranscribeAsync(string audioFilePath, string language, CancellationToken cancellationToken)
+    public override async Task<string> TranscribeAsync(string audioFilePath, string language, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(Settings.DeploymentName))
         {
@@ -30,6 +32,20 @@ public sealed class AzureOpenAIProvider(HttpClient httpClient, ProviderSettings 
             CreateApiKeyHeader("api-key", Settings.ApiKey),
             ToHeaders(Settings.ExtraHeaders));
 
-        return SendMultipartRequestAsync(requestUri, audioFilePath, language, model, headers, cancellationToken);
+        try
+        {
+            return await SendMultipartRequestAsync(requestUri, audioFilePath, language, model, headers, cancellationToken);
+        }
+        catch (HttpRequestException exception) when (ShouldUseRealtimeFallback(exception))
+        {
+            return await _realtimeTranscriber.TranscribeAsync(audioFilePath, language, Settings, cancellationToken);
+        }
+    }
+
+    private static bool ShouldUseRealtimeFallback(HttpRequestException exception)
+    {
+        return exception.StatusCode == System.Net.HttpStatusCode.BadRequest &&
+            exception.Message.Contains("OperationNotSupported", StringComparison.OrdinalIgnoreCase) &&
+            exception.Message.Contains("audioTranscriptions", StringComparison.OrdinalIgnoreCase);
     }
 }

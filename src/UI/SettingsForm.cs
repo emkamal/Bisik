@@ -124,10 +124,13 @@ public sealed class SettingsForm : Form
             Dock = DockStyle.Left,
             Width = 220,
             ReadOnly = true,
+            ShortcutsEnabled = false,
         };
+        _hotkeyTextBox.PreviewKeyDown += HandleHotkeyPreviewKeyDown;
+        _hotkeyTextBox.KeyDown += HandleHotkeyKeyDown;
         var hotkeyHintLabel = new Label
         {
-            Text = "Click-to-capture hotkey binding is added in the next step.",
+            Text = "Click the field, then press the hotkey combination you want Bisik to use.",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
             Margin = new Padding(12, 8, 3, 3),
@@ -219,7 +222,8 @@ public sealed class SettingsForm : Form
             ("Endpoint URL", settings.Provider.Endpoint),
             ("API Key", settings.Provider.ApiKey),
             ("Deployment Name", settings.Provider.DeploymentName),
-            ("API Version", settings.Provider.ApiVersion));
+            ("API Version", settings.Provider.ApiVersion),
+            ("Realtime Calls Endpoint (optional)", GetExtraHeaderValue(settings.Provider, "Bisik-Realtime-Calls-Endpoint")));
         var openAiPanel = CreateProviderFieldsPanel(
             ProviderType.OpenAi,
             ("API Key", string.Empty),
@@ -941,6 +945,7 @@ public sealed class SettingsForm : Form
                 DeploymentName = deploymentTextBox?.Text ?? string.Empty,
                 ApiVersion = apiVersionTextBox?.Text ?? "2024-06-01",
                 Model = modelTextBox?.Text ?? optionalModelTextBox?.Text,
+                ExtraHeaders = BuildAzureProviderExtraHeaders(fields),
             };
         }
 
@@ -1104,6 +1109,7 @@ public sealed class SettingsForm : Form
         SetTextBox(fields, "API Version", provider.ApiVersion);
         SetTextBox(fields, "Model", provider.Model ?? string.Empty);
         SetTextBox(fields, "Model (optional)", provider.Model ?? string.Empty);
+        SetTextBox(fields, "Realtime Calls Endpoint (optional)", GetExtraHeaderValue(provider, "Bisik-Realtime-Calls-Endpoint"));
     }
 
     private void ApplyPostProcessorProviderFields(PostProcessorSettings settings)
@@ -1130,6 +1136,7 @@ public sealed class SettingsForm : Form
                 DeploymentName = GetFieldText(fields, "Deployment Name"),
                 ApiVersion = GetFieldText(fields, "API Version", "2024-06-01"),
                 Model = GetFieldText(fields, "Model", GetFieldText(fields, "Model (optional)")),
+                ExtraHeaders = BuildAzureProviderExtraHeaders(fields),
             };
         }
 
@@ -1168,6 +1175,28 @@ public sealed class SettingsForm : Form
             : fallback ?? string.Empty;
     }
 
+    private static Dictionary<string, string>? BuildAzureProviderExtraHeaders(Dictionary<string, TextBox> fields)
+    {
+        var realtimeCallsEndpoint = GetFieldText(fields, "Realtime Calls Endpoint (optional)");
+        if (string.IsNullOrWhiteSpace(realtimeCallsEndpoint))
+        {
+            return null;
+        }
+
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Bisik-Realtime-Calls-Endpoint"] = realtimeCallsEndpoint,
+        };
+    }
+
+    private static string GetExtraHeaderValue(ProviderSettings provider, string headerName)
+    {
+        return provider.ExtraHeaders is not null &&
+            provider.ExtraHeaders.TryGetValue(headerName, out var value)
+            ? value
+            : string.Empty;
+    }
+
     private static void SetComboSelection<T>(ComboBox? comboBox, T value)
     {
         if (comboBox is null)
@@ -1194,6 +1223,79 @@ public sealed class SettingsForm : Form
     private static decimal ClampDecimal(decimal value, decimal minimum, decimal maximum)
     {
         return Math.Min(maximum, Math.Max(minimum, value));
+    }
+
+    private void HandleHotkeyPreviewKeyDown(object? sender, PreviewKeyDownEventArgs eventArgs)
+    {
+        if (sender is not TextBox)
+        {
+            return;
+        }
+
+        // Space and Tab are commonly used in capture bindings and should reach KeyDown unchanged.
+        if (eventArgs.KeyCode is Keys.Space or Keys.Tab)
+        {
+            eventArgs.IsInputKey = true;
+        }
+    }
+
+    private void HandleHotkeyKeyDown(object? sender, KeyEventArgs eventArgs)
+    {
+        if (sender is not TextBox textBox)
+        {
+            return;
+        }
+
+        var captured = BuildCapturedHotkeyText(eventArgs.KeyData);
+        if (captured is null)
+        {
+            eventArgs.SuppressKeyPress = true;
+            eventArgs.Handled = true;
+            return;
+        }
+
+        textBox.Text = captured;
+        textBox.SelectionStart = textBox.TextLength;
+        eventArgs.SuppressKeyPress = true;
+        eventArgs.Handled = true;
+    }
+
+    private static string? BuildCapturedHotkeyText(Keys keyData)
+    {
+        HotkeyModifiers modifiers = HotkeyModifiers.None;
+        if ((keyData & Keys.Control) == Keys.Control)
+        {
+            modifiers |= HotkeyModifiers.Ctrl;
+        }
+
+        if ((keyData & Keys.Shift) == Keys.Shift)
+        {
+            modifiers |= HotkeyModifiers.Shift;
+        }
+
+        if ((keyData & Keys.Alt) == Keys.Alt)
+        {
+            modifiers |= HotkeyModifiers.Alt;
+        }
+
+        var keyCode = keyData & Keys.KeyCode;
+        if (IsModifierOnlyKey(keyCode))
+        {
+            return null;
+        }
+
+        var gesture = new HotkeyGesture(modifiers, keyCode);
+        return HotkeyManager.IsSupportedHotkey(gesture)
+            ? HotkeyManager.FormatHotkey(gesture)
+            : null;
+    }
+
+    private static bool IsModifierOnlyKey(Keys keyCode)
+    {
+        return keyCode is Keys.ControlKey or Keys.LControlKey or Keys.RControlKey or
+            Keys.ShiftKey or Keys.LShiftKey or Keys.RShiftKey or
+            Keys.Menu or Keys.LMenu or Keys.RMenu or
+            Keys.LWin or Keys.RWin;
     }
 
     // Use a modeless form here so the test result doesn't block the Settings window workflow.
