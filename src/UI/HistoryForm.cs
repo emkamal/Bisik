@@ -124,7 +124,9 @@ public sealed class HistoryForm : Form
         _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.Timestamp), "Timestamp", 180));
         _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.Provider), "Provider", 130));
         _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.Language), "Language", 110));
-        _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.DurationMs), "Duration (ms)", 110));
+        _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.DurationMs), "Total (ms)", 100));
+        _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.TranscriptionDurationMs), "Transcription (ms)", 130));
+        _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.PostProcessingDurationMs), "Post-Proc (ms)", 120));
         _grid.Columns.Add(CreateFillColumn(nameof(HistoryRow.RawText), "Raw Text"));
         _grid.Columns.Add(CreateFillColumn(nameof(HistoryRow.Text), "Final Text"));
 
@@ -187,6 +189,8 @@ public sealed class HistoryForm : Form
                 Provider: entry.Provider,
                 Language: entry.Language,
                 DurationMs: entry.DurationMs.ToString(),
+                TranscriptionDurationMs: entry.TranscriptionDurationMs.ToString(),
+                PostProcessingDurationMs: entry.PostProcessingDurationMs.ToString(),
                 RawText: entry.RawText ?? string.Empty,
                 Text: entry.Text));
         }
@@ -354,7 +358,9 @@ public sealed class HistoryForm : Form
                 row.Provider,
                 row.Language,
                 long.TryParse(row.DurationMs, out var durationMs) ? durationMs : 0,
-                AudioFilePath: null))
+                AudioFilePath: null,
+                TranscriptionDurationMs: long.TryParse(row.TranscriptionDurationMs, out var transcriptionMs) ? transcriptionMs : 0,
+                PostProcessingDurationMs: long.TryParse(row.PostProcessingDurationMs, out var postProcMs) ? postProcMs : 0))
             .ToArray();
 
         await using var stream = new FileStream(dialog.FileName, FileMode.Create, FileAccess.Write, FileShare.Read);
@@ -372,6 +378,8 @@ public sealed class HistoryForm : Form
         string Provider,
         string Language,
         string DurationMs,
+        string TranscriptionDurationMs,
+        string PostProcessingDurationMs,
         string RawText,
         string Text);
 }

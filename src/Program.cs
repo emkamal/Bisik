@@ -144,6 +144,7 @@ static class Program
                 errorLogger: _errorLogger,
                 playSuccess: _soundFeedback.PlaySuccess,
                 playError: _soundFeedback.PlayError);
+            _transcriptionService.PhaseChanged += OnTranscriptionPhaseChanged;
             _outputHandler = new OutputHandler(
                 autoTypeSink: HandleAutoTypeOutput,
                 clipboardSink: HandleClipboardOutput,
@@ -237,6 +238,7 @@ static class Program
                 errorLogger: _errorLogger,
                 playSuccess: _soundFeedback.PlaySuccess,
                 playError: _soundFeedback.PlayError);
+            _transcriptionService.PhaseChanged += OnTranscriptionPhaseChanged;
             _hotkeyManager.UnregisterAll();
             try
             {
@@ -768,12 +770,39 @@ static class Program
             _realtimePartialTyped = false;
         }
 
+        private void OnTranscriptionPhaseChanged(ProcessingPhase phase)
+        {
+            if (_isShuttingDown)
+            {
+                return;
+            }
+
+            switch (phase)
+            {
+                case ProcessingPhase.Transcribing:
+                    _trayIcon.SetState(TrayIconState.Transcribing);
+                    _overlayWindow.ShowProcessingOverlay(OverlayProcessingPhase.Transcribing);
+                    break;
+
+                case ProcessingPhase.PostProcessing:
+                    _trayIcon.SetState(TrayIconState.PostProcessing);
+                    _overlayWindow.ShowProcessingOverlay(OverlayProcessingPhase.PostProcessing);
+                    break;
+
+                case ProcessingPhase.None:
+                    _overlayWindow.HideOverlay();
+                    _trayIcon.SetState(TrayIconState.Idle);
+                    break;
+            }
+        }
+
         private async Task CompleteRecordingAndTranscriptionAsync(bool restartVadMonitoring = true)
         {
             try
             {
+                // Show transcribing overlay immediately (PhaseChanged event will also fire from TranscriptionService)
+                _overlayWindow.ShowProcessingOverlay(OverlayProcessingPhase.Transcribing);
                 _trayIcon.SetState(TrayIconState.Transcribing);
-                _overlayWindow.HideOverlay();
                 var recordedAudio = await _audioRecorder.StopRecordingAsync(_shutdownCancellation.Token);
                 var result = await _transcriptionService.TranscribeAsync(
                     recordedAudio.FilePath,
@@ -801,6 +830,7 @@ static class Program
             }
             finally
             {
+                _overlayWindow.HideOverlay();
                 _trayIcon.SetState(TrayIconState.Idle);
 
                 if (restartVadMonitoring && _vadMonitoringEnabled)

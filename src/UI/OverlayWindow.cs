@@ -8,6 +8,13 @@ public enum OverlayWindowMode
     DotNearCursor,
     BarOverlay,
     TrayIconOnly,
+    Processing,
+}
+
+public enum OverlayProcessingPhase
+{
+    Transcribing,
+    PostProcessing,
 }
 
 public sealed class OverlayWindow : Form
@@ -18,6 +25,8 @@ public sealed class OverlayWindow : Form
     private const int BarScreenMargin = 14;
     private const int CursorOffsetX = 18;
     private const int CursorOffsetY = 18;
+    private const int ProcessingBarWidth = 260;
+    private const int ProcessingBarHeight = 40;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpShowWindow = 0x0040;
     private const int HwndTopMost = -1;
@@ -26,6 +35,10 @@ public sealed class OverlayWindow : Form
     private double _level;
     private float _pulsePhase;
     private bool _barAtBottom;
+    private OverlayProcessingPhase _processingPhase;
+    private Point _frozenDotLocation;
+    private bool _dotFrozen;
+    private string _processingLabel = string.Empty;
 
     public OverlayWindow()
     {
@@ -82,6 +95,16 @@ public sealed class OverlayWindow : Form
             return;
         }
 
+        if (mode == OverlayWindowMode.Processing)
+        {
+            Mode = mode;
+            // Always use the larger bar size for processing to show text labels
+            Size = new Size(ProcessingBarWidth, ProcessingBarHeight);
+            UpdateProcessingLocation();
+            Invalidate();
+            return;
+        }
+
         Mode = mode;
 
         switch (mode)
@@ -125,10 +148,32 @@ public sealed class OverlayWindow : Form
         ShowOverlay();
     }
 
+    public void ShowProcessingOverlay(OverlayProcessingPhase phase)
+    {
+        _processingPhase = phase;
+        _processingLabel = phase == OverlayProcessingPhase.Transcribing
+            ? "Transcribing..."
+            : "Post-Processing...";
+
+        if (!_dotFrozen)
+        {
+            // Freeze the dot at the current cursor position on first call
+            _frozenDotLocation = Cursor.Position;
+            _dotFrozen = true;
+        }
+
+        SetMode(OverlayWindowMode.Processing);
+        _cursorFollowTimer.Stop();
+        _pulseTimer.Start();
+        ShowOverlay();
+    }
+
     public void HideOverlay()
     {
         _cursorFollowTimer.Stop();
         _pulseTimer.Stop();
+        _dotFrozen = false;
+        _processingLabel = string.Empty;
         Hide();
     }
 
@@ -145,6 +190,12 @@ public sealed class OverlayWindow : Form
         if (Mode == OverlayWindowMode.BarOverlay)
         {
             PaintBarOverlay(eventArgs.Graphics);
+            return;
+        }
+
+        if (Mode == OverlayWindowMode.Processing)
+        {
+            PaintProcessingOverlay(eventArgs.Graphics);
             return;
         }
     }
@@ -229,6 +280,26 @@ public sealed class OverlayWindow : Form
         }
     }
 
+    private void UpdateProcessingLocation()
+    {
+        var screen = Screen.FromPoint(_frozenDotLocation);
+        var x = screen.WorkingArea.Left + ((screen.WorkingArea.Width - Width) / 2);
+        var y = screen.WorkingArea.Bottom - Height - BarScreenMargin - 50;
+        Location = new Point(x, y);
+
+        if (Visible)
+        {
+            SetWindowPos(
+                Handle,
+                new IntPtr(HwndTopMost),
+                Left,
+                Top,
+                Width,
+                Height,
+                SwpNoActivate | SwpShowWindow);
+        }
+    }
+
     private void PaintDotOverlay(Graphics graphics)
     {
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -297,6 +368,72 @@ public sealed class OverlayWindow : Form
 
         var markerX = meterBounds.Left + (meterBounds.Width * (float)_level);
         graphics.FillEllipse(highlightBrush, markerX - 4f, meterBounds.Top - 2f, 8f, meterBounds.Height + 4f);
+    }
+
+    private void PaintProcessingOverlay(Graphics graphics)
+    {
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var isTranscribing = _processingPhase == OverlayProcessingPhase.Transcribing;
+
+        // Colors: amber for transcribing, teal for post-processing
+        var accentColor = isTranscribing
+            ? Color.FromArgb(208, 140, 36)   // Amber/gold
+            : Color.FromArgb(78, 154, 168);  // Teal
+
+        var accentLight = isTranscribing
+            ? Color.FromArgb(235, 190, 80)
+            : Color.FromArgb(130, 190, 200);
+
+        var accentDark = isTranscribing
+            ? Color.FromArgb(170, 100, 20)
+            : Color.FromArgb(50, 120, 135);
+
+        var bounds = new RectangleF(2, 2, ClientSize.Width - 4, ClientSize.Height - 4);
+
+        // Draw shell
+        using var shellBrush = new SolidBrush(Color.FromArgb(235, 30, 32, 35));
+        using var outlinePen = new Pen(Color.FromArgb(210, 72, 77, 86), 1.2f);
+        FillRoundedRectangle(graphics, shellBrush, bounds, 14f);
+        DrawRoundedRectangle(graphics, outlinePen, bounds, 14f);
+
+        // Draw spinning arc / ring animation
+        var center = new PointF(ClientSize.Width / 2f, ClientSize.Height / 2f);
+        var arcRadius = 7f;
+        var arcThickness = 2.5f;
+        var sweepAngle = 90f + (MathF.Sin(_pulsePhase) * 60f);
+        var startAngle = (_pulsePhase * 180f / MathF.PI) % 360f;
+
+        using var arcPen = new Pen(Color.FromArgb(220, accentColor), arcThickness);
+        graphics.DrawArc(
+            arcPen,
+            center.X - arcRadius,
+            center.Y - arcRadius - 8f,
+            arcRadius * 2f,
+            arcRadius * 2f,
+            startAngle,
+            sweepAngle);
+
+        // Draw the label text
+        using var labelBrush = new SolidBrush(Color.FromArgb(235, 239, 243));
+        using var labelFont = new Font("Segoe UI", 10f, FontStyle.Regular, GraphicsUnit.Point);
+        var textSize = graphics.MeasureString(_processingLabel, labelFont);
+        var textX = center.X - (textSize.Width / 2f);
+        var textY = center.Y - (textSize.Height / 2f) + 12f;
+        graphics.DrawString(_processingLabel, labelFont, labelBrush, textX, textY);
+
+        // Draw ellipsis animation (3 dots that cycle)
+        var dotCount = (int)(_pulsePhase * 3f / Math.PI) % 4;
+        using var dotBrush = new SolidBrush(accentLight);
+        for (var i = 0; i < dotCount; i++)
+        {
+            graphics.FillEllipse(
+                dotBrush,
+                textX + textSize.Width + 4f + (i * 6f),
+                textY + textSize.Height - 10f,
+                4f,
+                4f);
+        }
     }
 
     private static void FillRoundedRectangle(Graphics graphics, Brush brush, RectangleF bounds, float radius)

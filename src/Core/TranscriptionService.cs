@@ -1,8 +1,16 @@
+using System.Diagnostics;
 using Bisik.Models;
 using Bisik.PostProcessor;
 using Bisik.Providers;
 
 namespace Bisik.Core;
+
+public enum ProcessingPhase
+{
+    None,
+    Transcribing,
+    PostProcessing,
+}
 
 public sealed class TranscriptionService(
     IReadOnlyDictionary<ProviderType, ITranscriptionProvider> providers,
@@ -24,6 +32,8 @@ public sealed class TranscriptionService(
         throw new ArgumentNullException(nameof(playSuccess));
     private readonly Action _playError = playError ??
         throw new ArgumentNullException(nameof(playError));
+
+    public event Action<ProcessingPhase>? PhaseChanged;
 
     public ITranscriptionProvider ResolveProvider(ProviderSettings settings)
     {
@@ -59,10 +69,31 @@ public sealed class TranscriptionService(
         {
             var startedAt = DateTimeOffset.UtcNow;
             var provider = ResolveProvider(settings.Provider);
+
+            // Phase 1: Transcription
+            PhaseChanged?.Invoke(ProcessingPhase.Transcribing);
+            var transcriptionStopwatch = Stopwatch.StartNew();
             var rawText = await TranscribeWithRetryAsync(provider, audioFilePath, language, cancellationToken);
-            var outputText = settings.PostProcessor.Enabled
-                ? await _postProcessor.ProcessAsync(rawText, settings.PostProcessor, cancellationToken)
-                : rawText;
+            transcriptionStopwatch.Stop();
+
+            // Phase 2: Post-processing
+            long postProcessingDurationMs = 0;
+            string outputText;
+
+            if (settings.PostProcessor.Enabled)
+            {
+                PhaseChanged?.Invoke(ProcessingPhase.PostProcessing);
+                var postProcessingStopwatch = Stopwatch.StartNew();
+                outputText = await _postProcessor.ProcessAsync(rawText, settings.PostProcessor, cancellationToken);
+                postProcessingStopwatch.Stop();
+                postProcessingDurationMs = postProcessingStopwatch.ElapsedMilliseconds;
+            }
+            else
+            {
+                outputText = rawText;
+            }
+
+            var totalDurationMs = transcriptionStopwatch.ElapsedMilliseconds + postProcessingDurationMs;
 
             var entry = new TranscriptionEntry(
                 startedAt,
@@ -70,15 +101,19 @@ public sealed class TranscriptionService(
                 rawText,
                 provider.Name,
                 language,
-                DurationMs: 0,
-                AudioFilePath: audioFilePath);
+                DurationMs: totalDurationMs,
+                AudioFilePath: audioFilePath,
+                TranscriptionDurationMs: transcriptionStopwatch.ElapsedMilliseconds,
+                PostProcessingDurationMs: postProcessingDurationMs);
             await _historyLogger.AppendAsync(entry, cancellationToken);
             _playSuccess();
 
             return new TranscriptionResult(
                 Succeeded: true,
                 OutputText: outputText,
-                RawText: rawText);
+                RawText: rawText,
+                TranscriptionDurationMs: transcriptionStopwatch.ElapsedMilliseconds,
+                PostProcessingDurationMs: postProcessingDurationMs);
         }
         catch (Exception exception)
         {
@@ -90,6 +125,10 @@ public sealed class TranscriptionService(
                 OutputText: string.Empty,
                 RawText: string.Empty,
                 ErrorMessage: exception.Message);
+        }
+        finally
+        {
+            PhaseChanged?.Invoke(ProcessingPhase.None);
         }
     }
 
@@ -119,4 +158,6 @@ public sealed record TranscriptionResult(
     bool Succeeded,
     string OutputText,
     string RawText,
-    string ErrorMessage = "");
+    string ErrorMessage = "",
+    long TranscriptionDurationMs = 0,
+    long PostProcessingDurationMs = 0);

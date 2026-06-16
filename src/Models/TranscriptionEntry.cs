@@ -11,7 +11,9 @@ public sealed record TranscriptionEntry
         string Provider,
         string Language,
         long DurationMs,
-        string? AudioFilePath)
+        string? AudioFilePath,
+        long TranscriptionDurationMs = 0,
+        long PostProcessingDurationMs = 0)
     {
         this.Timestamp = Timestamp;
         this.Text = Text;
@@ -20,6 +22,8 @@ public sealed record TranscriptionEntry
         this.Language = Language;
         this.DurationMs = DurationMs;
         this.AudioFilePath = AudioFilePath;
+        this.TranscriptionDurationMs = TranscriptionDurationMs;
+        this.PostProcessingDurationMs = PostProcessingDurationMs;
     }
 
     [JsonPropertyName("timestamp")]
@@ -43,4 +47,10 @@ public sealed record TranscriptionEntry
 
     [JsonPropertyName("audio_file_path")]
     public string? AudioFilePath { get; init; }
+
+    [JsonPropertyName("transcription_duration_ms")]
+    public long TranscriptionDurationMs { get; init; }
+
+    [JsonPropertyName("post_processing_duration_ms")]
+    public long PostProcessingDurationMs { get; init; }
 }

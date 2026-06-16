@@ -7,6 +7,7 @@ public enum TrayIconState
     Idle,
     Recording,
     Transcribing,
+    PostProcessing,
 }
 
 public sealed class TrayIcon : IDisposable
@@ -57,6 +58,7 @@ public sealed class TrayIcon : IDisposable
             [TrayIconState.Idle] = CreateStateIcon(Color.FromArgb(68, 116, 167)),
             [TrayIconState.Recording] = CreateStateIcon(Color.FromArgb(196, 62, 47)),
             [TrayIconState.Transcribing] = CreateStateIcon(Color.FromArgb(208, 140, 36)),
+            [TrayIconState.PostProcessing] = CreateStateIcon(Color.FromArgb(78, 154, 168)),
         };
         _languageItems = new Dictionary<string, ToolStripMenuItem>(StringComparer.OrdinalIgnoreCase);
         _languageMenuItem = CreateLanguageMenuItem();
