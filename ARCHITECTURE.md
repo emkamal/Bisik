@@ -234,7 +234,29 @@ Receives delegate-based sinks:
 - `clipboardSink` → `Clipboard.SetText()` 
 - `popupSink` → shows `ReviewPopupForm` modally
 
-### 4.5 HistoryLogger (`Core/HistoryLogger.cs`)
+### 4.5 RealtimeTranscriptionStream (`Core/RealtimeTranscriptionStream.cs`)
+
+A streaming transcription implementation that uses the OpenAI/Azure Realtime API WebSocket protocol.
+
+**Implemented interface:**
+- `IRealtimeTranscriber` — `StartAsync()`, `PushAudioChunkAsync()`, `CommitAndFinalizeAsync()`, `DisposeAsync()`
+- Events: `PartialTranscriptAvailable` (delta), `TranscriptionCompleted`, `TranscriptionFailed`
+
+**Lifecycle flow:**
+```
+1. StartAsync() → obtains ephemeral client_secret via REST → connects WebSocket
+2. PushAudioChunkAsync() → sends input_audio_buffer.append events
+3. (while recording) delta events fire → PartialTranscriptAvailable
+4. CommitAndFinalizeAsync() → sends commit → waits for completed transcript
+5. DisposeAsync() → closes WebSocket gracefully
+```
+
+**Design notes:**
+- Supports the same AZR realtime endpoint resolution (`Bisik-Realtime-Calls-Endpoint` custom header, Azure API Management gateway derivation) as `AzureRealtimeTranscriber`.
+- Resamples audio to 24 kHz PCM (Azure Realtime expectation) via the existing NAudio pipeline.
+- Thread-safe event dispatch via lock.
+
+### 4.6 HistoryLogger (`Core/HistoryLogger.cs`)
 
 **File:** `%APPDATA%\Bisik\history.jsonl` (JSONL = one JSON object per line)
 

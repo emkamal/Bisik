@@ -30,6 +30,7 @@ public sealed class OutputHandler(
         switch (outputMode)
         {
             case OutputMode.AutoType:
+            case OutputMode.RealtimeAutoType:
                 _autoTypeSink(result.OutputText);
                 break;
 

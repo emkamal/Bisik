@@ -25,6 +25,8 @@ public enum OutputMode
     Clipboard,
     [EnumMember(Value = "popup")]
     Popup,
+    [EnumMember(Value = "realtime-auto-type")]
+    RealtimeAutoType,
 }
 
 [JsonConverter(typeof(EnumMemberJsonConverter<IndicatorStyle>))]

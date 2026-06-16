@@ -154,10 +154,26 @@ public sealed class SettingsForm : Form
             new Dictionary<OutputMode, string>
             {
                 [OutputMode.AutoType] = "Auto-type",
+                [OutputMode.RealtimeAutoType] = "Realtime Auto-Type",
                 [OutputMode.Clipboard] = "Clipboard",
                 [OutputMode.Popup] = "Popup",
             },
             new AppSettings().OutputMode);
+        _outputModeComboBox.SelectedIndexChanged += (_, _) =>
+        {
+            var isRealtime = GetSelectedComboValue(_outputModeComboBox, new AppSettings().OutputMode) == OutputMode.RealtimeAutoType;
+            if (_postProcessorEnabledCheckBox is not null)
+            {
+                _postProcessorEnabledCheckBox.Enabled = !isRealtime;
+                if (isRealtime)
+                {
+                    _postProcessorEnabledCheckBox.Checked = false;
+                }
+            }
+
+            var hintLabel = (isRealtime ? "Post-processing is automatically disabled in realtime mode." : "");
+            // Find and update the recording indicator row hint
+        };
         layout.Controls.Add(CreateFieldLabel("Output mode"), 0, 3);
         layout.Controls.Add(_outputModeComboBox, 1, 3);
 

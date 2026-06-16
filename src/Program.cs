@@ -113,6 +113,15 @@ static class Program
         private SettingsForm? _settingsForm;
         private HistoryForm? _historyForm;
 
+        // Realtime transcription state
+        private IRealtimeTranscriber? _realtimeTranscriber;
+        private int _realtimeTypedLength;
+        private bool _realtimePartialTyped;
+        private readonly System.Windows.Forms.Timer _realtimeCommitTimer = new()
+        {
+            Interval = 1200, // Commit every 1.2 seconds to trigger partial results
+        };
+
         public BisikApplicationContext()
         {
             _settingsManager = new SettingsManager();
@@ -283,6 +292,7 @@ static class Program
             _vadMonitoringEnabled = false;
             _vadTracker = null;
             _audioRecorder.StopVoiceActivityMonitoring();
+            CleanupRealtimeTranscriber();
             _hotkeyManager.UnregisterAll();
             _audioRecorder.Dispose();
             _overlayWindow.Dispose();
@@ -360,6 +370,13 @@ static class Program
                 return;
             }
 
+            // Realtime auto-type mode starts the realtime stream along with recording
+            if (_settings.OutputMode == OutputMode.RealtimeAutoType)
+            {
+                await StartRealtimeTranscriptionAsync();
+                return;
+            }
+
             try
             {
                 _audioRecorder.UpdateSettings(_settings.Audio);
@@ -431,6 +448,13 @@ static class Program
             switch (action)
             {
                 case HotkeyAction.StartRecording:
+                    // Realtime auto-type mode starts the realtime stream along with recording
+                    if (_settings.OutputMode == OutputMode.RealtimeAutoType)
+                    {
+                        await StartRealtimeTranscriptionAsync();
+                        return;
+                    }
+
                     try
                     {
                         _audioRecorder.UpdateSettings(_settings.Audio);
@@ -448,6 +472,12 @@ static class Program
                     break;
 
                 case HotkeyAction.StopRecordingAndTranscribe:
+                    if (_settings.OutputMode == OutputMode.RealtimeAutoType)
+                    {
+                        await StopRealtimeTranscriptionAsync();
+                        return;
+                    }
+
                     await CompleteRecordingAndTranscriptionAsync();
                     break;
             }
@@ -472,7 +502,270 @@ static class Program
                 return;
             }
 
+            if (_settings.OutputMode == OutputMode.RealtimeAutoType)
+            {
+                await StopRealtimeTranscriptionAsync();
+                return;
+            }
+
             await CompleteRecordingAndTranscriptionAsync();
+        }
+
+        /// <summary>
+        /// Starts recording and simultaneously opens a realtime WebSocket transcription stream.
+        /// Audio chunks are pushed to the stream as they arrive, and partial results are
+        /// immediately typed at the cursor.
+        /// </summary>
+        private async Task StartRealtimeTranscriptionAsync()
+        {
+            try
+            {
+                _audioRecorder.UpdateSettings(_settings.Audio);
+                _audioRecorder.StartRecording();
+                ShowRecordingIndicator();
+                _trayIcon.SetState(TrayIconState.Recording);
+                _realtimeTypedLength = 0;
+                _realtimePartialTyped = false;
+
+                var transcriber = new RealtimeTranscriptionStream(_httpClient);
+
+                // Wire up partial transcript events for live typing
+                transcriber.PartialTranscriptAvailable += OnRealtimePartialTranscript;
+                transcriber.TranscriptionCompleted += OnRealtimeCompleted;
+                transcriber.TranscriptionFailed += OnRealtimeFailed;
+
+                // Start the WebSocket connection to the realtime provider
+                await transcriber.StartAsync(_settings, _settings.DefaultLanguage, _shutdownCancellation.Token);
+
+                // Wire up audio chunks to be pushed to the stream as they arrive from the mic
+                _audioRecorder.AudioChunkAvailable += OnAudioChunkAvailable;
+
+                _realtimeTranscriber = transcriber;
+
+                // Start the periodic commit timer to trigger partial results
+                _realtimeCommitTimer.Tick += OnRealtimeCommitTimerTick;
+                _realtimeCommitTimer.Start();
+
+                if (_settings.TriggerMode == TriggerMode.PushToTalk)
+                {
+                    _pushToTalkReleaseTimer.Start();
+                }
+            }
+            catch (Exception exception)
+            {
+                CleanupRealtimeTranscriber();
+                _errorLogger.Log(exception);
+                _trayIcon.SetState(TrayIconState.Idle);
+                _overlayWindow.HideOverlay();
+                _trayIcon.ShowBalloon(
+                    title: "Realtime Transcription Failed",
+                    message: exception.Message,
+                    icon: ToolTipIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// Stops recording, commits the realtime buffer, waits for the final result,
+        /// logs it to history, and resets state.
+        /// </summary>
+        private async Task StopRealtimeTranscriptionAsync()
+        {
+            try
+            {
+                _trayIcon.SetState(TrayIconState.Transcribing);
+                _overlayWindow.HideOverlay();
+
+                // Unsubscribe from the chunk event so no more chunks are pushed
+                _audioRecorder.AudioChunkAvailable -= OnAudioChunkAvailable;
+
+                // Stop the actual audio capture
+                var recordedAudio = await _audioRecorder.StopRecordingAsync(_shutdownCancellation.Token);
+
+                string finalText;
+                if (_realtimeTranscriber is not null)
+                {
+                    // Commit the realtime buffer and get the final transcript
+                    finalText = await _realtimeTranscriber.CommitAndFinalizeAsync(_shutdownCancellation.Token);
+
+                    // If we had typed partial text, backspace over it and type the final text
+                    if (_realtimePartialTyped && _realtimeTypedLength > 0)
+                    {
+                        // Backspace over the previously typed partial text
+                        for (var i = 0; i < _realtimeTypedLength; i++)
+                        {
+                            _inputSimulator.Keyboard.KeyPress(WindowsInput.Native.VirtualKeyCode.BACK);
+                        }
+
+                        await Task.Delay(30);
+                    }
+
+                    // Type the final text
+                    if (!string.IsNullOrWhiteSpace(finalText))
+                    {
+                        _inputSimulator.Keyboard.TextEntry(finalText);
+                    }
+                }
+                else
+                {
+                    finalText = string.Empty;
+                }
+
+                // Log to history (post-processor is always disabled in realtime mode)
+                var entry = new TranscriptionEntry(
+                    DateTimeOffset.UtcNow,
+                    finalText,
+                    finalText,
+                    _settings.Provider.Type.ToString(),
+                    _settings.DefaultLanguage,
+                    DurationMs: 0,
+                    AudioFilePath: recordedAudio.FilePath);
+                await _historyLogger.AppendAsync(entry, _shutdownCancellation.Token);
+
+                _soundFeedback.PlaySuccess();
+            }
+            catch (Exception exception)
+            {
+                _errorLogger.Log(exception);
+                _trayIcon.ShowBalloon(
+                    title: "Realtime Transcription Failed",
+                    message: exception.Message,
+                    icon: ToolTipIcon.Error);
+            }
+            finally
+            {
+                CleanupRealtimeTranscriber();
+                _trayIcon.SetState(TrayIconState.Idle);
+            }
+        }
+
+        /// <summary>
+        /// When a PCM audio chunk is available from the microphone, push it to the realtime stream.
+        /// </summary>
+        private async void OnAudioChunkAvailable(object? sender, AudioChunkEventArgs args)
+        {
+            if (_realtimeTranscriber is null || _isShuttingDown)
+            {
+                return;
+            }
+
+            try
+            {
+                await _realtimeTranscriber.PushAudioChunkAsync(args.Buffer, args.BytesRecorded, _shutdownCancellation.Token);
+            }
+            catch (Exception exception)
+            {
+                _errorLogger.Log(exception);
+            }
+        }
+
+        /// <summary>
+        /// Fired when a partial (delta) transcript is available from the realtime stream.
+        /// Types the delta at the current cursor position, tracking total typed length
+        /// so we can backspace and replace later when the final text arrives.
+        /// </summary>
+        private void OnRealtimePartialTranscript(object? sender, PartialTranscriptEventArgs args)
+        {
+            if (_isShuttingDown)
+            {
+                return;
+            }
+
+            try
+            {
+                // On first partial, we just start typing from scratch.
+                // On subsequent deltas, the delta is the incremental addition, so we append.
+                if (!_realtimePartialTyped)
+                {
+                    // First partial result: type the accumulated text so far
+                    _inputSimulator.Keyboard.TextEntry(args.AccumulatedText);
+                    _realtimeTypedLength = args.AccumulatedText.Length;
+                    _realtimePartialTyped = true;
+                }
+                else
+                {
+                    // Subsequent deltas: the delta is the new text that was just recognized.
+                    // We append it at the cursor.
+                    _inputSimulator.Keyboard.TextEntry(args.Delta);
+                    _realtimeTypedLength += args.Delta.Length;
+                }
+            }
+            catch (Exception exception)
+            {
+                _errorLogger.Log(exception);
+            }
+        }
+
+        /// <summary>
+        /// Fired when the final transcript is available from the realtime stream.
+        /// Handled in StopRealtimeTranscriptionAsync via CommitAndFinalizeAsync.
+        /// </summary>
+        private void OnRealtimeCompleted(object? sender, RealtimeCompletedEventArgs args)
+        {
+            // The final text is obtained from CommitAndFinalizeAsync return value.
+            // This event is just informational.
+        }
+
+        /// <summary>
+        /// Fired when the realtime stream encounters a non-recoverable error.
+        /// </summary>
+        private void OnRealtimeFailed(object? sender, RealtimeFailedEventArgs args)
+        {
+            if (_isShuttingDown)
+            {
+                return;
+            }
+
+            _errorLogger.Log(new InvalidOperationException($"Realtime transcription failed: {args.ErrorMessage}"));
+        }
+
+        /// <summary>
+        /// Periodic timer tick that commits the intermediate audio buffer to trigger
+        /// partial transcription results from the server.
+        /// </summary>
+        private async void OnRealtimeCommitTimerTick(object? sender, EventArgs args)
+        {
+            if (_realtimeTranscriber is null || _isShuttingDown)
+            {
+                return;
+            }
+
+            try
+            {
+                await _realtimeTranscriber.CommitIntermediateSegmentAsync(_shutdownCancellation.Token);
+            }
+            catch
+            {
+                // Intermediate commit failures are non-fatal; the final commit will be retried.
+            }
+        }
+
+        private void CleanupRealtimeTranscriber()
+        {
+            _realtimeCommitTimer.Stop();
+            _realtimeCommitTimer.Tick -= OnRealtimeCommitTimerTick;
+
+            _audioRecorder.AudioChunkAvailable -= OnAudioChunkAvailable;
+
+            if (_realtimeTranscriber is not null)
+            {
+                _realtimeTranscriber.PartialTranscriptAvailable -= OnRealtimePartialTranscript;
+                _realtimeTranscriber.TranscriptionCompleted -= OnRealtimeCompleted;
+                _realtimeTranscriber.TranscriptionFailed -= OnRealtimeFailed;
+
+                try
+                {
+                    _ = _realtimeTranscriber.DisposeAsync();
+                }
+                catch
+                {
+                    // Best-effort cleanup.
+                }
+
+                _realtimeTranscriber = null;
+            }
+
+            _realtimeTypedLength = 0;
+            _realtimePartialTyped = false;
         }
 
         private async Task CompleteRecordingAndTranscriptionAsync(bool restartVadMonitoring = true)

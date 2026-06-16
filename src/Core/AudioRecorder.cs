@@ -71,6 +71,12 @@ public sealed class AudioRecorder : IDisposable
 
     public event EventHandler<AudioLevelChangedEventArgs>? AudioLevelChanged;
 
+    /// <summary>
+    /// Fires on each <see cref="WaveInEvent.DataAvailable"/> callback with the raw PCM buffer,
+    /// so downstream consumers (e.g. realtime transcription) can process chunks as they arrive.
+    /// </summary>
+    public event EventHandler<AudioChunkEventArgs>? AudioChunkAvailable;
+
     public IReadOnlyList<AudioInputDevice> GetInputDevices()
     {
         var devices = new List<AudioInputDevice>();
@@ -285,6 +291,10 @@ public sealed class AudioRecorder : IDisposable
         _waveWriter?.Write(args.Buffer, 0, args.BytesRecorded);
         _waveWriter?.Flush();
         PublishAudioLevel(args.Buffer, args.BytesRecorded);
+
+        // Fire the chunk event for downstream consumers (e.g. realtime transcription)
+        var sampleRate = _captureFormat?.SampleRate ?? _settings.SampleRate;
+        AudioChunkAvailable?.Invoke(this, new AudioChunkEventArgs(args.Buffer, args.BytesRecorded, sampleRate));
     }
 
     private void HandleRecordingStopped(object? sender, StoppedEventArgs args)
