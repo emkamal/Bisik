@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 
 namespace Bisik.UI;
@@ -17,28 +19,60 @@ public enum OverlayProcessingPhase
     PostProcessing,
 }
 
+/// <summary>
+/// Frameless, always-on-top recording / processing indicator.
+/// Rendered as a true per-pixel-alpha layered window (UpdateLayeredWindow) so that
+/// soft shadows, feathered glows and anti-aliased rounded corners blend cleanly over
+/// any background instead of being chroma-keyed. The window is click-through and never
+/// steals focus from the active typing target.
+/// </summary>
 public sealed class OverlayWindow : Form
 {
-    private const int DotSize = 56;
-    private const int BarWidth = 320;
-    private const int BarHeight = 30;
-    private const int BarScreenMargin = 14;
-    private const int CursorOffsetX = 18;
-    private const int CursorOffsetY = 18;
-    private const int ProcessingBarWidth = 260;
-    private const int ProcessingBarHeight = 40;
+    // --- Geometry (content sizes exclude the shadow padding that surrounds them) ---
+    private const int ShadowPadding = 16;
+    private const int BarScreenMargin = 16;
+    private const int CursorOffsetX = 20;
+    private const int CursorOffsetY = 20;
+
+    private static readonly Size DotContentSize = new(98, 38);
+    private static readonly Size BarContentSize = new(300, 44);
+    private static readonly Size ProcessingContentSize = new(110, 44);
+
+    // --- Animation tuning ---
+    private const int FrameIntervalMs = 16; // ~60 fps
+    private const double LevelAttackRate = 22d;
+    private const double LevelReleaseRate = 9d;
+    private const double OpacityRate = 16d;
+    private const double WaveShiftIntervalSeconds = 0.045d;
+    private const int ShadowLayers = 9;
+    private const double ShadowBaseAlpha = 26d;
+
+    // --- Win32 layered-window plumbing ---
     private const uint SwpNoActivate = 0x0010;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpNoSize = 0x0001;
     private const uint SwpShowWindow = 0x0040;
     private const int HwndTopMost = -1;
-    private readonly System.Windows.Forms.Timer _cursorFollowTimer;
-    private readonly System.Windows.Forms.Timer _pulseTimer;
-    private double _level;
-    private float _pulsePhase;
+    private const int UlwAlpha = 0x02;
+    private const byte AcSrcOver = 0x00;
+    private const byte AcSrcAlpha = 0x01;
+
+    private readonly System.Windows.Forms.Timer _renderTimer;
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+
+    private double _timeSeconds;
+    private long _lastFrameTicks;
+    private double _targetLevel;
+    private double _smoothedLevel;
+    private double _opacity;
+    private double _targetOpacity;
+    private bool _hiding;
+    private double _waveAccumulator;
+    private double[] _waveBars = Array.Empty<double>();
     private bool _barAtBottom;
     private OverlayProcessingPhase _processingPhase;
-    private Point _frozenDotLocation;
-    private bool _dotFrozen;
-    private string _processingLabel = string.Empty;
+    private Point _frozenLocation;
+    private bool _locationFrozen;
 
     public OverlayWindow()
     {
@@ -46,31 +80,18 @@ public sealed class OverlayWindow : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
-        BackColor = Color.Magenta;
-        TransparencyKey = Color.Magenta;
-        Size = new Size(DotSize, DotSize);
-        DoubleBuffered = true;
+        Size = AddPadding(DotContentSize);
 
-        _cursorFollowTimer = new System.Windows.Forms.Timer
+        _renderTimer = new System.Windows.Forms.Timer
         {
-            Interval = 33,
+            Interval = FrameIntervalMs,
         };
-        _cursorFollowTimer.Tick += (_, _) => UpdateDotLocation();
-
-        _pulseTimer = new System.Windows.Forms.Timer
-        {
-            Interval = 33,
-        };
-        _pulseTimer.Tick += (_, _) =>
-        {
-            _pulsePhase = (_pulsePhase + 0.12f) % (MathF.PI * 2f);
-            Invalidate();
-        };
+        _renderTimer.Tick += (_, _) => OnFrame();
     }
 
     public OverlayWindowMode Mode { get; private set; } = OverlayWindowMode.DotNearCursor;
 
-    public double Level => _level;
+    public double Level => _smoothedLevel;
 
     protected override bool ShowWithoutActivation => true;
 
@@ -79,8 +100,10 @@ public sealed class OverlayWindow : Form
         get
         {
             var createParams = base.CreateParams;
+            createParams.ExStyle |= 0x00080000; // WS_EX_LAYERED  (per-pixel alpha)
             createParams.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
-            createParams.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
+            createParams.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW (hidden from Alt+Tab)
+            createParams.ExStyle |= 0x00000020; // WS_EX_TRANSPARENT (click-through)
             return createParams;
         }
     }
@@ -90,113 +113,66 @@ public sealed class OverlayWindow : Form
         if (mode == OverlayWindowMode.TrayIconOnly)
         {
             Mode = mode;
-            HideOverlay();
-            Invalidate();
-            return;
-        }
-
-        if (mode == OverlayWindowMode.Processing)
-        {
-            Mode = mode;
-            // Always use the larger bar size for processing to show text labels
-            Size = new Size(ProcessingBarWidth, ProcessingBarHeight);
-            UpdateProcessingLocation();
-            Invalidate();
+            HideImmediate();
             return;
         }
 
         Mode = mode;
-
-        switch (mode)
-        {
-            case OverlayWindowMode.DotNearCursor:
-                Size = new Size(DotSize, DotSize);
-                UpdateDotLocation();
-                break;
-
-            case OverlayWindowMode.BarOverlay:
-                Size = new Size(BarWidth, BarHeight);
-                UpdateBarLocation();
-                break;
-        }
-
-        Invalidate();
     }
 
     public void SetLevel(double level)
     {
-        _level = Math.Clamp(level, 0d, 1d);
-        Invalidate();
+        _targetLevel = Math.Clamp(level, 0d, 1d);
     }
 
     public void ShowDotNearCursor()
     {
-        SetMode(OverlayWindowMode.DotNearCursor);
+        Mode = OverlayWindowMode.DotNearCursor;
+        BeginShow(DotContentSize);
         UpdateDotLocation();
-        _cursorFollowTimer.Start();
-        _pulseTimer.Start();
-        ShowOverlay();
+        RenderFrame();
     }
 
     public void ShowBarOverlay(bool atBottom = false)
     {
         _barAtBottom = atBottom;
-        SetMode(OverlayWindowMode.BarOverlay);
+        Mode = OverlayWindowMode.BarOverlay;
+        BeginShow(BarContentSize);
         UpdateBarLocation();
-        _cursorFollowTimer.Stop();
-        _pulseTimer.Start();
-        ShowOverlay();
+        RenderFrame();
     }
 
     public void ShowProcessingOverlay(OverlayProcessingPhase phase)
     {
         _processingPhase = phase;
-        _processingLabel = phase == OverlayProcessingPhase.Transcribing
-            ? "Transcribing..."
-            : "Post-Processing...";
 
-        if (!_dotFrozen)
+        if (!_locationFrozen)
         {
-            // Freeze the dot at the current cursor position on first call
-            _frozenDotLocation = Cursor.Position;
-            _dotFrozen = true;
+            _frozenLocation = Cursor.Position;
+            _locationFrozen = true;
         }
 
-        SetMode(OverlayWindowMode.Processing);
-        _cursorFollowTimer.Stop();
-        _pulseTimer.Start();
-        ShowOverlay();
+        Mode = OverlayWindowMode.Processing;
+        BeginShow(ProcessingContentSize);
+        UpdateProcessingLocation();
+        RenderFrame();
     }
 
     public void HideOverlay()
     {
-        _cursorFollowTimer.Stop();
-        _pulseTimer.Stop();
-        _dotFrozen = false;
-        _processingLabel = string.Empty;
-        Hide();
-    }
+        _locationFrozen = false;
 
-    protected override void OnPaint(PaintEventArgs eventArgs)
-    {
-        base.OnPaint(eventArgs);
-
-        if (Mode == OverlayWindowMode.DotNearCursor)
+        if (!Visible)
         {
-            PaintDotOverlay(eventArgs.Graphics);
             return;
         }
 
-        if (Mode == OverlayWindowMode.BarOverlay)
+        // Fade out smoothly, then hide once transparent.
+        _hiding = true;
+        _targetOpacity = 0d;
+        if (!_renderTimer.Enabled)
         {
-            PaintBarOverlay(eventArgs.Graphics);
-            return;
-        }
-
-        if (Mode == OverlayWindowMode.Processing)
-        {
-            PaintProcessingOverlay(eventArgs.Graphics);
-            return;
+            _renderTimer.Start();
         }
     }
 
@@ -204,14 +180,80 @@ public sealed class OverlayWindow : Form
     {
         if (disposing)
         {
-            _cursorFollowTimer.Dispose();
-            _pulseTimer.Dispose();
+            _renderTimer.Dispose();
         }
 
         base.Dispose(disposing);
     }
 
-    private void ShowOverlay()
+    private static Size AddPadding(Size content)
+        => new(content.Width + (ShadowPadding * 2), content.Height + (ShadowPadding * 2));
+
+    private void BeginShow(Size contentSize)
+    {
+        Size = AddPadding(contentSize);
+        _hiding = false;
+        _targetOpacity = 1d;
+
+        if (!Visible)
+        {
+            // Start from fully transparent so the appearance fades in.
+            _opacity = 0d;
+            EnsureVisibleTopMost();
+        }
+
+        if (!_renderTimer.Enabled)
+        {
+            _lastFrameTicks = _clock.ElapsedTicks;
+            _renderTimer.Start();
+        }
+    }
+
+    private void HideImmediate()
+    {
+        _renderTimer.Stop();
+        _hiding = false;
+        _opacity = 0d;
+        _targetOpacity = 0d;
+        _locationFrozen = false;
+        Hide();
+    }
+
+    private void OnFrame()
+    {
+        var now = _clock.ElapsedTicks;
+        var dt = (now - _lastFrameTicks) / (double)Stopwatch.Frequency;
+        _lastFrameTicks = now;
+        if (dt <= 0d)
+        {
+            dt = FrameIntervalMs / 1000d;
+        }
+
+        dt = Math.Min(dt, 0.1d); // clamp after a stall so easing never jumps
+        _timeSeconds += dt;
+
+        _opacity = Approach(_opacity, _targetOpacity, OpacityRate, dt);
+
+        var levelRate = _targetLevel > _smoothedLevel ? LevelAttackRate : LevelReleaseRate;
+        _smoothedLevel = Approach(_smoothedLevel, _targetLevel, levelRate, dt);
+
+        AdvanceWaveform(dt);
+
+        if (Mode == OverlayWindowMode.DotNearCursor)
+        {
+            UpdateDotLocation();
+        }
+
+        if (_hiding && _opacity <= 0.02d)
+        {
+            HideImmediate();
+            return;
+        }
+
+        RenderFrame();
+    }
+
+    private void EnsureVisibleTopMost()
     {
         if (!Visible)
         {
@@ -221,11 +263,11 @@ public sealed class OverlayWindow : Form
         SetWindowPos(
             Handle,
             new IntPtr(HwndTopMost),
-            Left,
-            Top,
-            Width,
-            Height,
-            SwpNoActivate | SwpShowWindow);
+            0,
+            0,
+            0,
+            0,
+            SwpNoActivate | SwpNoMove | SwpNoSize | SwpShowWindow);
     }
 
     private void UpdateDotLocation()
@@ -235,22 +277,10 @@ public sealed class OverlayWindow : Form
             return;
         }
 
-        var cursorPosition = Cursor.Position;
+        var cursor = Cursor.Position;
         Location = new Point(
-            cursorPosition.X + CursorOffsetX,
-            cursorPosition.Y + CursorOffsetY);
-
-        if (Visible)
-        {
-            SetWindowPos(
-                Handle,
-                new IntPtr(HwndTopMost),
-                Left,
-                Top,
-                Width,
-                Height,
-                SwpNoActivate | SwpShowWindow);
-        }
+            (cursor.X + CursorOffsetX) - ShadowPadding,
+            (cursor.Y + CursorOffsetY) - ShadowPadding);
     }
 
     private void UpdateBarLocation()
@@ -266,191 +296,324 @@ public sealed class OverlayWindow : Form
             ? screen.WorkingArea.Bottom - Height - BarScreenMargin
             : screen.WorkingArea.Top + BarScreenMargin;
         Location = new Point(x, y);
-
-        if (Visible)
-        {
-            SetWindowPos(
-                Handle,
-                new IntPtr(HwndTopMost),
-                Left,
-                Top,
-                Width,
-                Height,
-                SwpNoActivate | SwpShowWindow);
-        }
     }
 
     private void UpdateProcessingLocation()
     {
-        var screen = Screen.FromPoint(_frozenDotLocation);
+        var screen = Screen.FromPoint(_locationFrozen ? _frozenLocation : Cursor.Position);
         var x = screen.WorkingArea.Left + ((screen.WorkingArea.Width - Width) / 2);
-        var y = screen.WorkingArea.Bottom - Height - BarScreenMargin - 50;
+        var y = screen.WorkingArea.Bottom - Height - BarScreenMargin - 48;
         Location = new Point(x, y);
+    }
 
-        if (Visible)
+    // ----------------------------------------------------------------------------------
+    //  Layered render pipeline
+    // ----------------------------------------------------------------------------------
+
+    private void RenderFrame()
+    {
+        if (!IsHandleCreated || IsDisposed)
         {
-            SetWindowPos(
-                Handle,
-                new IntPtr(HwndTopMost),
-                Left,
-                Top,
-                Width,
-                Height,
-                SwpNoActivate | SwpShowWindow);
+            return;
+        }
+
+        var width = Width;
+        var height = Height;
+        if (width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.Clear(Color.Transparent);
+
+            var content = new RectangleF(
+                ShadowPadding,
+                ShadowPadding,
+                width - (ShadowPadding * 2),
+                height - (ShadowPadding * 2));
+
+            switch (Mode)
+            {
+                case OverlayWindowMode.DotNearCursor:
+                case OverlayWindowMode.BarOverlay:
+                    RenderRecording(graphics, content);
+                    break;
+                case OverlayWindowMode.Processing when _processingPhase == OverlayProcessingPhase.Transcribing:
+                    RenderTranscribing(graphics, content);
+                    break;
+                case OverlayWindowMode.Processing:
+                    RenderPostProcessing(graphics, content);
+                    break;
+            }
+        }
+
+        PushLayeredBitmap(bitmap);
+    }
+
+    private void RenderRecording(Graphics graphics, RectangleF content)
+    {
+        var accent = Color.FromArgb(235, 226, 78, 70); // warm coral-red
+        DrawShell(graphics, content, accent);
+
+        var meter = RectangleF.Inflate(content, -16f, -12f);
+        EnsureWaveBars(meter.Width);
+
+        var barCount = _waveBars.Length;
+        if (barCount == 0)
+        {
+            return;
+        }
+
+        var gap = 3f;
+        var barWidth = Math.Max(2.4f, (meter.Width - (gap * (barCount - 1))) / barCount);
+        var centerY = meter.Top + (meter.Height / 2f);
+        var maxHalf = (meter.Height / 2f) - 1f;
+
+        for (var i = 0; i < barCount; i++)
+        {
+            var magnitude = (float)Math.Clamp(_waveBars[i], 0d, 1d);
+            var half = Math.Max(1.6f, magnitude * maxHalf);
+            var x = meter.Left + (i * (barWidth + gap));
+            var rect = new RectangleF(x, centerY - half, barWidth, half * 2f);
+
+            // Brighter at the leading edge to read as a live signal.
+            var brightness = 0.62f + (magnitude * 0.38f);
+            var color = Scale(accent, brightness, 232);
+            using var brush = new SolidBrush(color);
+            using var path = RoundedRect(rect, barWidth / 2f);
+            graphics.FillPath(brush, path);
         }
     }
 
-    private void PaintDotOverlay(Graphics graphics)
+    private void RenderTranscribing(Graphics graphics, RectangleF content)
     {
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var accent = Color.FromArgb(235, 224, 168, 78); // amber
+        DrawShell(graphics, content, accent);
 
-        var pulseScale = 1f + (MathF.Sin(_pulsePhase) * 0.08f);
-        var center = new PointF(ClientSize.Width / 2f, ClientSize.Height / 2f);
-        var outerRadius = 18f + (float)(_level * 8f) + (pulseScale * 2f);
-        var innerRadius = 10f + (float)(_level * 5f);
-
-        using var glowBrush = new SolidBrush(Color.FromArgb(45, 217, 73, 63));
-        using var ringPen = new Pen(Color.FromArgb(220, 239, 93, 81), 3f);
-        using var dotBrush = new SolidBrush(Color.FromArgb(245, 214, 57, 43));
-        using var highlightBrush = new SolidBrush(Color.FromArgb(220, 255, 236, 233));
-
-        graphics.FillEllipse(
-            glowBrush,
-            center.X - outerRadius,
-            center.Y - outerRadius,
-            outerRadius * 2f,
-            outerRadius * 2f);
-        graphics.DrawEllipse(
-            ringPen,
-            center.X - (innerRadius + 6f),
-            center.Y - (innerRadius + 6f),
-            (innerRadius + 6f) * 2f,
-            (innerRadius + 6f) * 2f);
-        graphics.FillEllipse(
-            dotBrush,
-            center.X - innerRadius,
-            center.Y - innerRadius,
-            innerRadius * 2f,
-            innerRadius * 2f);
-        graphics.FillEllipse(
-            highlightBrush,
-            center.X - 3f,
-            center.Y - innerRadius + 5f,
-            6f,
-            6f);
-    }
-
-    private void PaintBarOverlay(Graphics graphics)
-    {
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-
-        var bounds = new RectangleF(1, 1, ClientSize.Width - 2, ClientSize.Height - 2);
-        using var shellBrush = new SolidBrush(Color.FromArgb(228, 28, 31, 35));
-        using var outlinePen = new Pen(Color.FromArgb(210, 72, 77, 86), 1.2f);
-        using var levelBrush = new SolidBrush(Color.FromArgb(235, 214, 57, 43));
-        using var backgroundBrush = new SolidBrush(Color.FromArgb(125, 68, 74, 82));
-        using var highlightBrush = new SolidBrush(Color.FromArgb(175, 255, 236, 233));
-
-        FillRoundedRectangle(graphics, shellBrush, bounds, 14f);
-        DrawRoundedRectangle(graphics, outlinePen, bounds, 14f);
-
-        var meterBounds = RectangleF.Inflate(bounds, -14f, -8f);
-        FillRoundedRectangle(graphics, backgroundBrush, meterBounds, 8f);
-
-        var pulseBoost = 1f + (MathF.Sin(_pulsePhase) * 0.04f);
-        var activeWidth = (float)Math.Max(10d, meterBounds.Width * _level) * pulseBoost;
-        var activeBounds = new RectangleF(
-            meterBounds.Left,
-            meterBounds.Top,
-            Math.Min(meterBounds.Width, activeWidth),
-            meterBounds.Height);
-        FillRoundedRectangle(graphics, levelBrush, activeBounds, 8f);
-
-        var markerX = meterBounds.Left + (meterBounds.Width * (float)_level);
-        graphics.FillEllipse(highlightBrush, markerX - 4f, meterBounds.Top - 2f, 8f, meterBounds.Height + 4f);
-    }
-
-    private void PaintProcessingOverlay(Graphics graphics)
-    {
-        graphics.SmoothingMode = SmoothingMode.AntiAlias;
-
-        var isTranscribing = _processingPhase == OverlayProcessingPhase.Transcribing;
-
-        // Colors: amber for transcribing, teal for post-processing
-        var accentColor = isTranscribing
-            ? Color.FromArgb(208, 140, 36)   // Amber/gold
-            : Color.FromArgb(78, 154, 168);  // Teal
-
-        var accentLight = isTranscribing
-            ? Color.FromArgb(235, 190, 80)
-            : Color.FromArgb(130, 190, 200);
-
-        var accentDark = isTranscribing
-            ? Color.FromArgb(170, 100, 20)
-            : Color.FromArgb(50, 120, 135);
-
-        var bounds = new RectangleF(2, 2, ClientSize.Width - 4, ClientSize.Height - 4);
-
-        // Draw shell
-        using var shellBrush = new SolidBrush(Color.FromArgb(235, 30, 32, 35));
-        using var outlinePen = new Pen(Color.FromArgb(210, 72, 77, 86), 1.2f);
-        FillRoundedRectangle(graphics, shellBrush, bounds, 14f);
-        DrawRoundedRectangle(graphics, outlinePen, bounds, 14f);
-
-        // Draw spinning arc / ring animation
-        var center = new PointF(ClientSize.Width / 2f, ClientSize.Height / 2f);
-        var arcRadius = 7f;
-        var arcThickness = 2.5f;
-        var sweepAngle = 90f + (MathF.Sin(_pulsePhase) * 60f);
-        var startAngle = (_pulsePhase * 180f / MathF.PI) % 360f;
-
-        using var arcPen = new Pen(Color.FromArgb(220, accentColor), arcThickness);
-        graphics.DrawArc(
-            arcPen,
-            center.X - arcRadius,
-            center.Y - arcRadius - 8f,
-            arcRadius * 2f,
-            arcRadius * 2f,
-            startAngle,
-            sweepAngle);
-
-        // Draw the label text
-        using var labelBrush = new SolidBrush(Color.FromArgb(235, 239, 243));
-        using var labelFont = new Font("Segoe UI", 10f, FontStyle.Regular, GraphicsUnit.Point);
-        var textSize = graphics.MeasureString(_processingLabel, labelFont);
-        var textX = center.X - (textSize.Width / 2f);
-        var textY = center.Y - (textSize.Height / 2f) + 12f;
-        graphics.DrawString(_processingLabel, labelFont, labelBrush, textX, textY);
-
-        // Draw ellipsis animation (3 dots that cycle)
-        var dotCount = (int)(_pulsePhase * 3f / Math.PI) % 4;
-        using var dotBrush = new SolidBrush(accentLight);
-        for (var i = 0; i < dotCount; i++)
-        {
-            graphics.FillEllipse(
-                dotBrush,
-                textX + textSize.Width + 4f + (i * 6f),
-                textY + textSize.Height - 10f,
-                4f,
-                4f);
-        }
-    }
-
-    private static void FillRoundedRectangle(Graphics graphics, Brush brush, RectangleF bounds, float radius)
-    {
-        using var path = CreateRoundedRectanglePath(bounds, radius);
-        graphics.FillPath(brush, path);
-    }
-
-    private static void DrawRoundedRectangle(Graphics graphics, Pen pen, RectangleF bounds, float radius)
-    {
-        using var path = CreateRoundedRectanglePath(bounds, radius);
-        graphics.DrawPath(pen, path);
-    }
-
-    private static GraphicsPath CreateRoundedRectanglePath(RectangleF bounds, float radius)
-    {
+        var center = new PointF(content.Left + (content.Width / 2f), content.Top + (content.Height / 2f));
+        var radius = (Math.Min(content.Width, content.Height) / 2f) - 8f;
         var diameter = radius * 2f;
+        var arcRect = new RectangleF(center.X - radius, center.Y - radius, diameter, diameter);
+
+        // Faint full track.
+        using (var trackPen = new Pen(Color.FromArgb(40, 255, 255, 255), 3.2f))
+        {
+            graphics.DrawEllipse(trackPen, arcRect);
+        }
+
+        // Continuously rotating arc with round caps.
+        var startAngle = (float)((_timeSeconds * 220d) % 360d);
+        using var arcPen = new Pen(accent, 3.4f)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+        };
+        graphics.DrawArc(arcPen, arcRect, startAngle, 100f);
+
+        // Soft trailing comet head.
+        var headAngle = (startAngle + 100f) * Math.PI / 180d;
+        var hx = center.X + ((float)Math.Cos(headAngle) * radius);
+        var hy = center.Y + ((float)Math.Sin(headAngle) * radius);
+        using var headBrush = new SolidBrush(Scale(accent, 1.1f, 235));
+        graphics.FillEllipse(headBrush, hx - 2.6f, hy - 2.6f, 5.2f, 5.2f);
+    }
+
+    private void RenderPostProcessing(Graphics graphics, RectangleF content)
+    {
+        var accent = Color.FromArgb(235, 96, 178, 180); // teal
+        DrawShell(graphics, content, accent);
+
+        var center = new PointF(content.Left + (content.Width / 2f), content.Top + (content.Height / 2f));
+        var orbit = (Math.Min(content.Width, content.Height) / 2f) - 9f;
+
+        // Pulsing core.
+        var corePulse = 0.5f + (0.5f * (float)Math.Sin(_timeSeconds * 3.2d));
+        var coreRadius = 2.4f + (corePulse * 1.6f);
+        using (var coreBrush = new SolidBrush(Color.FromArgb(120 + (int)(corePulse * 90f), accent)))
+        {
+            graphics.FillEllipse(coreBrush, center.X - coreRadius, center.Y - coreRadius, coreRadius * 2f, coreRadius * 2f);
+        }
+
+        // Three orbiting dots, 120 deg apart, each pulsing on its own phase.
+        for (var i = 0; i < 3; i++)
+        {
+            var baseAngle = (_timeSeconds * 150d) + (i * 120d);
+            var rad = baseAngle * Math.PI / 180d;
+            var dx = center.X + ((float)Math.Cos(rad) * orbit);
+            var dy = center.Y + ((float)Math.Sin(rad) * orbit);
+
+            var pulse = 0.5f + (0.5f * (float)Math.Sin((_timeSeconds * 4d) + (i * 2.094d)));
+            var dotRadius = 2.2f + (pulse * 1.8f);
+            var color = Scale(accent, 0.7f + (pulse * 0.3f), 235);
+            using var dotBrush = new SolidBrush(color);
+            graphics.FillEllipse(dotBrush, dx - dotRadius, dy - dotRadius, dotRadius * 2f, dotRadius * 2f);
+        }
+    }
+
+    private void DrawShell(Graphics graphics, RectangleF content, Color accent)
+    {
+        const float radius = 16f;
+
+        DrawSoftShadow(graphics, content, radius);
+
+        using (var bodyBrush = new SolidBrush(Color.FromArgb(232, 26, 28, 32)))
+        using (var bodyPath = RoundedRect(content, radius))
+        {
+            graphics.FillPath(bodyBrush, bodyPath);
+
+            // Subtle top gloss for depth.
+            using var gloss = new LinearGradientBrush(
+                new RectangleF(content.Left, content.Top, content.Width, content.Height * 0.55f),
+                Color.FromArgb(28, 255, 255, 255),
+                Color.FromArgb(0, 255, 255, 255),
+                LinearGradientMode.Vertical);
+            var glossRegion = new RectangleF(content.Left, content.Top, content.Width, content.Height * 0.55f);
+            using var glossPath = RoundedRect(glossRegion, radius);
+            graphics.FillPath(gloss, glossPath);
+
+            // Thin hairline border + a faint accent-tinted inner edge.
+            using var borderPen = new Pen(Color.FromArgb(70, 255, 255, 255), 1f);
+            graphics.DrawPath(borderPen, bodyPath);
+            using var accentPen = new Pen(Color.FromArgb(45, accent), 1f);
+            using var accentPath = RoundedRect(RectangleF.Inflate(content, -1.4f, -1.4f), radius - 1.4f);
+            graphics.DrawPath(accentPen, accentPath);
+        }
+    }
+
+    private static void DrawSoftShadow(Graphics graphics, RectangleF content, float radius)
+    {
+        for (var i = ShadowLayers; i >= 1; i--)
+        {
+            var spread = i * 1.7f;
+            var rect = RectangleF.Inflate(content, spread, spread);
+            rect.Offset(0, i * 0.5f); // bias the shadow slightly downward
+            var alpha = (int)Math.Round(ShadowBaseAlpha * (1d - ((double)i / (ShadowLayers + 1))));
+            if (alpha <= 0)
+            {
+                continue;
+            }
+
+            using var shadowBrush = new SolidBrush(Color.FromArgb(alpha, 0, 0, 0));
+            using var path = RoundedRect(rect, radius + spread);
+            graphics.FillPath(shadowBrush, path);
+        }
+    }
+
+    private void AdvanceWaveform(double dt)
+    {
+        if (_waveBars.Length == 0)
+        {
+            return;
+        }
+
+        _waveAccumulator += dt;
+        if (_waveAccumulator < WaveShiftIntervalSeconds)
+        {
+            return;
+        }
+
+        _waveAccumulator = 0d;
+
+        // Scroll the buffer left and push a new sample on the right.
+        for (var i = 0; i < _waveBars.Length - 1; i++)
+        {
+            _waveBars[i] = _waveBars[i + 1];
+        }
+
+        // A faint idle shimmer keeps the meter visibly alive even in silence.
+        var idle = 0.10d + (0.05d * Math.Sin(_timeSeconds * 5.5d));
+        var driven = _smoothedLevel * (0.85d + (0.30d * _random.NextDouble()));
+        _waveBars[^1] = Math.Clamp(Math.Max(idle, driven), 0d, 1d);
+    }
+
+    private void EnsureWaveBars(float meterWidth)
+    {
+        var desired = Math.Max(8, (int)(meterWidth / 6f));
+        if (_waveBars.Length == desired)
+        {
+            return;
+        }
+
+        var resized = new double[desired];
+        var copy = Math.Min(_waveBars.Length, desired);
+        Array.Copy(_waveBars, _waveBars.Length - copy, resized, desired - copy, copy);
+        _waveBars = resized;
+    }
+
+    private void PushLayeredBitmap(Bitmap bitmap)
+    {
+        var screenDc = GetDC(IntPtr.Zero);
+        var memDc = CreateCompatibleDC(screenDc);
+        var hBitmap = IntPtr.Zero;
+        var oldBitmap = IntPtr.Zero;
+
+        try
+        {
+            // GetHbitmap with a zero background returns premultiplied ARGB, matching AC_SRC_ALPHA.
+            hBitmap = bitmap.GetHbitmap(Color.FromArgb(0));
+            oldBitmap = SelectObject(memDc, hBitmap);
+
+            var size = new SIZE { cx = bitmap.Width, cy = bitmap.Height };
+            var source = new POINT { x = 0, y = 0 };
+            var topLeft = new POINT { x = Left, y = Top };
+
+            var blend = new BLENDFUNCTION
+            {
+                BlendOp = AcSrcOver,
+                BlendFlags = 0,
+                SourceConstantAlpha = (byte)Math.Clamp((int)Math.Round(_opacity * 255d), 0, 255),
+                AlphaFormat = AcSrcAlpha,
+            };
+
+            UpdateLayeredWindow(
+                Handle,
+                screenDc,
+                ref topLeft,
+                ref size,
+                memDc,
+                ref source,
+                0,
+                ref blend,
+                UlwAlpha);
+        }
+        finally
+        {
+            if (oldBitmap != IntPtr.Zero)
+            {
+                SelectObject(memDc, oldBitmap);
+            }
+
+            if (hBitmap != IntPtr.Zero)
+            {
+                DeleteObject(hBitmap);
+            }
+
+            DeleteDC(memDc);
+            ReleaseDC(IntPtr.Zero, screenDc);
+        }
+    }
+
+    private static double Approach(double current, double target, double rate, double dt)
+        => current + ((target - current) * (1d - Math.Exp(-rate * dt)));
+
+    private static Color Scale(Color color, float factor, int alpha)
+    {
+        var r = (int)Math.Clamp(color.R * factor, 0f, 255f);
+        var g = (int)Math.Clamp(color.G * factor, 0f, 255f);
+        var b = (int)Math.Clamp(color.B * factor, 0f, 255f);
+        return Color.FromArgb(Math.Clamp(alpha, 0, 255), r, g, b);
+    }
+
+    private static GraphicsPath RoundedRect(RectangleF bounds, float radius)
+    {
+        var diameter = Math.Max(0.1f, radius * 2f);
+        diameter = Math.Min(diameter, Math.Min(bounds.Width, bounds.Height));
         var path = new GraphicsPath();
         path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
         path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
@@ -458,6 +621,35 @@ public sealed class OverlayWindow : Form
         path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
         path.CloseFigure();
         return path;
+    }
+
+    private readonly Random _random = new();
+
+    // ----------------------------------------------------------------------------------
+    //  Win32 interop
+    // ----------------------------------------------------------------------------------
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int x;
+        public int y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SIZE
+    {
+        public int cx;
+        public int cy;
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct BLENDFUNCTION
+    {
+        public byte BlendOp;
+        public byte BlendFlags;
+        public byte SourceConstantAlpha;
+        public byte AlphaFormat;
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -469,4 +661,34 @@ public sealed class OverlayWindow : Form
         int cx,
         int cy,
         uint uFlags);
+
+    [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern bool UpdateLayeredWindow(
+        IntPtr hwnd,
+        IntPtr hdcDst,
+        ref POINT pptDst,
+        ref SIZE psize,
+        IntPtr hdcSrc,
+        ref POINT pprSrc,
+        int crKey,
+        ref BLENDFUNCTION pblend,
+        int dwFlags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteDC(IntPtr hDC);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(IntPtr hObject);
 }
