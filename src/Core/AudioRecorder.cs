@@ -265,6 +265,7 @@ public sealed class AudioRecorder : IDisposable
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            SessionMetrics.Current?.Mark(TimingStage.CaptureDrained);
             return await FinalizeRecordingAsync(cancellationToken);
         }
         finally
@@ -328,6 +329,7 @@ public sealed class AudioRecorder : IDisposable
         _waveWriter = null;
 
         var wavBytes = buffer.ToArray();
+        SessionMetrics.Current?.Mark(TimingStage.ExportStart);
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
         try
@@ -354,6 +356,7 @@ public sealed class AudioRecorder : IDisposable
         CancellationToken cancellationToken)
     {
         await File.WriteAllBytesAsync(outputPath, wavBytes, cancellationToken);
+        SessionMetrics.Current?.Mark(TimingStage.ExportEnd);
         return new RecordedAudio(outputPath, wavBytes, AudioFormat.Wav, sampleRate);
     }
 

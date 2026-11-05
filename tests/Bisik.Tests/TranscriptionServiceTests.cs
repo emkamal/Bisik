@@ -13,6 +13,26 @@ public sealed class TranscriptionServiceTests : IDisposable
 {
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.TranscriptionServiceTests", Guid.NewGuid().ToString("N"));
 
+    [Fact]
+    public async Task Metrics_cover_pipeline_order_without_content()
+    {
+        var provider = new FakeProvider(ProviderType.OpenAi, "OpenAI", _ => "Synthetic fixture.");
+        var service = CreateService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            new FakePostProcessor((raw, _) => raw), out _, out _);
+        var metrics = new SessionMetrics("offline");
+        using var scope = metrics.Activate();
+        metrics.Mark(TimingStage.StopRequested);
+        await InvokeTranscribeAsync(service, CreateAudioFile(), "en", new AppSettings
+        {
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi },
+            PostProcessor = new PostProcessorSettings { Enabled = true },
+        });
+        var stages = metrics.Snapshot(SessionOutcome.Ready).Events.Select(e => e.Stage).ToArray();
+        Assert.Equal(new[] { TimingStage.StopRequested, TimingStage.TranscriptionStart, TimingStage.TranscriptionEnd,
+            TimingStage.CleanupStart, TimingStage.CleanupEnd, TimingStage.HistoryStart, TimingStage.HistoryEnd,
+            TimingStage.SoundStart, TimingStage.SoundEnd, TimingStage.Ready }, stages);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData(" \r\n")]

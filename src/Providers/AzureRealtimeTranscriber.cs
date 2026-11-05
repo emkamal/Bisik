@@ -36,6 +36,7 @@ public sealed class AzureRealtimeTranscriber(HttpClient httpClient, Func<ClientW
         while ((count = audio.Read(buffer, 0, buffer.Length)) > 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            SessionMetrics.Current?.Add(MetricCount.QueuedBytes, count);
             await stream.PushPcm24KhzAsync(buffer, count, cancellationToken).ConfigureAwait(false);
         }
         return await stream.CommitAndFinalizeAsync(cancellationToken).ConfigureAwait(false);

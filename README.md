@@ -87,4 +87,17 @@ sample.settings.json contains placeholders only. Bisik never reads or modifies e
 
 ## Verification
 
+Non-inserting full-pipeline timing (uses an encrypted disposable copy of existing settings,
+including the configured cleanup; accepts synthetic WAV only):
+
+~~~powershell
+dotnet run --project tools/Bisik.Diagnostics -- --benchmark artifacts/latency/synthetic-en.wav --output artifacts/latency/baseline-file.json --repeat 1
+~~~
+
+Repetitions are limited to 1–5 and each attempt to 120 seconds; Ctrl+C cancels.
+Reports contain opaque labels, monotonic stages and byte/attempt counts, without transcripts or endpoints.
+Missing stages are unavailable, including paste for this benchmark. `duration_ms` keeps its original
+transcription-plus-cleanup meaning. Set `BISIK_LATENCY_TRACE=1` before launching the app to opt into
+`%APPDATA%\Bisik\latency.jsonl` (100 sessions/2 MiB maximum).
+
 See [VERIFICATION.md](VERIFICATION.md) for checks actually run, remaining manual checks, and opt-in diagnostic tools. Automated tests do not establish universal application compatibility or microphone quality.

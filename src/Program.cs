@@ -120,6 +120,9 @@ static class Program
         private DictationTarget? _dictationTarget;
         private CancellationTokenSource? _sessionCancellation;
         private AppSettings? _sessionSettings;
+        private SessionMetrics? _sessionMetrics;
+        private readonly IMetricsSink? _metricsSink = Environment.GetEnvironmentVariable("BISIK_LATENCY_TRACE") == "1"
+            ? new BoundedMetricsFileSink(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik", "latency.jsonl")) : null;
         private bool _processing;
         private readonly System.Windows.Forms.Timer _recordingLimitTimer = new() { Interval = 5 * 60 * 1000 };
 
@@ -435,6 +438,8 @@ static class Program
             // Capture the field before any overlay or asynchronous work can change focus.
             _dictationTarget = _textOutput.CaptureTarget();
             _sessionSettings = _settings;
+            _sessionMetrics = new SessionMetrics(_settings.Provider.Type.ToString(), _metricsSink);
+            _sessionMetrics.Mark(TimingStage.CaptureStart);
             _sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCancellation.Token);
             _audioRecorder.UpdateSettings(_sessionSettings.Audio);
             _audioRecorder.StartRecording();
@@ -530,6 +535,9 @@ static class Program
             _pushToTalkReleaseTimer.Stop();
             var settings = _sessionSettings!;
             var cancellation = _sessionCancellation;
+            var metrics = _sessionMetrics!;
+            using var metricsScope = metrics.Activate();
+            metrics.Mark(TimingStage.StopRequested);
             cancellation.CancelAfter(TimeSpan.FromMinutes(2));
             RecordedAudio? audio = null;
             var retainAudio = false;
@@ -538,6 +546,10 @@ static class Program
                 _overlayWindow.ShowProcessingOverlay(OverlayProcessingPhase.Transcribing);
                 _trayIcon.SetState(TrayIconState.Transcribing);
                 audio = await _audioRecorder.StopRecordingAsync(cancellation.Token);
+                using (var reader = audio.Format == AudioFormat.Wav
+                    ? (NAudio.Wave.WaveStream)new NAudio.Wave.WaveFileReader(new MemoryStream(audio.AudioData))
+                    : new NAudio.Wave.MediaFoundationReader(audio.FilePath))
+                    metrics.AudioDurationMs = reader.TotalTime.TotalMilliseconds;
                 var result = await _transcriptionService.TranscribeAsync(
                     audio.FilePath, settings.DefaultLanguage, settings, cancellation.Token);
                 retainAudio = settings.HistoryEnabled && result.Succeeded && !string.IsNullOrWhiteSpace(result.RawText);
@@ -555,6 +567,12 @@ static class Program
                 var output = await _outputHandler.DispatchAsync(result, settings.OutputMode,
                     settings.AlwaysCopyToClipboard, _dictationTarget, cancellation.Token);
                 if (!string.IsNullOrEmpty(output.Message)) _trayIcon.ShowBalloon("Bisik", output.Message);
+                metrics.Publish(output.Disposition switch
+                {
+                    OutputDisposition.Inserted => SessionOutcome.PasteDispatched,
+                    OutputDisposition.Copied => SessionOutcome.Copied,
+                    _ => SessionOutcome.NeedsReview,
+                });
             }
             catch (OperationCanceledException)
             {

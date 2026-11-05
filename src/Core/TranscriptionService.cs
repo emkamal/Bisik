@@ -18,8 +18,14 @@ public sealed class TranscriptionService(
     HistoryLogger historyLogger,
     ErrorLogger errorLogger,
     Action playSuccess,
-    Action playError)
+    Action playError,
+    IMetricsSink? metricsSink = null)
 {
+    public TranscriptionService(IReadOnlyDictionary<ProviderType, ITranscriptionProvider> providers,
+        IPostProcessor postProcessor, HistoryLogger historyLogger, ErrorLogger errorLogger,
+        Action playSuccess, Action playError)
+        : this(providers, postProcessor, historyLogger, errorLogger, playSuccess, playError, null) { }
+
     private readonly IReadOnlyDictionary<ProviderType, ITranscriptionProvider> _providers = providers ??
         throw new ArgumentNullException(nameof(providers));
     private readonly IPostProcessor _postProcessor = postProcessor ??
@@ -65,6 +71,8 @@ public sealed class TranscriptionService(
         ArgumentException.ThrowIfNullOrWhiteSpace(audioFilePath);
         ArgumentNullException.ThrowIfNull(settings);
 
+        var metrics = SessionMetrics.Current ?? new SessionMetrics(settings.Provider.Type.ToString(), metricsSink);
+        using var metricsScope = metrics.Activate();
         try
         {
             var startedAt = DateTimeOffset.UtcNow;
@@ -73,11 +81,16 @@ public sealed class TranscriptionService(
             // Phase 1: Transcription
             PhaseChanged?.Invoke(ProcessingPhase.Transcribing);
             var transcriptionStopwatch = Stopwatch.StartNew();
+            metrics.Mark(TimingStage.TranscriptionStart);
             var rawText = await TranscribeWithRetryAsync(provider, audioFilePath, language, cancellationToken);
+            metrics.Mark(TimingStage.TranscriptionEnd);
             transcriptionStopwatch.Stop();
             cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(rawText))
+            {
+                metrics.Publish(SessionOutcome.Empty);
                 return new TranscriptionResult(true, string.Empty, string.Empty);
+            }
 
             // Phase 2: Post-processing
             long postProcessingDurationMs = 0;
@@ -87,7 +100,9 @@ public sealed class TranscriptionService(
             {
                 PhaseChanged?.Invoke(ProcessingPhase.PostProcessing);
                 var postProcessingStopwatch = Stopwatch.StartNew();
+                metrics.Mark(TimingStage.CleanupStart);
                 outputText = await _postProcessor.ProcessAsync(rawText, settings.PostProcessor, cancellationToken);
+                metrics.Mark(TimingStage.CleanupEnd);
                 postProcessingStopwatch.Stop();
                 postProcessingDurationMs = postProcessingStopwatch.ElapsedMilliseconds;
             }
@@ -109,8 +124,17 @@ public sealed class TranscriptionService(
                 TranscriptionDurationMs: transcriptionStopwatch.ElapsedMilliseconds,
                 PostProcessingDurationMs: postProcessingDurationMs);
             cancellationToken.ThrowIfCancellationRequested();
-            if (settings.HistoryEnabled) await _historyLogger.AppendAsync(entry, cancellationToken);
+            if (settings.HistoryEnabled)
+            {
+                metrics.Mark(TimingStage.HistoryStart);
+                await _historyLogger.AppendAsync(entry, cancellationToken);
+                metrics.Mark(TimingStage.HistoryEnd);
+            }
+            if (settings.SoundEnabled) metrics.Mark(TimingStage.SoundStart);
             _playSuccess();
+            if (settings.SoundEnabled) metrics.Mark(TimingStage.SoundEnd);
+            metrics.Mark(TimingStage.Ready);
+            metrics.Publish(SessionOutcome.Ready);
 
             return new TranscriptionResult(
                 Succeeded: true,
@@ -121,10 +145,12 @@ public sealed class TranscriptionService(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            metrics.Publish(SessionOutcome.Cancelled);
             throw;
         }
         catch (Exception exception)
         {
+            metrics.Publish(SessionOutcome.Failed);
             _errorLogger.Log(exception);
             _playError();
 
@@ -148,11 +174,13 @@ public sealed class TranscriptionService(
     {
         try
         {
+            SessionMetrics.Current?.Add(MetricCount.Attempts);
             return await provider.TranscribeAsync(audioFilePath, language, cancellationToken);
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested && IsRetryable(exception))
         {
             await Task.Delay(300, cancellationToken);
+            SessionMetrics.Current?.Add(MetricCount.Attempts);
             return await provider.TranscribeAsync(audioFilePath, language, cancellationToken);
         }
     }

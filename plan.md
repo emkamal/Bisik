@@ -60,11 +60,12 @@ Extend the relevant existing test classes instead of duplicating harnesses. Test
 
 ## Numbered checklist
 
-- [ ] **1. Establish regression and timing baselines.** Start with `TranscriptionService`, `Program`, output code, and diagnostics.
-  - [ ] **1.1** Record the starting Git diff/status and current test result under `artifacts/latency/`; distinguish pre-existing failures. Preserve all existing changes.
-  - [ ] **1.2** Introduce per-session monotonic timings: capture start/stop request, capture drained, secret creation, WSS ready, queued/sent bytes, first partial, each commit/final completion, cleanup start/end, history, sound, paste dispatch, and clipboard restoration. Record counts/retries/outcomes, not content. Existing `duration_ms` is transcription + cleanup only; do not silently redefine it.
-  - [ ] **1.3** Add an injectable metrics sink consumed by diagnostics and a bounded, opt-in app trace. Distinguish Stop-to-ready from Stop-to-paste; unavailable stages must be null/not applicable, not zero. Include audio duration and a nonsecret configuration label.
-  - [ ] **1.4** Extend diagnostics with a non-inserting full-pipeline benchmark, repetition limit, cancellation, and JSON report. Test parsing/aggregation and stage ordering offline. Record a baseline with the existing configured endpoint when accessible; Settings' current Test Connection disables cleanup and is not a substitute.
+- [x] **1. Establish regression and timing baselines.** Start with `TranscriptionService`, `Program`, output code, and diagnostics.
+  - [x] **1.1** Record the starting Git diff/status and current test result under `artifacts/latency/`; distinguish pre-existing failures. Preserve all existing changes.
+  - [x] **1.2** Introduce per-session monotonic timings: capture start/stop request, capture drained, secret creation, WSS ready, queued/sent bytes, first partial, each commit/final completion, cleanup start/end, history, sound, paste dispatch, and clipboard restoration. Record counts/retries/outcomes, not content. Existing `duration_ms` is transcription + cleanup only; do not silently redefine it.
+  - [x] **1.3** Add an injectable metrics sink consumed by diagnostics and a bounded, opt-in app trace. Distinguish Stop-to-ready from Stop-to-paste; unavailable stages must be null/not applicable, not zero. Include audio duration and a nonsecret configuration label.
+  - [x] **1.4** Extend diagnostics with a non-inserting full-pipeline benchmark, repetition limit, cancellation, and JSON report. Test parsing/aggregation and stage ordering offline. Record a baseline with the existing configured endpoint when accessible; Settings' current Test Connection disables cleanup and is not a substitute.
+  - Evidence: baseline 171 tests passed; item 1 now 178 passed. Diagnostic build passed. artifacts/latency/starting-*, item-1-tests.txt, baseline-file.json: one 6.765 s English fixture, 8.671 s Stop-to-ready including saved cleanup; no insertion. App trace and bounded reports tested offline. One sample is not a latency distribution.
 
 - [ ] **2. Introduce a reusable live-session boundary.** Depends on 1; edit service/provider interfaces, composition root, and session tests.
   - [ ] **2.1** Add optional streaming capability alongside `ITranscriptionProvider.TranscribeAsync`. Have `TranscriptionService` create/manage the live pipeline through injected interfaces, reusing `IRealtimeTranscriber`/`RealtimeTranscriptionStream`. Route Azure realtime using the existing detection rules; leave other providers on their file path.

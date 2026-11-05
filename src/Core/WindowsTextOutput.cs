@@ -95,6 +95,7 @@ public sealed class WindowsTextOutput : IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             _platform.Paste();
+            SessionMetrics.Current?.Mark(TimingStage.PasteDispatched);
         }
         catch (OperationCanceledException)
         {
@@ -112,8 +113,10 @@ public sealed class WindowsTextOutput : IDisposable
             // Windows has no general paste acknowledgement. Allow the target to consume the data,
             // then restore only while Bisik still owns this exact clipboard revision.
             await _delay(TimeSpan.FromMilliseconds(600), CancellationToken.None);
-            if (!_platform.TryRestoreClipboard(snapshot, ownedSequence.Value) && _platform.ClipboardSequence == ownedSequence)
+            var restored = _platform.TryRestoreClipboard(snapshot, ownedSequence.Value);
+            if (!restored && _platform.ClipboardSequence == ownedSequence)
                 return new(OutputDisposition.Inserted, "Paste sent. The clipboard could not be restored and still contains the transcription.");
+            if (restored) SessionMetrics.Current?.Mark(TimingStage.ClipboardRestored);
         }
 
         return new(OutputDisposition.Inserted);
