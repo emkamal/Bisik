@@ -17,6 +17,7 @@ public sealed class TranscriptionSession : IAsyncDisposable
     private Task<TranscriptionResult>? _completion;
     private readonly TaskCompletionSource _setupReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly LiveAudioQueue? _audioQueue;
+    private readonly FinalTextSelection _selection = new();
     public Guid Id { get; } = Guid.NewGuid();
     public AppSettings Settings { get; }
     public DictationState State { get; private set; } = DictationState.Recording;
@@ -25,6 +26,16 @@ public sealed class TranscriptionSession : IAsyncDisposable
     internal Task? Persistence { get; private set; }
     internal SpeculativeCleanup? Speculation { get; set; }
     internal EventHandler<CompletedTranscriptEventArgs>? SnapshotHandler { get; set; }
+    public bool HasFinalTranscript => _selection.HasTranscript;
+    public void SkipCleanup() { _selection.SkipCleanup(); Speculation?.CancelPending(); }
+    public bool UseTranscriptNow()
+    {
+        var selected = _selection.UseTranscriptNow();
+        if (selected) Speculation?.CancelPending();
+        return selected;
+    }
+    internal Task<string> SelectFinalAsync(string raw, Func<CancellationToken, Task<string>> cleanup, CancellationToken ct) =>
+        _selection.SelectAsync(raw, cleanup, ct);
 
     internal TranscriptionSession(AppSettings settings, CancellationToken ct, IRealtimeTranscriber? stream,
         Func<TranscriptionSession, string, CancellationToken, Task<TranscriptionResult>> complete)
@@ -125,6 +136,7 @@ public sealed class TranscriptionSession : IAsyncDisposable
         await AbandonStreamAsync().ConfigureAwait(false);
         if (_completion is not null) { try { await _completion.ConfigureAwait(false); } catch { /* Caller receives the failure. */ } }
         if (Speculation is not null) await Speculation.DisposeAsync().ConfigureAwait(false);
+        await _selection.DisposeAsync().ConfigureAwait(false);
         _lifetime.Dispose();
         _streamLifetime.Dispose();
     }

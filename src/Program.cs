@@ -11,6 +11,7 @@ static class Program
     private const string SingleInstanceMutexName = @"Global\Bisik.SingleInstance";
     private const int MainHotkeyId = 0x4249;
     private const int InsertLatestHotkeyId = 0x424A;
+    private const int FastOutputHotkeyId = 0x424B;
     private static readonly uint ShowSettingsMessage = RegisterWindowMessage("Bisik.ShowSettings");
     private static readonly object GlobalExceptionHandlerLock = new();
     private static Mutex? _singleInstanceMutex;
@@ -132,6 +133,7 @@ static class Program
         private readonly IMetricsSink? _metricsSink = Environment.GetEnvironmentVariable("BISIK_LATENCY_TRACE") == "1"
             ? new BoundedMetricsFileSink(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik", "latency.jsonl")) : null;
         private bool _processing;
+        private bool _fastNextRecording;
         private readonly System.Windows.Forms.Timer _recordingLimitTimer = new() { Interval = 5 * 60 * 1000 };
 
         public BisikApplicationContext(bool showSettings = false)
@@ -179,6 +181,7 @@ static class Program
                     await HandleRegisteredHotkeyAsync();
                 }
                 else if (hotkeyId == InsertLatestHotkeyId) await InsertLatestAsync();
+                else if (hotkeyId == FastOutputHotkeyId) await UseFastOutputAsync();
             };
 
             _trayIcon = new TrayIcon(
@@ -270,6 +273,8 @@ static class Program
                     throw new InvalidOperationException("The hotkey is already registered by another application.");
                 if (!_hotkeyManager.Register(InsertLatestHotkeyId, HotkeyManager.ParseHotkey(_settings.InsertLatestHotkey)))
                     throw new InvalidOperationException("Insert latest result hotkey is unavailable. Choose another binding in Settings.");
+                if (!_hotkeyManager.Register(FastOutputHotkeyId, HotkeyManager.ParseHotkey(_settings.FastOutputHotkey)))
+                    throw new InvalidOperationException("Fast output hotkey is unavailable. Choose another binding in Settings.");
             }
             catch (Exception exception)
             {
@@ -288,12 +293,15 @@ static class Program
                     throw new InvalidOperationException("The hotkey is already registered by another application.");
                 if (!_hotkeyManager.Register(InsertLatestHotkeyId, HotkeyManager.ParseHotkey(fresh.InsertLatestHotkey)))
                     throw new InvalidOperationException("Insert latest result hotkey is already registered by another application.");
+                if (!_hotkeyManager.Register(FastOutputHotkeyId, HotkeyManager.ParseHotkey(fresh.FastOutputHotkey)))
+                    throw new InvalidOperationException("Fast output hotkey is already registered by another application.");
             }
             catch
             {
                 _hotkeyManager.UnregisterAll();
                 _hotkeyManager.Register(MainHotkeyId, _hotkeyGesture);
                 _hotkeyManager.Register(InsertLatestHotkeyId, HotkeyManager.ParseHotkey(_settings.InsertLatestHotkey));
+                _hotkeyManager.Register(FastOutputHotkeyId, HotkeyManager.ParseHotkey(_settings.FastOutputHotkey));
                 throw;
             }
             // Only an explicit change in Settings touches startup registration.
@@ -488,6 +496,7 @@ static class Program
             _sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCancellation.Token);
             using var scope = _sessionMetrics.Activate();
             _pipelineSession = _transcriptionService.CreateSession(_sessionSettings, _sessionCancellation.Token);
+            if (_fastNextRecording) { _pipelineSession.SkipCleanup(); _fastNextRecording = false; }
             var session = _pipelineSession;
             _audioSubscription = (_, chunk) => session.PushAudio(chunk);
             _audioRecorder.AudioChunkAvailable += _audioSubscription;
@@ -530,6 +539,7 @@ static class Program
 
         private void ResetSession()
         {
+            _fastNextRecording = false;
             if (_audioSubscription is not null) _audioRecorder.AudioChunkAvailable -= _audioSubscription;
             _audioSubscription = null;
             if (_pipelineSession is { } session)
@@ -568,6 +578,24 @@ static class Program
             var claim = _latestResult.Claim();
             if (claim is null) return Task.CompletedTask;
             return _recoveryTask = InsertLatestCoreAsync(claim);
+        }
+
+        private async Task UseFastOutputAsync()
+        {
+            if (_isShuttingDown || _settingsForm is { Visible: true }) return;
+            if (_processing)
+            {
+                if (_pipelineSession?.HasFinalTranscript == true) _pipelineSession.UseTranscriptNow();
+                return;
+            }
+            if (_pipelineSession is null)
+            {
+                _fastNextRecording = true;
+                await HandleRegisteredHotkeyAsync();
+                return;
+            }
+            _pipelineSession.SkipCleanup();
+            if (_audioRecorder.State == RecordingState.Recording) await CompleteRecordingAndTranscriptionAsync();
         }
 
         private async Task InsertLatestCoreAsync(PendingResult claim)

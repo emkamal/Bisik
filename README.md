@@ -52,6 +52,11 @@ Settings cannot open during dictation. Stop listening first. Language and post-p
   field and selection and performs the same guarded paste. It never reactivates the old field.
   New completed results replace the pending result; dispatch, review dismissal, tray Dismiss,
   and exit clear it. Repeated recovery commands cannot dispatch the same result twice.
+- **Ctrl+Alt+Shift+Space** (configurable Fast output hotkey) starts one fast recording or
+  stops the current recording with cleanup skipped. During cleanup it selects the final
+  transcript immediately. It does nothing while STT is still pending. Saved cleanup settings
+  remain unchanged. Late cleanup cannot replace delivered raw text; changed targets use Ready
+  recovery. In VAD, arming fast mode applies to the next detected recording.
 - Clipboard preservation supports bounded global-memory formats such as text, HTML, RTF, DIB images and file lists. Unsupported owner-rendered/GDI formats or a busy clipboard fall back to review. Restoration waits 600 ms and checks ownership under the clipboard lock; a newer copy is never restored over.
 
 Windows has no universal paste acknowledgement. A sent paste does not prove an app accepted it. A very slow app may read the clipboard after restoration, and focus/input can still race at OS dispatch time. Review the destination. Standard and Electron fields must expose a writable UI Automation field; custom/inaccessible controls fall back. Password/protected and terminal fields are excluded. Windows integrity isolation can block insertion into elevated apps; use manual paste there. Administrator privileges are not recommended for normal dictation.

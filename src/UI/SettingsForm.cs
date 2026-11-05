@@ -23,6 +23,7 @@ public sealed class SettingsForm : Form
     private CheckBox? _pauseCommitsCheckBox;
     private ComboBox? _reasoningEffortComboBox;
     private TextBox? _insertLatestHotkeyTextBox;
+    private TextBox? _fastOutputHotkeyTextBox;
     private TextBox? _verifiedReasoningEffortsTextBox;
     private CheckBox? _speculativeCleanupCheckBox;
     private CheckBox? _launchAtStartupCheckBox;
@@ -150,6 +151,11 @@ public sealed class SettingsForm : Form
         _insertLatestHotkeyTextBox.KeyDown += HandleHotkeyKeyDown;
         layout.Controls.Add(CreateFieldLabel("Insert latest hotkey"), 0, 7);
         layout.Controls.Add(_insertLatestHotkeyTextBox, 1, 7);
+        _fastOutputHotkeyTextBox = new TextBox { Text = new AppSettings().FastOutputHotkey, Width = 220, ReadOnly = true, ShortcutsEnabled = false };
+        _fastOutputHotkeyTextBox.PreviewKeyDown += HandleHotkeyPreviewKeyDown;
+        _fastOutputHotkeyTextBox.KeyDown += HandleHotkeyKeyDown;
+        layout.Controls.Add(CreateFieldLabel("Fast output hotkey"), 0, 8);
+        layout.Controls.Add(_fastOutputHotkeyTextBox, 1, 8);
         var hotkeyHintLabel = new Label
         {
             Text = "Click the field, then press the hotkey combination you want Bisik to use.",
@@ -1027,6 +1033,7 @@ public sealed class SettingsForm : Form
 
         SetComboSelection(_triggerModeComboBox, settings.TriggerMode);
         if (_insertLatestHotkeyTextBox is not null) _insertLatestHotkeyTextBox.Text = settings.InsertLatestHotkey;
+        if (_fastOutputHotkeyTextBox is not null) _fastOutputHotkeyTextBox.Text = settings.FastOutputHotkey;
         _hotkeyTextBox?.SetBounds(_hotkeyTextBox.Left, _hotkeyTextBox.Top, _hotkeyTextBox.Width, _hotkeyTextBox.Height);
         if (_hotkeyTextBox is not null)
         {
@@ -1140,6 +1147,7 @@ public sealed class SettingsForm : Form
             TriggerMode = GetSelectedComboValue(_triggerModeComboBox, defaults.TriggerMode),
             Hotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox?.Text) ? defaults.Hotkey : _hotkeyTextBox.Text,
             InsertLatestHotkey = _insertLatestHotkeyTextBox?.Text ?? defaults.InsertLatestHotkey,
+            FastOutputHotkey = _fastOutputHotkeyTextBox?.Text ?? defaults.FastOutputHotkey,
             OutputMode = GetSelectedComboValue(_outputModeComboBox, defaults.OutputMode),
             IndicatorStyle = GetSelectedComboValue(_indicatorStyleComboBox, defaults.IndicatorStyle),
             DefaultLanguage = GetSelectedComboValue(_defaultLanguageComboBox, defaults.DefaultLanguage),

@@ -56,7 +56,9 @@ public sealed class TranscriptionService(
         var created = new TranscriptionSession(snapshot, ct, stream, (session, path, token) =>
             TranscribeCoreAsync(path, session.Settings.DefaultLanguage, session.Settings, token,
                 ct => RecognizeSessionAsync(session, provider, path, ct), session.Persistence,
-                session.Speculation is null ? null : (raw, token) => session.Speculation.FinishAsync(raw, session.Settings.PostProcessor, token)));
+                (raw, token) => session.SelectFinalAsync(raw, cleanupToken => session.Speculation is null
+                    ? _postProcessor.ProcessAsync(raw, session.Settings.PostProcessor, cleanupToken)
+                    : session.Speculation.FinishAsync(raw, session.Settings.PostProcessor, cleanupToken), token)));
         if (snapshot.SpeculativeCleanup && snapshot.PostProcessor.Enabled && stream is not null)
         {
             created.Speculation = new SpeculativeCleanup(snapshot.PostProcessor, _postProcessor.ProcessAsync, created.Token);

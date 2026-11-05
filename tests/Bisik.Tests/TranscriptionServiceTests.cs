@@ -14,6 +14,49 @@ public sealed class TranscriptionServiceTests : IDisposable
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.TranscriptionServiceTests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task Fast_selection_wins_once_and_ignores_late_cleanup()
+    {
+        var cleanup = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var selection = new FinalTextSelection();
+        var result = selection.SelectAsync("Authoritative raw text", _ => cleanup.Task, CancellationToken.None);
+        Assert.True(selection.HasTranscript);
+        Assert.True(selection.UseTranscriptNow());
+        Assert.False(selection.UseTranscriptNow());
+        Assert.Equal("Authoritative raw text", await result);
+        cleanup.SetResult("Late edited text");
+        Assert.Equal("Authoritative raw text", await result);
+    }
+
+    [Fact]
+    public async Task Per_recording_fast_mode_skips_cleanup_without_changing_saved_settings()
+    {
+        var settings = new AppSettings { HistoryEnabled = false, Provider = new() { Type = ProviderType.OpenAi },
+            PostProcessor = new() { Enabled = true, SystemPrompt = "Keep this prompt" } };
+        var cleanup = new FakePostProcessor((_, _) => throw new InvalidOperationException());
+        var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider>
+            { [ProviderType.OpenAi] = new FakeProvider(ProviderType.OpenAi, "fake", _ => "raw final") }, cleanup,
+            new HistoryLogger(_baseDirectory), new ErrorLogger(_baseDirectory), () => { }, () => { });
+        await using var session = service.CreateSession(settings, CancellationToken.None);
+        session.SkipCleanup();
+        Assert.Equal("raw final", (await session.CompleteAsync(CreateAudioFile())).OutputText);
+        Assert.True(settings.PostProcessor.Enabled);
+        Assert.Equal("Keep this prompt", settings.PostProcessor.SystemPrompt);
+        Assert.Equal(0, cleanup.CallCount);
+    }
+
+    [Fact]
+    public async Task Completed_cleanup_and_cancellation_cannot_be_overwritten_by_fast_mode()
+    {
+        await using var selection = new FinalTextSelection();
+        var result = await selection.SelectAsync("raw", _ => Task.FromResult("edited"), CancellationToken.None);
+        Assert.False(selection.UseTranscriptNow());
+        Assert.Equal("edited", result);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => selection.SelectAsync("other", _ => Task.FromResult("other"), cancellation.Token));
+    }
+
+    [Fact]
     public async Task Feedback_runs_only_after_delivery_decision_and_failure_is_logged()
     {
         var provider = new FakeProvider(ProviderType.OpenAi, "fake", _ => "final");

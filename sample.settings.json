@@ -2,6 +2,7 @@
   "triggerMode": "toggle",
   "hotkey": "Ctrl+Shift+Space",
   "insertLatestHotkey": "Ctrl+Alt+Shift+V",
+  "fastOutputHotkey": "Ctrl+Alt+Shift+Space",
   "outputMode": "auto-type",
   "indicatorStyle": "bar-overlay",
   "defaultLanguage": "auto",

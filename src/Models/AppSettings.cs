@@ -272,6 +272,9 @@ public sealed record AppSettings
     [JsonPropertyName("insertLatestHotkey")]
     public string InsertLatestHotkey { get; init; } = "Ctrl+Alt+Shift+V";
 
+    [JsonPropertyName("fastOutputHotkey")]
+    public string FastOutputHotkey { get; init; } = "Ctrl+Alt+Shift+Space";
+
     [JsonPropertyName("outputMode")]
     public OutputMode OutputMode { get; init; } = OutputMode.AutoType;
 

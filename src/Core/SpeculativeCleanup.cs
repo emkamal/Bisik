@@ -115,4 +115,6 @@ internal sealed class SpeculativeCleanup : IAsyncDisposable
         _activeCancellation?.Dispose();
         _cache.Clear();
     }
+    public void CancelPending()
+    { lock (_gate) { _finalizing = true; _pending = null; _activeCancellation?.Cancel(); } }
 }

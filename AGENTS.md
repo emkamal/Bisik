@@ -49,6 +49,7 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
     WindowsTextOutputPlatform.cs # Win32/UI Automation focus validation
     WindowsClipboard.cs      # Clipboard snapshots with sequence ownership
     LatestResultStore.cs     # Atomic result retention and explicit insertion claims
+    FinalTextSelection.cs    # Exactly-once fast/edited result selection with independent cleanup cancellation
     HistoryLogger.cs         # Appends TranscriptionEntry to history.jsonl
     SettingsManager.cs       # Load/save/migrate settings.json via DPAPI
   /Providers
