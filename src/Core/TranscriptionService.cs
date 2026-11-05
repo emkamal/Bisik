@@ -41,6 +41,12 @@ public sealed class TranscriptionService(
 
     public event Action<ProcessingPhase>? PhaseChanged;
 
+    public void NotifyDeliveryCompleted()
+    {
+        try { _playSuccess(); }
+        catch (Exception exception) { _errorLogger.Log(exception); }
+    }
+
     public TranscriptionSession CreateSession(AppSettings settings, CancellationToken ct)
     {
         var snapshot = settings.Snapshot();
@@ -176,9 +182,6 @@ public sealed class TranscriptionService(
                 await _historyLogger.AppendAsync(entry, cancellationToken);
                 metrics.Mark(TimingStage.HistoryEnd);
             }
-            if (settings.SoundEnabled) metrics.Mark(TimingStage.SoundStart);
-            _playSuccess();
-            if (settings.SoundEnabled) metrics.Mark(TimingStage.SoundEnd);
             metrics.Mark(TimingStage.Ready);
             metrics.Publish(SessionOutcome.Ready);
 
@@ -198,7 +201,8 @@ public sealed class TranscriptionService(
         {
             metrics.Publish(SessionOutcome.Failed);
             _errorLogger.Log(exception);
-            _playError();
+            try { _playError(); }
+            catch (Exception feedbackException) { _errorLogger.Log(feedbackException); }
 
             return new TranscriptionResult(
                 Succeeded: false,

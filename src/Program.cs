@@ -286,7 +286,7 @@ static class Program
                 _startupRegistration.SetEnabled(fresh.LaunchAtStartup, Application.ExecutablePath);
             _settings = fresh;
             _hotkeyGesture = gesture;
-            _soundFeedback = new SoundFeedback(fresh.SoundEnabled);
+            _soundFeedback.SetEnabled(fresh.SoundEnabled);
             _transcriptionService.PhaseChanged -= OnTranscriptionPhaseChanged;
             _transcriptionService = CreateTranscriptionService(fresh);
             _transcriptionService.PhaseChanged += OnTranscriptionPhaseChanged;
@@ -384,6 +384,7 @@ static class Program
                 if (_processing && _processingTask is not null) await _processingTask;
                 else { _audioRecorder.AbortRecording(); ResetSession(); }
                 await _sessionDisposal;
+                await _soundFeedback.DisposeAsync();
             }
             catch (Exception exception) { _errorLogger.Log(exception); }
             finally { _shutdownDrained = true; ExitThread(); }
@@ -618,6 +619,7 @@ static class Program
                 }
                 var output = await _outputHandler.DispatchAsync(result, settings.OutputMode,
                     settings.AlwaysCopyToClipboard, _dictationTarget, cancellation.Token);
+                _transcriptionService.NotifyDeliveryCompleted();
                 if (!string.IsNullOrEmpty(output.Message)) _trayIcon.ShowBalloon("Bisik", output.Message);
                 metrics.Publish(output.Disposition switch
                 {

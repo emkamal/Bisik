@@ -14,6 +14,23 @@ public sealed class TranscriptionServiceTests : IDisposable
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.TranscriptionServiceTests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task Feedback_runs_only_after_delivery_decision_and_failure_is_logged()
+    {
+        var provider = new FakeProvider(ProviderType.OpenAi, "fake", _ => "final");
+        var feedbackCalls = 0;
+        var errors = new ErrorLogger(_baseDirectory);
+        var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            new FakePostProcessor((raw, _) => raw), new HistoryLogger(_baseDirectory), errors,
+            () => { feedbackCalls++; throw new IOException("sound failed"); }, () => { });
+        var result = await service.TranscribeAsync(CreateAudioFile(), "en", new AppSettings { HistoryEnabled = false, Provider = new() { Type = ProviderType.OpenAi } }, CancellationToken.None);
+        Assert.True(result.Succeeded);
+        Assert.Equal(0, feedbackCalls);
+        service.NotifyDeliveryCompleted();
+        Assert.Equal(1, feedbackCalls);
+        Assert.True(File.Exists(Path.Combine(_baseDirectory, "error.log")));
+    }
+
+    [Fact]
     public async Task Failed_live_final_falls_back_once_and_runs_cleanup_history_once()
     {
         var stream = new FakeSessionStream();
@@ -148,7 +165,7 @@ public sealed class TranscriptionServiceTests : IDisposable
         var stages = metrics.Snapshot(SessionOutcome.Ready).Events.Select(e => e.Stage).ToArray();
         Assert.Equal(new[] { TimingStage.StopRequested, TimingStage.TranscriptionStart, TimingStage.TranscriptionEnd,
             TimingStage.CleanupStart, TimingStage.CleanupEnd, TimingStage.HistoryStart, TimingStage.HistoryEnd,
-            TimingStage.SoundStart, TimingStage.SoundEnd, TimingStage.Ready }, stages);
+            TimingStage.Ready }, stages);
     }
 
     [Theory]
@@ -193,7 +210,7 @@ public sealed class TranscriptionServiceTests : IDisposable
         GetResultString(result, "OutputText").Should().Be("Selamat pagi.");
         (await history.ReadAllAsync()).Should().BeEmpty();
         File.Exists(Path.Combine(_baseDirectory, "history.jsonl")).Should().BeFalse();
-        GetSuccessSounds(service).Should().Be(1);
+        GetSuccessSounds(service).Should().Be(0);
     }
 
     [Theory]
@@ -243,7 +260,7 @@ public sealed class TranscriptionServiceTests : IDisposable
         GetResultString(result, "OutputText").Should().Be("Recovered.");
         provider.CallCount.Should().Be(2);
         (await history.ReadAllAsync()).Should().ContainSingle();
-        GetSuccessSounds(service).Should().Be(1);
+        GetSuccessSounds(service).Should().Be(0);
     }
 
     [Fact]
@@ -366,7 +383,7 @@ public sealed class TranscriptionServiceTests : IDisposable
         selectedProvider.CallCount.Should().Be(1);
         unusedProvider.CallCount.Should().Be(0);
         postProcessor.CallCount.Should().Be(1);
-        GetSuccessSounds(service).Should().Be(1);
+        GetSuccessSounds(service).Should().Be(0);
         GetErrorSounds(service).Should().Be(0);
 
         var history = await historyLogger.ReadAllAsync();
@@ -416,7 +433,7 @@ public sealed class TranscriptionServiceTests : IDisposable
         GetResultBool(result, "Succeeded").Should().BeTrue();
         GetResultString(result, "OutputText").Should().Be("retry success");
         provider.CallCount.Should().Be(2);
-        GetSuccessSounds(service).Should().Be(1);
+        GetSuccessSounds(service).Should().Be(0);
         GetErrorSounds(service).Should().Be(0);
     }
 

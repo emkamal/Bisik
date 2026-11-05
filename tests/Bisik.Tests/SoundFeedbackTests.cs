@@ -1,13 +1,37 @@
 using System.Reflection;
 using FluentAssertions;
 using Xunit.Sdk;
+using Bisik.Core;
 
 namespace Bisik.Tests;
 
 public sealed class SoundFeedbackTests
 {
     [Fact]
-    public void Play_success_should_load_success_resource_and_invoke_player_when_enabled()
+    public async Task Delayed_or_failed_playback_is_owned_nonblocking_and_logged()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var errors = new List<Exception>();
+        using var stream = new MemoryStream([1, 2]);
+        await using var sound = new SoundFeedback(true, _ => stream, s =>
+        {
+            entered.Set();
+            Assert.True(release.Wait(TimeSpan.FromSeconds(2)));
+            Assert.True(s.CanRead);
+            throw new IOException("playback failed");
+        }, errors.Add);
+        sound.PlaySuccess();
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+        Assert.False(sound.DrainAsync().IsCompleted);
+        release.Set();
+        await sound.DrainAsync();
+        Assert.Single(errors);
+        Assert.False(stream.CanRead);
+    }
+
+    [Fact]
+    public async Task Play_success_should_load_success_resource_and_invoke_player_when_enabled()
     {
         var playedResources = new List<string>();
         var service = CreateService(
@@ -16,12 +40,13 @@ public sealed class SoundFeedbackTests
             player: stream => playedResources.Add(ReadTag(stream)));
 
         InvokeInstance(service, "PlaySuccess");
+        await ((SoundFeedback)service).DrainAsync();
 
         playedResources.Should().ContainSingle().Which.Should().Be("Bisik.Resources.success.wav");
     }
 
     [Fact]
-    public void Play_error_should_load_error_resource_and_invoke_player_when_enabled()
+    public async Task Play_error_should_load_error_resource_and_invoke_player_when_enabled()
     {
         var playedResources = new List<string>();
         var service = CreateService(
@@ -30,6 +55,7 @@ public sealed class SoundFeedbackTests
             player: stream => playedResources.Add(ReadTag(stream)));
 
         InvokeInstance(service, "PlayError");
+        await ((SoundFeedback)service).DrainAsync();
 
         playedResources.Should().ContainSingle().Which.Should().Be("Bisik.Resources.error.wav");
     }

@@ -108,6 +108,11 @@ dotnet run --project tools/Bisik.Diagnostics -- --benchmark artifacts/latency/sy
 
 Repetitions are limited to 1–5 and each attempt to 120 seconds; Ctrl+C cancels.
 Reports contain opaque labels, monotonic stages and byte/attempt counts, without transcripts or endpoints.
+Success audio is queued after the output decision; owned player/stream playback and shutdown
+drain run without blocking insertion. Sound failure is logged separately. History remains
+durable before delivery; local synthetic measurements showed ~0.3–0.5 ms warm history writes
+(27 ms first write) and ~0.5 ms warm WAV export (5.4 ms first write). These disk samples are
+not production guarantees. Measure locally with `--local-costs <synthetic.wav> --output report.json --repeat 3`.
 Use `--mode live` to replay PCM16 mono at capture speed. Optional `--delay low` and
 `--pause-commits on` override only the diagnostic copy. Settings exposes live capture,
 phrase commits (both off by default) and provider-default delay omission. The dedicated

@@ -34,6 +34,7 @@ public sealed class SessionMetrics(string configuration, IMetricsSink? sink = nu
     private readonly Dictionary<MetricCount, long> _counts = [];
     private readonly string _configuration = ValidateLabel(configuration);
     public Guid Id { get; } = Guid.NewGuid();
+    public SessionOutcome LastOutcome { get; private set; } = SessionOutcome.Ready;
     public double? AudioDurationMs { get; set; }
     public static SessionMetrics? Current => Ambient.Value;
 
@@ -71,6 +72,7 @@ public sealed class SessionMetrics(string configuration, IMetricsSink? sink = nu
 
     public void Publish(SessionOutcome outcome)
     {
+        LastOutcome = outcome;
         // Instrumentation must not turn delivery into a failure (e.g. a full trace disk).
         try { sink?.Write(Snapshot(outcome)); }
         catch (Exception exception) { Trace.TraceError("Bisik metrics sink failed: {0}", exception.GetType().Name); }
@@ -86,17 +88,17 @@ public sealed class SessionMetrics(string configuration, IMetricsSink? sink = nu
 public sealed class BoundedMetricsFileSink(string path) : IMetricsSink
 {
     private readonly object _gate = new();
-    private int _written;
+    private readonly HashSet<Guid> _sessions = [];
     public void Write(SessionTimingReport report)
     {
         lock (_gate)
         {
             var json = JsonSerializer.Serialize(report) + Environment.NewLine;
             var info = new FileInfo(path);
-            if (_written >= 100 || (info.Exists ? info.Length : 0) + System.Text.Encoding.UTF8.GetByteCount(json) > 2 * 1024 * 1024) return;
+            if ((_sessions.Count >= 100 && !_sessions.Contains(report.SessionId)) || (info.Exists ? info.Length : 0) + System.Text.Encoding.UTF8.GetByteCount(json) > 2 * 1024 * 1024) return;
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
             File.AppendAllText(path, json);
-            _written++;
+            _sessions.Add(report.SessionId);
         }
     }
 }

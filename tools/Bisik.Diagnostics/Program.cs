@@ -12,6 +12,8 @@ internal static class Program
             return LatencyDiagnostics.RunAsync(args[1..]).GetAwaiter().GetResult();
         if (args.Length > 0 && args[0] == "--cleanup-benchmark")
             return LatencyDiagnostics.RunAsync(["synthetic-corpus", .. args[1..]], cleanupOnly: true).GetAwaiter().GetResult();
+        if (args.Length > 0 && args[0] == "--local-costs")
+            return LocalPersistenceDiagnostics.RunAsync(args[1..]).GetAwaiter().GetResult();
         if (args.Length > 0 && args[0] is "--azure-file" or "--azure-once")
             return AzureDiagnostics.RunAsync(args[1..], singleRequest: args[0] == "--azure-once").GetAwaiter().GetResult();
 
