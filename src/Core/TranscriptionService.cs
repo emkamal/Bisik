@@ -41,6 +41,17 @@ public sealed class TranscriptionService(
 
     public event Action<ProcessingPhase>? PhaseChanged;
 
+    public TranscriptionSession CreateSession(AppSettings settings, CancellationToken ct)
+    {
+        var snapshot = settings.Snapshot();
+        var provider = ResolveProvider(snapshot.Provider);
+        var stream = snapshot.LiveCapture && provider is IStreamingTranscriptionProvider { SupportsStreaming: true } live
+            ? live.CreateStream() : null;
+        return new TranscriptionSession(snapshot, ct, stream, (session, path, token) =>
+            TranscribeCoreAsync(path, session.Settings.DefaultLanguage, session.Settings, token,
+                session.Stream is null ? null : session.Stream.CommitAndFinalizeAsync));
+    }
+
     public ITranscriptionProvider ResolveProvider(ProviderSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
@@ -66,7 +77,8 @@ public sealed class TranscriptionService(
         string audioFilePath,
         string language,
         AppSettings settings,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<CancellationToken, Task<string>>? recognize = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(audioFilePath);
         ArgumentNullException.ThrowIfNull(settings);
@@ -82,7 +94,9 @@ public sealed class TranscriptionService(
             PhaseChanged?.Invoke(ProcessingPhase.Transcribing);
             var transcriptionStopwatch = Stopwatch.StartNew();
             metrics.Mark(TimingStage.TranscriptionStart);
-            var rawText = await TranscribeWithRetryAsync(provider, audioFilePath, language, cancellationToken);
+            var rawText = recognize is null
+                ? await TranscribeWithRetryAsync(provider, audioFilePath, language, cancellationToken)
+                : await recognize(cancellationToken);
             metrics.Mark(TimingStage.TranscriptionEnd);
             transcriptionStopwatch.Stop();
             cancellationToken.ThrowIfCancellationRequested();

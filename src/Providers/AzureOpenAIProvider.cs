@@ -3,13 +3,19 @@ using Bisik.Models;
 namespace Bisik.Providers;
 
 public sealed class AzureOpenAIProvider(HttpClient httpClient, ProviderSettings settings, IAzureRealtimeTranscriber? realtimeTranscriber = null)
-    : OpenAICompatibleProviderBase(httpClient, settings)
+    : OpenAICompatibleProviderBase(httpClient, settings), IStreamingTranscriptionProvider
 {
     private readonly IAzureRealtimeTranscriber _realtimeTranscriber = realtimeTranscriber ?? new AzureRealtimeTranscriber(httpClient);
 
     public override string Name => "Azure OpenAI";
 
     public override ProviderType Type => ProviderType.AzureOpenAi;
+
+    public bool SupportsStreaming => UsesRealtime(Settings);
+    public Bisik.Core.IRealtimeTranscriber CreateStream() => new Bisik.Core.RealtimeTranscriptionStream(HttpClient);
+    internal static bool UsesRealtime(ProviderSettings settings) => settings.AzureRealtime ||
+        settings.DeploymentName.Contains("realtime", StringComparison.OrdinalIgnoreCase) ||
+        (settings.Model?.Contains("realtime", StringComparison.OrdinalIgnoreCase) ?? false);
 
     public override async Task<string> TranscribeAsync(string audioFilePath, string language, CancellationToken cancellationToken)
     {
@@ -18,8 +24,7 @@ public sealed class AzureOpenAIProvider(HttpClient httpClient, ProviderSettings 
             throw new InvalidOperationException("Azure OpenAI requires a deployment name.");
         }
 
-        if (Settings.AzureRealtime || Settings.DeploymentName.Contains("realtime", StringComparison.OrdinalIgnoreCase) ||
-            (Settings.Model?.Contains("realtime", StringComparison.OrdinalIgnoreCase) ?? false))
+        if (UsesRealtime(Settings))
         {
             return await _realtimeTranscriber.TranscribeAsync(audioFilePath, language, Settings, cancellationToken);
         }

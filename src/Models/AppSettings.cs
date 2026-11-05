@@ -217,6 +217,22 @@ public sealed record PostProcessorSettings
 
 public sealed record AppSettings
 {
+    [JsonPropertyName("liveCapture")]
+    public bool LiveCapture { get; init; }
+
+    // Records are shallowly immutable; copy mutable collections at the session boundary.
+    public AppSettings Snapshot() => this with
+    {
+        QuickLanguages = (string[])QuickLanguages.Clone(),
+        Provider = CopyProvider(Provider),
+        PostProcessor = PostProcessor with { Provider = CopyProvider(PostProcessor.Provider) },
+    };
+
+    private static ProviderSettings CopyProvider(ProviderSettings provider) => provider with
+    {
+        ExtraHeaders = provider.ExtraHeaders is null ? null : new(provider.ExtraHeaders),
+    };
+
     [JsonPropertyName("triggerMode")]
     public TriggerMode TriggerMode { get; init; } = TriggerMode.Toggle;
 

@@ -437,7 +437,7 @@ static class Program
             if (_sessionCancellation is not null || _processing) return;
             // Capture the field before any overlay or asynchronous work can change focus.
             _dictationTarget = _textOutput.CaptureTarget();
-            _sessionSettings = _settings;
+            _sessionSettings = _settings.Snapshot();
             _sessionMetrics = new SessionMetrics(_settings.Provider.Type.ToString(), _metricsSink);
             _sessionMetrics.Mark(TimingStage.CaptureStart);
             _sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCancellation.Token);

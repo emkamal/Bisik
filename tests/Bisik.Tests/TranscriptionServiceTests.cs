@@ -13,6 +13,101 @@ public sealed class TranscriptionServiceTests : IDisposable
 {
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.TranscriptionServiceTests", Guid.NewGuid().ToString("N"));
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("  ")]
+    public async Task Live_empty_final_skips_cleanup_and_history(string final)
+    {
+        var stream = new FakeSessionStream();
+        stream.Final.SetResult(final);
+        var provider = new StreamingProvider(stream);
+        var cleanup = new FakePostProcessor((_, _) => throw new InvalidOperationException());
+        var history = new HistoryLogger(_baseDirectory);
+        var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            cleanup, history, new ErrorLogger(_baseDirectory), () => { }, () => { });
+        await using var session = service.CreateSession(new AppSettings { LiveCapture = true,
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi }, PostProcessor = new PostProcessorSettings { Enabled = true } }, CancellationToken.None);
+        await session.StartAsync();
+        Assert.Equal(string.Empty, (await session.CompleteAsync("fixture.wav")).OutputText);
+        Assert.Empty(await history.ReadAllAsync());
+        Assert.Equal(0, cleanup.CallCount);
+    }
+
+    [Fact]
+    public async Task Live_session_uses_one_final_pipeline_and_snapshots_settings()
+    {
+        var stream = new FakeSessionStream();
+        var provider = new StreamingProvider(stream);
+        var cleanup = new FakePostProcessor((raw, _) => raw + " cleaned");
+        var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            cleanup, new HistoryLogger(_baseDirectory), new ErrorLogger(_baseDirectory), () => { }, () => { });
+        var headers = new Dictionary<string, string> { ["test"] = "original" };
+        var settings = new AppSettings { LiveCapture = true, HistoryEnabled = false,
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi, ExtraHeaders = headers },
+            PostProcessor = new PostProcessorSettings { Enabled = true } };
+        await using var session = service.CreateSession(settings, CancellationToken.None);
+        headers["test"] = "changed";
+        Assert.Equal("original", session.Settings.Provider.ExtraHeaders!["test"]);
+        await session.StartAsync();
+        var first = session.CompleteAsync("fixture.wav");
+        var second = session.CompleteAsync("fixture.wav");
+        Assert.Same(first, second);
+        stream.Final.TrySetResult("Final words");
+        Assert.Equal("Final words cleaned", (await first).OutputText);
+        Assert.Equal(1, cleanup.CallCount);
+        Assert.Equal(0, provider.FileCalls);
+        Assert.Equal(DictationState.Ready, session.State);
+    }
+
+    [Fact]
+    public async Task Cancelled_session_rejects_late_final_and_default_remains_file()
+    {
+        var stream = new FakeSessionStream();
+        var provider = new StreamingProvider(stream);
+        var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            new FakePostProcessor((raw, _) => raw), new HistoryLogger(_baseDirectory), new ErrorLogger(_baseDirectory), () => { }, () => { });
+        var settings = new AppSettings { HistoryEnabled = false, Provider = new ProviderSettings { Type = ProviderType.OpenAi } };
+        await using (var file = service.CreateSession(settings, CancellationToken.None))
+        {
+            Assert.Null(file.Stream);
+            Assert.True((await file.CompleteAsync("fixture.wav")).Succeeded);
+            Assert.Equal(1, provider.FileCalls);
+        }
+        Assert.False(System.Text.Json.JsonSerializer.Deserialize<AppSettings>("{}")!.LiveCapture);
+        Assert.True(System.Text.Json.JsonSerializer.Deserialize<AppSettings>(System.Text.Json.JsonSerializer.Serialize(settings with { LiveCapture = true }))!.LiveCapture);
+        await using var session = service.CreateSession(settings with { LiveCapture = true }, CancellationToken.None);
+        await session.StartAsync();
+        var task = session.CompleteAsync("fixture.wav");
+        session.Cancel();
+        stream.Final.TrySetResult("Too late");
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        Assert.Equal(DictationState.Cancelled, session.State);
+    }
+
+    private sealed class StreamingProvider(FakeSessionStream stream) : ITranscriptionProvider, IStreamingTranscriptionProvider
+    {
+        public string Name => "fake";
+        public ProviderType Type => ProviderType.OpenAi;
+        public bool SupportsStreaming => true;
+        public int FileCalls;
+        public IRealtimeTranscriber CreateStream() => stream;
+        public Task<string> TranscribeAsync(string path, string language, CancellationToken ct)
+        { FileCalls++; return Task.FromResult("File result"); }
+    }
+
+    private sealed class FakeSessionStream : IRealtimeTranscriber
+    {
+        public TaskCompletionSource<string> Final { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task StartAsync(AppSettings settings, string language, CancellationToken ct) => Task.CompletedTask;
+        public Task PushAudioChunkAsync(byte[] data, int count, CancellationToken ct) => Task.CompletedTask;
+        public Task<string> CommitAndFinalizeAsync(CancellationToken ct) => Final.Task;
+        public Task CommitIntermediateSegmentAsync(CancellationToken ct) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public event EventHandler<PartialTranscriptEventArgs>? PartialTranscriptAvailable { add { } remove { } }
+        public event EventHandler<RealtimeCompletedEventArgs>? TranscriptionCompleted { add { } remove { } }
+        public event EventHandler<RealtimeFailedEventArgs>? TranscriptionFailed { add { } remove { } }
+    }
+
     [Fact]
     public async Task Metrics_cover_pipeline_order_without_content()
     {
