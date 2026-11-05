@@ -22,6 +22,7 @@ public sealed class SettingsForm : Form
     private ComboBox? _transcriptionDelayComboBox;
     private CheckBox? _pauseCommitsCheckBox;
     private ComboBox? _reasoningEffortComboBox;
+    private TextBox? _insertLatestHotkeyTextBox;
     private TextBox? _verifiedReasoningEffortsTextBox;
     private CheckBox? _speculativeCleanupCheckBox;
     private CheckBox? _launchAtStartupCheckBox;
@@ -144,6 +145,11 @@ public sealed class SettingsForm : Form
         };
         _hotkeyTextBox.PreviewKeyDown += HandleHotkeyPreviewKeyDown;
         _hotkeyTextBox.KeyDown += HandleHotkeyKeyDown;
+        _insertLatestHotkeyTextBox = new TextBox { Text = new AppSettings().InsertLatestHotkey, Width = 220, ReadOnly = true, ShortcutsEnabled = false };
+        _insertLatestHotkeyTextBox.PreviewKeyDown += HandleHotkeyPreviewKeyDown;
+        _insertLatestHotkeyTextBox.KeyDown += HandleHotkeyKeyDown;
+        layout.Controls.Add(CreateFieldLabel("Insert latest hotkey"), 0, 7);
+        layout.Controls.Add(_insertLatestHotkeyTextBox, 1, 7);
         var hotkeyHintLabel = new Label
         {
             Text = "Click the field, then press the hotkey combination you want Bisik to use.",
@@ -1020,6 +1026,7 @@ public sealed class SettingsForm : Form
         }
 
         SetComboSelection(_triggerModeComboBox, settings.TriggerMode);
+        if (_insertLatestHotkeyTextBox is not null) _insertLatestHotkeyTextBox.Text = settings.InsertLatestHotkey;
         _hotkeyTextBox?.SetBounds(_hotkeyTextBox.Left, _hotkeyTextBox.Top, _hotkeyTextBox.Width, _hotkeyTextBox.Height);
         if (_hotkeyTextBox is not null)
         {
@@ -1132,6 +1139,7 @@ public sealed class SettingsForm : Form
             LaunchAtStartup = _launchAtStartupCheckBox?.Checked ?? defaults.LaunchAtStartup,
             TriggerMode = GetSelectedComboValue(_triggerModeComboBox, defaults.TriggerMode),
             Hotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox?.Text) ? defaults.Hotkey : _hotkeyTextBox.Text,
+            InsertLatestHotkey = _insertLatestHotkeyTextBox?.Text ?? defaults.InsertLatestHotkey,
             OutputMode = GetSelectedComboValue(_outputModeComboBox, defaults.OutputMode),
             IndicatorStyle = GetSelectedComboValue(_indicatorStyleComboBox, defaults.IndicatorStyle),
             DefaultLanguage = GetSelectedComboValue(_defaultLanguageComboBox, defaults.DefaultLanguage),

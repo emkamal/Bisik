@@ -50,6 +50,7 @@ internal static class Program
             var outcome = args.Contains("--capture-only")
                 ? new OutputDispatchResult(OutputDisposition.Skipped, target.UnsafeReason)
                 : await output.InsertAsync(ProbeText, target, args.Contains("--keep-clipboard"), CancellationToken.None);
+            await output.DrainAsync();
 
             await WriteReportAsync(args, new
             {

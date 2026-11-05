@@ -10,6 +10,7 @@ static class Program
 {
     private const string SingleInstanceMutexName = @"Global\Bisik.SingleInstance";
     private const int MainHotkeyId = 0x4249;
+    private const int InsertLatestHotkeyId = 0x424A;
     private static readonly uint ShowSettingsMessage = RegisterWindowMessage("Bisik.ShowSettings");
     private static readonly object GlobalExceptionHandlerLock = new();
     private static Mutex? _singleInstanceMutex;
@@ -117,6 +118,8 @@ static class Program
         private HistoryForm? _historyForm;
 
         private readonly WindowsTextOutput _textOutput;
+        private readonly LatestResultStore _latestResult = new();
+        private Task _recoveryTask = Task.CompletedTask;
         private DictationTarget? _dictationTarget;
         private CancellationTokenSource? _sessionCancellation;
         private AppSettings? _sessionSettings;
@@ -175,6 +178,7 @@ static class Program
                 {
                     await HandleRegisteredHotkeyAsync();
                 }
+                else if (hotkeyId == InsertLatestHotkeyId) await InsertLatestAsync();
             };
 
             _trayIcon = new TrayIcon(
@@ -192,6 +196,11 @@ static class Program
                     PostProcessor = _settings.PostProcessor with { Enabled = enabled },
                 }));
             _trayIcon.SetSelectedLanguage(_settings.DefaultLanguage);
+            _trayIcon.AddResultCommands(() => _ = InsertLatestAsync(), () =>
+            {
+                if (_latestResult.Latest is { } pending) _latestResult.Dismiss(pending.Id);
+                ShowPendingState();
+            });
             _trayIcon.SetPostProcessorEnabled(_settings.PostProcessor.Enabled);
             RegisterConfiguredHotkey();
             _messageWindow.SettingsRequested += (_, _) => ShowSettings();
@@ -259,6 +268,8 @@ static class Program
                 _hotkeyGesture = HotkeyManager.ParseHotkey(_settings.Hotkey);
                 if (!_hotkeyManager.Register(MainHotkeyId, _hotkeyGesture))
                     throw new InvalidOperationException("The hotkey is already registered by another application.");
+                if (!_hotkeyManager.Register(InsertLatestHotkeyId, HotkeyManager.ParseHotkey(_settings.InsertLatestHotkey)))
+                    throw new InvalidOperationException("Insert latest result hotkey is unavailable. Choose another binding in Settings.");
             }
             catch (Exception exception)
             {
@@ -275,10 +286,14 @@ static class Program
             {
                 if (!_hotkeyManager.Register(MainHotkeyId, gesture))
                     throw new InvalidOperationException("The hotkey is already registered by another application.");
+                if (!_hotkeyManager.Register(InsertLatestHotkeyId, HotkeyManager.ParseHotkey(fresh.InsertLatestHotkey)))
+                    throw new InvalidOperationException("Insert latest result hotkey is already registered by another application.");
             }
             catch
             {
+                _hotkeyManager.UnregisterAll();
                 _hotkeyManager.Register(MainHotkeyId, _hotkeyGesture);
+                _hotkeyManager.Register(InsertLatestHotkeyId, HotkeyManager.ParseHotkey(_settings.InsertLatestHotkey));
                 throw;
             }
             // Only an explicit change in Settings touches startup registration.
@@ -384,6 +399,9 @@ static class Program
                 if (_processing && _processingTask is not null) await _processingTask;
                 else { _audioRecorder.AbortRecording(); ResetSession(); }
                 await _sessionDisposal;
+                await _recoveryTask;
+                await _textOutput.DrainAsync();
+                _latestResult.Clear();
                 await _soundFeedback.DisposeAsync();
             }
             catch (Exception exception) { _errorLogger.Log(exception); }
@@ -530,8 +548,45 @@ static class Program
             _processing = false;
             if (!_isShuttingDown)
             {
-                _overlayWindow.HideOverlay();
-                _trayIcon.SetState(TrayIconState.Idle);
+                ShowPendingState();
+            }
+        }
+
+        private void ShowPendingState()
+        {
+            if (_latestResult.Latest is not null)
+            {
+                _trayIcon.SetState(TrayIconState.Ready);
+                _overlayWindow.ShowProcessingOverlay(OverlayProcessingPhase.Ready);
+            }
+            else { _overlayWindow.HideOverlay(); _trayIcon.SetState(TrayIconState.Idle); }
+        }
+
+        private Task InsertLatestAsync()
+        {
+            if (_isShuttingDown || _settingsForm is { Visible: true }) return Task.CompletedTask;
+            var claim = _latestResult.Claim();
+            if (claim is null) return Task.CompletedTask;
+            return _recoveryTask = InsertLatestCoreAsync(claim);
+        }
+
+        private async Task InsertLatestCoreAsync(PendingResult claim)
+        {
+            var dispatched = false;
+            try
+            {
+                using var target = _textOutput.CaptureTarget();
+                var output = await _outputHandler.DispatchAsync(claim.Result, OutputMode.AutoType,
+                    _settings.AlwaysCopyToClipboard, target, _shutdownCancellation.Token);
+                dispatched = output.Disposition == OutputDisposition.Inserted;
+                if (!string.IsNullOrEmpty(output.Message)) _trayIcon.ShowBalloon("Bisik", output.Message);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception exception) { _errorLogger.Log(exception); }
+            finally
+            {
+                _latestResult.CompleteClaim(claim.Id, dispatched);
+                if (!_isShuttingDown && !_processing) ShowPendingState();
             }
         }
 
@@ -617,8 +672,18 @@ static class Program
                     _trayIcon.ShowBalloon("Bisik", "No speech was recognized.");
                     return;
                 }
-                var output = await _outputHandler.DispatchAsync(result, settings.OutputMode,
-                    settings.AlwaysCopyToClipboard, _dictationTarget, cancellation.Token);
+                var pending = _latestResult.Publish(result);
+                var claim = _latestResult.Claim(pending.Id);
+                if (claim is null) return;
+                OutputDispatchResult output;
+                var dispatched = false;
+                try
+                {
+                    output = await _outputHandler.DispatchAsync(result, settings.OutputMode,
+                        settings.AlwaysCopyToClipboard, _dictationTarget, cancellation.Token);
+                    dispatched = output.Disposition == OutputDisposition.Inserted;
+                }
+                finally { _latestResult.CompleteClaim(claim.Id, dispatched); }
                 _transcriptionService.NotifyDeliveryCompleted();
                 if (!string.IsNullOrEmpty(output.Message)) _trayIcon.ShowBalloon("Bisik", output.Message);
                 metrics.Publish(output.Disposition switch
@@ -699,10 +764,12 @@ static class Program
             }
         }
 
-        private static void HandlePopupOutput(string text)
+        private void HandlePopupOutput(string text)
         {
+            var id = _latestResult.ClaimedId;
             using var popup = new ReviewPopupForm(text);
             popup.ShowDialog();
+            if (id is { } claimed) _latestResult.Dismiss(claimed);
         }
 
         private static HiddenMessageWindow CreateMessageWindow()

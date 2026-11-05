@@ -8,6 +8,46 @@ public sealed class OutputHandlerTests
 {
     private const string Dictation = "Selamat pagi, Indonesia! — café 😀\r\nSecond paragraph.\r\n";
 
+    [Fact]
+    public void Recovery_claims_once_retains_failures_and_cannot_clear_newer_results()
+    {
+        var store = new LatestResultStore();
+        var first = store.Publish(Success());
+        Assert.Equal(first, store.Claim());
+        Assert.Null(store.Claim());
+        var newer = store.Publish(new(true, "new", "new"));
+        store.CompleteClaim(first.Id, dispatched: true);
+        Assert.Equal(newer, store.Latest);
+        Assert.Equal(newer, store.Claim());
+        store.CompleteClaim(newer.Id, dispatched: false);
+        Assert.Equal(newer, store.Latest);
+        Assert.Equal(newer, store.Claim());
+        store.CompleteClaim(newer.Id, dispatched: true);
+        Assert.Null(store.Latest);
+    }
+
+    [Fact]
+    public async Task Paste_dispatch_precedes_owned_serial_clipboard_restoration()
+    {
+        var platform = new FakeTextOutputPlatform();
+        var restore = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var output = new WindowsTextOutput(platform, (delay, ct) => delay.TotalMilliseconds == 600 ? restore.Task : Task.CompletedTask);
+        using var firstTarget = output.CaptureTarget();
+        var first = await output.InsertAsync("first", firstTarget, false, CancellationToken.None);
+        Assert.Equal(OutputDisposition.Inserted, first.Disposition);
+        Assert.Equal(new[] { "first" }, platform.Pasted);
+        Assert.False(output.DrainAsync().IsCompleted);
+        using var secondTarget = output.CaptureTarget();
+        var second = output.InsertAsync("second", secondTarget, false, CancellationToken.None);
+        Assert.False(second.IsCompleted);
+        platform.CopyExternally("newer clipboard");
+        restore.SetResult();
+        await second;
+        await output.DrainAsync();
+        Assert.Equal(new[] { "first", "second" }, platform.Pasted);
+        Assert.Equal("newer clipboard", platform.ClipboardText);
+    }
+
     [Theory]
     [InlineData(OutputMode.AutoType)]
     [InlineData(OutputMode.RealtimeAutoType)]

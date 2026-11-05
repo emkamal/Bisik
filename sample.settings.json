@@ -1,6 +1,7 @@
 {
   "triggerMode": "toggle",
   "hotkey": "Ctrl+Shift+Space",
+  "insertLatestHotkey": "Ctrl+Alt+Shift+V",
   "outputMode": "auto-type",
   "indicatorStyle": "bar-overlay",
   "defaultLanguage": "auto",

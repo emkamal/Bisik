@@ -42,6 +42,13 @@ public sealed class WindowsTextOutput : IDisposable
     private readonly ITextOutputPlatform _platform;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
     private readonly Action<Exception> _logError;
+    private readonly SemaphoreSlim _transactionGate = new(1, 1);
+    private Task _restoration = Task.CompletedTask;
+    private bool _disposed;
+    private int _platformDisposed;
+    private readonly object _lifetimeGate = new();
+    private int _activeTransactions;
+    private TaskCompletionSource? _idle;
 
     public WindowsTextOutput(Action<Exception>? logError = null)
         : this(new WindowsTextOutputPlatform(logError), Task.Delay, logError)
@@ -60,6 +67,28 @@ public sealed class WindowsTextOutput : IDisposable
 
     public async Task<OutputDispatchResult> InsertAsync(string text, DictationTarget? target,
         bool alwaysCopyToClipboard, CancellationToken cancellationToken)
+    {
+        lock (_lifetimeGate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_activeTransactions++ == 0) _idle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        var acquired = false;
+        var release = true;
+        try
+        {
+            await _transactionGate.WaitAsync(cancellationToken);
+            acquired = true;
+            return await InsertCoreAsync(text, target, alwaysCopyToClipboard, cancellationToken, () => release = false);
+        }
+        finally
+        {
+            if (release) { if (acquired) _transactionGate.Release(); CompleteTransaction(); }
+        }
+    }
+
+    private async Task<OutputDispatchResult> InsertCoreAsync(string text, DictationTarget? target,
+        bool alwaysCopyToClipboard, CancellationToken cancellationToken, Action transferRestoration)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(text)) return new(OutputDisposition.Skipped);
@@ -112,14 +141,30 @@ public sealed class WindowsTextOutput : IDisposable
         {
             // Windows has no general paste acknowledgement. Allow the target to consume the data,
             // then restore only while Bisik still owns this exact clipboard revision.
-            await _delay(TimeSpan.FromMilliseconds(600), CancellationToken.None);
-            var restored = _platform.TryRestoreClipboard(snapshot, ownedSequence.Value);
-            if (!restored && _platform.ClipboardSequence == ownedSequence)
-                return new(OutputDisposition.Inserted, "Paste sent. The clipboard could not be restored and still contains the transcription.");
-            if (restored) SessionMetrics.Current?.Mark(TimingStage.ClipboardRestored);
+            transferRestoration();
+            _restoration = RestoreAsync(snapshot, ownedSequence.Value, SessionMetrics.Current);
         }
 
         return new(OutputDisposition.Inserted);
+    }
+
+    public Task DrainAsync() { lock (_lifetimeGate) return _idle?.Task ?? Task.CompletedTask; }
+
+    private async Task RestoreAsync(ClipboardSnapshot snapshot, uint sequence, SessionMetrics? metrics)
+    {
+        try
+        {
+            await _delay(TimeSpan.FromMilliseconds(600), CancellationToken.None);
+            if (_platform.TryRestoreClipboard(snapshot, sequence)) metrics?.Mark(TimingStage.ClipboardRestored);
+            else if (_platform.ClipboardSequence == sequence) _logError(new IOException("Paste was dispatched but clipboard restoration failed."));
+        }
+        catch (Exception exception) { try { _logError(exception); } catch { /* Delivery already happened. */ } }
+        finally
+        {
+            _transactionGate.Release();
+            metrics?.Publish(metrics.LastOutcome);
+            CompleteTransaction();
+        }
     }
 
     public OutputDispatchResult Copy(string text)
@@ -139,7 +184,18 @@ public sealed class WindowsTextOutput : IDisposable
         return new(OutputDisposition.Copied, reason + " Transcription copied; select your target and paste manually.");
     }
 
-    public void Dispose() => _platform.Dispose();
+    public void Dispose()
+    {
+        lock (_lifetimeGate) { _disposed = true; if (_activeTransactions == 0) DisposePlatform(); }
+    }
+    private void CompleteTransaction()
+    {
+        lock (_lifetimeGate)
+        {
+            if (--_activeTransactions == 0) { _idle?.TrySetResult(); if (_disposed) DisposePlatform(); }
+        }
+    }
+    private void DisposePlatform() { if (Interlocked.Exchange(ref _platformDisposed, 1) == 0) _platform.Dispose(); }
 }
 
 internal interface ITextOutputPlatform : IDisposable

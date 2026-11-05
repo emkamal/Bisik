@@ -17,6 +17,7 @@ public enum OverlayProcessingPhase
 {
     Transcribing,
     PostProcessing,
+    Ready,
 }
 
 /// <summary>
@@ -346,6 +347,11 @@ public sealed class OverlayWindow : Form
                     break;
                 case OverlayWindowMode.Processing when _processingPhase == OverlayProcessingPhase.Transcribing:
                     RenderTranscribing(graphics, content);
+                    break;
+                case OverlayWindowMode.Processing when _processingPhase == OverlayProcessingPhase.Ready:
+                    using (var font = new Font((SystemFonts.MessageBoxFont ?? SystemFonts.DefaultFont).FontFamily, 11))
+                    using (var brush = new SolidBrush(Color.White))
+                        graphics.DrawString("Ready · Insert", font, brush, content);
                     break;
                 case OverlayWindowMode.Processing:
                     RenderPostProcessing(graphics, content);

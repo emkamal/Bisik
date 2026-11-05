@@ -8,6 +8,7 @@ public enum TrayIconState
     Recording,
     Transcribing,
     PostProcessing,
+    Ready,
 }
 
 public sealed class TrayIcon : IDisposable
@@ -59,6 +60,7 @@ public sealed class TrayIcon : IDisposable
             [TrayIconState.Recording] = CreateStateIcon(Color.FromArgb(196, 62, 47)),
             [TrayIconState.Transcribing] = CreateStateIcon(Color.FromArgb(208, 140, 36)),
             [TrayIconState.PostProcessing] = CreateStateIcon(Color.FromArgb(78, 154, 168)),
+            [TrayIconState.Ready] = CreateStateIcon(Color.FromArgb(78, 154, 168)),
         };
         _languageItems = new Dictionary<string, ToolStripMenuItem>(StringComparer.OrdinalIgnoreCase);
         _languageMenuItem = CreateLanguageMenuItem();
@@ -87,6 +89,12 @@ public sealed class TrayIcon : IDisposable
         _notifyIcon.DoubleClick += (_, _) => onOpenSettings();
     }
 
+    public void AddResultCommands(Action insert, Action dismiss)
+    {
+        _contextMenu.Items.Insert(0, new ToolStripMenuItem("Insert latest result here", null, (_, _) => insert()));
+        _contextMenu.Items.Insert(1, new ToolStripMenuItem("Dismiss latest result", null, (_, _) => dismiss()));
+    }
+
     public NotifyIcon NotifyIcon => _notifyIcon;
 
     public TrayIconState State { get; private set; } = TrayIconState.Idle;
@@ -97,6 +105,7 @@ public sealed class TrayIcon : IDisposable
     {
         State = state;
         _notifyIcon.Icon = _icons[state];
+        _notifyIcon.Text = state == TrayIconState.Ready ? "Bisik — latest result ready for manual insertion" : "Bisik";
     }
 
     public void SetPostProcessorEnabled(bool enabled)
