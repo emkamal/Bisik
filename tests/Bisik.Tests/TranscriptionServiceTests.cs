@@ -13,6 +13,29 @@ public sealed class TranscriptionServiceTests : IDisposable
 {
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.TranscriptionServiceTests", Guid.NewGuid().ToString("N"));
 
+    [Fact]
+    public async Task Failed_live_final_falls_back_once_and_runs_cleanup_history_once()
+    {
+        var stream = new FakeSessionStream();
+        stream.Final.SetException(new IOException("connection lost"));
+        var provider = new StreamingProvider(stream);
+        var cleanup = new FakePostProcessor((raw, _) => raw);
+        var history = new HistoryLogger(_baseDirectory);
+        var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            cleanup, history, new ErrorLogger(_baseDirectory), () => { }, () => { });
+        var metrics = new SessionMetrics("fallback");
+        using var scope = metrics.Activate();
+        await using var session = service.CreateSession(new AppSettings { LiveCapture = true,
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi }, PostProcessor = new PostProcessorSettings { Enabled = true } }, CancellationToken.None);
+        await session.StartAsync();
+        var result = await session.CompleteAsync(CreateAudioFile());
+        Assert.Equal("File result", result.OutputText);
+        Assert.Equal(1, provider.FileCalls);
+        Assert.Equal(1, cleanup.CallCount);
+        Assert.Single(await history.ReadAllAsync());
+        Assert.Equal(1, metrics.Snapshot(SessionOutcome.Ready).Counts[MetricCount.Fallbacks]);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("  ")]

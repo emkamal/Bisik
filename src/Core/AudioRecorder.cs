@@ -34,6 +34,16 @@ public sealed record RecordedAudio(
     AudioFormat Format,
     int SampleRate);
 
+public sealed class CapturedRecording(string filePath, byte[] wavData, Func<CancellationToken, Task<RecordedAudio>> persist)
+{
+    private readonly object _gate = new();
+    private Task<RecordedAudio>? _persistence;
+    public string FilePath { get; } = filePath;
+    public byte[] WavData { get; } = wavData;
+    public Task<RecordedAudio> PersistAsync(CancellationToken ct)
+    { lock (_gate) return _persistence ??= persist(ct); }
+}
+
 public sealed class AudioLevelChangedEventArgs(double level, int elapsedMilliseconds = 0) : EventArgs
 {
     public double Level { get; } = level;
@@ -246,6 +256,12 @@ public sealed class AudioRecorder : IDisposable
 
     public async Task<RecordedAudio> StopRecordingAsync(CancellationToken cancellationToken)
     {
+        var recording = await DrainCaptureAsync(cancellationToken);
+        return await recording.PersistAsync(cancellationToken);
+    }
+
+    public async Task<CapturedRecording> DrainCaptureAsync(CancellationToken cancellationToken)
+    {
         if (!TryTransition(AudioRecorderSignal.Stop))
         {
             throw new InvalidOperationException("Audio recorder is not currently recording.");
@@ -266,7 +282,7 @@ public sealed class AudioRecorder : IDisposable
 
             cancellationToken.ThrowIfCancellationRequested();
             SessionMetrics.Current?.Mark(TimingStage.CaptureDrained);
-            return await FinalizeRecordingAsync(cancellationToken);
+            return FinalizeCapture();
         }
         finally
         {
@@ -317,7 +333,7 @@ public sealed class AudioRecorder : IDisposable
         }
     }
 
-    private async Task<RecordedAudio> FinalizeRecordingAsync(CancellationToken cancellationToken)
+    private CapturedRecording FinalizeCapture()
     {
         var writer = _waveWriter ?? throw new InvalidOperationException("No active wave writer is available.");
         var buffer = _bufferStream ?? throw new InvalidOperationException("No active audio buffer is available.");
@@ -329,18 +345,27 @@ public sealed class AudioRecorder : IDisposable
         _waveWriter = null;
 
         var wavBytes = buffer.ToArray();
+        var audioFormat = _settings.Format;
+        return new CapturedRecording(outputPath, wavBytes, ct => PersistRecordingAsync(outputPath, wavBytes, format.SampleRate, audioFormat, ct));
+    }
+
+    private static async Task<RecordedAudio> PersistRecordingAsync(string outputPath, byte[] wavBytes,
+        int sampleRate, AudioFormat audioFormat, CancellationToken cancellationToken)
+    {
         SessionMetrics.Current?.Mark(TimingStage.ExportStart);
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
         try
         {
-            return _settings.Format switch
+            var result = audioFormat switch
             {
-                AudioFormat.Wav => await WriteWavOutputAsync(outputPath, wavBytes, format.SampleRate, cancellationToken),
-                AudioFormat.Mp3 => await WriteMp3OutputAsync(outputPath, wavBytes, format.SampleRate, cancellationToken),
+                AudioFormat.Wav => await WriteWavOutputAsync(outputPath, wavBytes, sampleRate, cancellationToken),
+                AudioFormat.Mp3 => await WriteMp3OutputAsync(outputPath, wavBytes, sampleRate, cancellationToken),
                 AudioFormat.Ogg => throw new NotSupportedException("Ogg recording is not supported with the current dependency set."),
-                _ => throw new InvalidOperationException($"Unsupported audio format '{_settings.Format}'."),
+                _ => throw new InvalidOperationException($"Unsupported audio format '{audioFormat}'."),
             };
+            SessionMetrics.Current?.Mark(TimingStage.ExportEnd);
+            return result;
         }
         catch
         {
@@ -349,14 +374,13 @@ public sealed class AudioRecorder : IDisposable
         }
     }
 
-    private async Task<RecordedAudio> WriteWavOutputAsync(
+    private static async Task<RecordedAudio> WriteWavOutputAsync(
         string outputPath,
         byte[] wavBytes,
         int sampleRate,
         CancellationToken cancellationToken)
     {
         await File.WriteAllBytesAsync(outputPath, wavBytes, cancellationToken);
-        SessionMetrics.Current?.Mark(TimingStage.ExportEnd);
         return new RecordedAudio(outputPath, wavBytes, AudioFormat.Wav, sampleRate);
     }
 

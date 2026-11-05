@@ -36,7 +36,7 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
 ```
 /src
   /Core
-    AudioRecorder.cs         # NAudio mic capture + waveform data stream
+    AudioRecorder.cs         # NAudio capture/drain + owned optional file persistence + waveform stream
     TranscriptionService.cs  # Orchestrates provider call + post-processor call
     SessionMetrics.cs       # Bounded monotonic stage/count receipts without content or secrets
     BenchmarkOptions.cs     # Bounded non-inserting diagnostic options

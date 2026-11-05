@@ -49,7 +49,27 @@ public sealed class TranscriptionService(
             ? live.CreateStream() : null;
         return new TranscriptionSession(snapshot, ct, stream, (session, path, token) =>
             TranscribeCoreAsync(path, session.Settings.DefaultLanguage, session.Settings, token,
-                session.Stream is null ? null : session.Stream.CommitAndFinalizeAsync));
+                ct => RecognizeSessionAsync(session, provider, path, ct), session.Persistence));
+    }
+
+    private static async Task<string> RecognizeSessionAsync(TranscriptionSession session, ITranscriptionProvider provider,
+        string path, CancellationToken ct)
+    {
+        if (session.Stream is not null)
+        {
+            try { return await session.FinalizeLiveAsync(ct).ConfigureAwait(false); }
+            catch (Exception exception) when (!ct.IsCancellationRequested && exception is
+                IOException or TimeoutException or HttpRequestException or System.Net.WebSockets.WebSocketException or InvalidOperationException)
+            {
+                await session.AbandonStreamAsync().ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                SessionMetrics.Current?.Add(MetricCount.Fallbacks);
+            }
+        }
+        if (session.Persistence is not null) await session.Persistence.WaitAsync(ct).ConfigureAwait(false);
+        if (session.Stream is not null && (!File.Exists(path) || new FileInfo(path).Length == 0))
+            throw new IOException("No complete recording is available for stream fallback.");
+        return await TranscribeWithRetryAsync(provider, path, session.Settings.DefaultLanguage, ct).ConfigureAwait(false);
     }
 
     public ITranscriptionProvider ResolveProvider(ProviderSettings settings)
@@ -78,7 +98,8 @@ public sealed class TranscriptionService(
         string language,
         AppSettings settings,
         CancellationToken cancellationToken,
-        Func<CancellationToken, Task<string>>? recognize = null)
+        Func<CancellationToken, Task<string>>? recognize = null,
+        Task? persistence = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(audioFilePath);
         ArgumentNullException.ThrowIfNull(settings);
@@ -140,6 +161,7 @@ public sealed class TranscriptionService(
             cancellationToken.ThrowIfCancellationRequested();
             if (settings.HistoryEnabled)
             {
+                if (persistence is not null) await persistence.WaitAsync(cancellationToken);
                 metrics.Mark(TimingStage.HistoryStart);
                 await _historyLogger.AppendAsync(entry, cancellationToken);
                 metrics.Mark(TimingStage.HistoryEnd);

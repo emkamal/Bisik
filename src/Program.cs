@@ -123,6 +123,8 @@ static class Program
         private TranscriptionSession? _pipelineSession;
         private EventHandler<AudioChunkEventArgs>? _audioSubscription;
         private Task _sessionDisposal = Task.CompletedTask;
+        private Task? _processingTask;
+        private bool _shutdownDrained;
         private SessionMetrics? _sessionMetrics;
         private readonly IMetricsSink? _metricsSink = Environment.GetEnvironmentVariable("BISIK_LATENCY_TRACE") == "1"
             ? new BoundedMetricsFileSink(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik", "latency.jsonl")) : null;
@@ -336,6 +338,11 @@ static class Program
 
         protected override void ExitThreadCore()
         {
+            if (!_shutdownDrained)
+            {
+                if (!_isShuttingDown) _ = DrainShutdownAsync();
+                return;
+            }
             _isShuttingDown = true;
             _shutdownCancellation.Cancel();
             _settingsForm?.Close();
@@ -364,6 +371,22 @@ static class Program
                 }
             }
             base.ExitThreadCore();
+        }
+
+        private async Task DrainShutdownAsync()
+        {
+            _isShuttingDown = true;
+            _shutdownCancellation.Cancel();
+            _sessionCancellation?.Cancel();
+            _pipelineSession?.Cancel();
+            try
+            {
+                if (_processing && _processingTask is not null) await _processingTask;
+                else { _audioRecorder.AbortRecording(); ResetSession(); }
+                await _sessionDisposal;
+            }
+            catch (Exception exception) { _errorLogger.Log(exception); }
+            finally { _shutdownDrained = true; ExitThread(); }
         }
 
         private void HandleRuntimeException(Exception exception, string source)
@@ -550,30 +573,37 @@ static class Program
             }
         }
 
-        private async Task CompleteRecordingAndTranscriptionAsync(bool restartVadMonitoring = true)
+        private Task CompleteRecordingAndTranscriptionAsync(bool restartVadMonitoring = true)
         {
-            if (_processing || _sessionCancellation is null || _audioRecorder.State != RecordingState.Recording) return;
+            if (_processing || _sessionCancellation is null || _audioRecorder.State != RecordingState.Recording) return Task.CompletedTask;
             _processing = true;
+            return _processingTask = CompleteRecordingCoreAsync(restartVadMonitoring);
+        }
+
+        private async Task CompleteRecordingCoreAsync(bool restartVadMonitoring)
+        {
             _recordingLimitTimer.Stop();
             _pushToTalkReleaseTimer.Stop();
             var settings = _sessionSettings!;
-            var cancellation = _sessionCancellation;
+            var cancellation = _sessionCancellation!;
             var metrics = _sessionMetrics!;
             using var metricsScope = metrics.Activate();
             metrics.Mark(TimingStage.StopRequested);
             cancellation.CancelAfter(TimeSpan.FromMinutes(2));
+            _pipelineSession!.RequestStop();
             RecordedAudio? audio = null;
+            CapturedRecording? captured = null;
+            Task<RecordedAudio>? persistence = null;
             var retainAudio = false;
             try
             {
                 _overlayWindow.ShowProcessingOverlay(OverlayProcessingPhase.Transcribing);
                 _trayIcon.SetState(TrayIconState.Transcribing);
-                audio = await _audioRecorder.StopRecordingAsync(cancellation.Token);
-                using (var reader = audio.Format == AudioFormat.Wav
-                    ? (NAudio.Wave.WaveStream)new NAudio.Wave.WaveFileReader(new MemoryStream(audio.AudioData))
-                    : new NAudio.Wave.MediaFoundationReader(audio.FilePath))
+                captured = await _audioRecorder.DrainCaptureAsync(cancellation.Token);
+                persistence = captured.PersistAsync(cancellation.Token);
+                using (var reader = new NAudio.Wave.WaveFileReader(new MemoryStream(captured.WavData)))
                     metrics.AudioDurationMs = reader.TotalTime.TotalMilliseconds;
-                var result = await _pipelineSession!.CompleteAsync(audio.FilePath);
+                var result = await _pipelineSession!.CompleteAsync(captured, persistence);
                 retainAudio = settings.HistoryEnabled && result.Succeeded && !string.IsNullOrWhiteSpace(result.RawText);
                 cancellation.Token.ThrowIfCancellationRequested();
                 if (!result.Succeeded)
@@ -603,9 +633,15 @@ static class Program
             catch (Exception exception) { HandleRuntimeException(exception, "Dictation"); }
             finally
             {
-                if (!retainAudio && audio is not null)
+                if (persistence is not null)
                 {
-                    try { File.Delete(audio.FilePath); }
+                    try { audio = await persistence; }
+                    catch (OperationCanceledException) { }
+                    catch (Exception exception) { _errorLogger.Log(exception); }
+                }
+                if (!retainAudio && captured is not null)
+                {
+                    try { File.Delete(captured.FilePath); }
                     catch (Exception exception) { _errorLogger.Log(exception); }
                 }
                 ResetSession();

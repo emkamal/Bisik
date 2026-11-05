@@ -40,14 +40,40 @@ internal static class LatencyDiagnostics
             for (var i = 0; i < options.Repetitions && !cancellation.IsCancellationRequested; i++)
             {
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
-                deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
+                deadline.CancelAfter(TimeSpan.FromMinutes(5));
                 var sink = new ReceiptSink();
-                var metrics = new SessionMetrics("configured-file", sink) { AudioDurationMs = reader.TotalTime.TotalMilliseconds };
+                var metrics = new SessionMetrics(options.LiveReplay ? "configured-live" : "configured-file", sink) { AudioDurationMs = reader.TotalTime.TotalMilliseconds };
                 using var scope = metrics.Activate();
-                metrics.Mark(TimingStage.StopRequested);
                 try
                 {
-                    var result = await service.TranscribeAsync(options.AudioPath, settings.DefaultLanguage, settings, deadline.Token);
+                    TranscriptionResult result;
+                    if (options.LiveReplay)
+                    {
+                        if (reader.WaveFormat.BitsPerSample != 16 || reader.WaveFormat.Channels != 1 || reader.WaveFormat.Encoding != WaveFormatEncoding.Pcm)
+                            throw new ArgumentException("Live replay requires PCM16 mono WAV.");
+                        await using var session = service.CreateSession(settings with { LiveCapture = true, Audio = settings.Audio with { SampleRate = reader.WaveFormat.SampleRate } }, deadline.Token);
+                        if (session.Stream is null) return 2;
+                        reader.Position = 0;
+                        metrics.Mark(TimingStage.CaptureStart);
+                        _ = session.StartAsync(); // Session owns setup and observes it on finish/disposal.
+                        var block = new byte[reader.WaveFormat.AverageBytesPerSecond / 10];
+                        int count;
+                        while ((count = reader.Read(block, 0, block.Length)) > 0)
+                        {
+                            session.PushAudio(new(block, count, reader.WaveFormat.SampleRate));
+                            await Task.Delay(TimeSpan.FromSeconds((double)count / reader.WaveFormat.AverageBytesPerSecond), deadline.Token);
+                        }
+                        metrics.Mark(TimingStage.StopRequested);
+                        metrics.Mark(TimingStage.CaptureDrained);
+                        deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
+                        result = await session.CompleteAsync(options.AudioPath);
+                    }
+                    else
+                    {
+                        metrics.Mark(TimingStage.StopRequested);
+                        deadline.CancelAfter(TimeSpan.FromSeconds(options.TimeoutSeconds));
+                        result = await service.TranscribeAsync(options.AudioPath, settings.DefaultLanguage, settings, deadline.Token);
+                    }
                     metrics.Publish(!result.Succeeded ? SessionOutcome.Failed : string.IsNullOrWhiteSpace(result.RawText) ? SessionOutcome.Empty : SessionOutcome.Ready);
                 }
                 catch (OperationCanceledException) { metrics.Publish(SessionOutcome.Cancelled); }

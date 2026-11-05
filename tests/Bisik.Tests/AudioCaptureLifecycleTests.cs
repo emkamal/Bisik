@@ -10,6 +10,24 @@ public sealed class AudioCaptureLifecycleTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "bisik-capture-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task Drained_capture_owns_complete_buffer_before_optional_export()
+    {
+        var capture = new FakeCapture { CompleteOnStop = true };
+        using var recorder = CreateRecorder(capture);
+        recorder.StartRecording();
+        capture.Emit([1, 0, 2, 0]);
+        var drained = await recorder.DrainCaptureAsync(CancellationToken.None);
+        Assert.False(File.Exists(drained.FilePath));
+        Assert.True(capture.Disposed);
+        var first = drained.PersistAsync(CancellationToken.None);
+        Assert.Same(first, drained.PersistAsync(CancellationToken.None));
+        var audio = await first;
+        Assert.True(File.Exists(audio.FilePath));
+        using var reader = new WaveFileReader(new MemoryStream(audio.AudioData));
+        Assert.Equal(4, reader.Length);
+    }
+
+    [Fact]
     public async Task Queue_copies_orders_and_uploads_before_stop_after_delayed_setup()
     {
         var stream = new QueueStream();
@@ -79,6 +97,9 @@ public sealed class AudioCaptureLifecycleTests : IDisposable
     {
         var capture = new FakeCapture();
         using var recorder = CreateRecorder(capture);
+        var stream = new QueueStream();
+        var queue = new LiveAudioQueue(stream, Task.CompletedTask, 16000, CancellationToken.None);
+        recorder.AudioChunkAvailable += (_, chunk) => queue.Enqueue(chunk);
         recorder.StartRecording();
         capture.Emit([1, 0, 2, 0]);
 
@@ -87,6 +108,9 @@ public sealed class AudioCaptureLifecycleTests : IDisposable
         capture.Emit([3, 0, 4, 0]);
         capture.Complete();
         var audio = await stopping;
+        queue.Close();
+        await queue.Sender;
+        Assert.Equal(new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 }, stream.Chunks.SelectMany(c => c));
 
         using var reader = new WaveFileReader(new MemoryStream(audio.AudioData));
         var pcm = new byte[8];

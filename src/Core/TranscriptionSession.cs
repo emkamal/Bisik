@@ -9,6 +9,9 @@ public sealed class TranscriptionSession : IAsyncDisposable
 {
     private readonly object _gate = new();
     private readonly CancellationTokenSource _lifetime;
+    private readonly CancellationTokenSource _streamLifetime;
+    private bool _stopRequested;
+    private Task? _abandonment;
     private readonly Func<TranscriptionSession, string, CancellationToken, Task<TranscriptionResult>> _complete;
     private Task? _setup;
     private Task<TranscriptionResult>? _completion;
@@ -19,6 +22,7 @@ public sealed class TranscriptionSession : IAsyncDisposable
     public DictationState State { get; private set; } = DictationState.Recording;
     public CancellationToken Token => _lifetime.Token;
     public IRealtimeTranscriber? Stream { get; }
+    internal Task? Persistence { get; private set; }
 
     internal TranscriptionSession(AppSettings settings, CancellationToken ct, IRealtimeTranscriber? stream,
         Func<TranscriptionSession, string, CancellationToken, Task<TranscriptionResult>> complete)
@@ -26,8 +30,9 @@ public sealed class TranscriptionSession : IAsyncDisposable
         Settings = settings.Snapshot();
         Stream = stream;
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        _streamLifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _complete = complete;
-        if (stream is not null) _audioQueue = new LiveAudioQueue(stream, _setupReady.Task, Settings.Audio.SampleRate, Token);
+        if (stream is not null) _audioQueue = new LiveAudioQueue(stream, _setupReady.Task, Settings.Audio.SampleRate, _streamLifetime.Token);
     }
 
     public Task StartAsync()
@@ -39,7 +44,7 @@ public sealed class TranscriptionSession : IAsyncDisposable
     {
         try
         {
-            if (Stream is not null) await Stream.StartAsync(Settings, Settings.DefaultLanguage, Token).ConfigureAwait(false);
+            if (Stream is not null) await Stream.StartAsync(Settings, Settings.DefaultLanguage, _streamLifetime.Token).ConfigureAwait(false);
             _setupReady.TrySetResult();
         }
         catch (Exception exception) { _setupReady.TrySetException(exception); throw; }
@@ -52,15 +57,53 @@ public sealed class TranscriptionSession : IAsyncDisposable
         lock (_gate) return _completion ??= CompleteCoreAsync(audioPath);
     }
 
+    public Task<TranscriptionResult> CompleteAsync(CapturedRecording recording, Task<RecordedAudio> persistence)
+    {
+        lock (_gate)
+        {
+            Persistence ??= persistence;
+            return _completion ??= CompleteCoreAsync(recording.FilePath);
+        }
+    }
+
+    public void RequestStop()
+    {
+        lock (_gate)
+        {
+            if (_stopRequested) return;
+            _stopRequested = true;
+            State = DictationState.Stopping;
+            _lifetime.CancelAfter(TimeSpan.FromMinutes(2));
+        }
+    }
+
+    internal async Task<string> FinalizeLiveAsync(CancellationToken ct)
+    {
+        await StartAsync().WaitAsync(ct).ConfigureAwait(false);
+        _audioQueue!.Close();
+        await _audioQueue.Sender.WaitAsync(ct).ConfigureAwait(false);
+        return await Stream!.CommitAndFinalizeAsync(ct).ConfigureAwait(false);
+    }
+
+    internal Task AbandonStreamAsync()
+    { lock (_gate) return _abandonment ??= AbandonStreamCoreAsync(); }
+
+    private async Task AbandonStreamCoreAsync()
+    {
+        _streamLifetime.Cancel();
+        _setupReady.TrySetCanceled();
+        _audioQueue?.Close();
+        if (Stream is not null) await Stream.DisposeAsync().ConfigureAwait(false);
+        if (_setup is not null) { try { await _setup.ConfigureAwait(false); } catch { /* Observed setup failure. */ } }
+        if (_audioQueue is not null) { try { await _audioQueue.Sender.ConfigureAwait(false); } catch { /* Observed queue failure. */ } }
+    }
+
     private async Task<TranscriptionResult> CompleteCoreAsync(string audioPath)
     {
-        State = DictationState.Stopping;
+        RequestStop();
         try
         {
             Token.ThrowIfCancellationRequested();
-            if (_setup is not null) await _setup.WaitAsync(Token).ConfigureAwait(false);
-            _audioQueue?.Close();
-            if (_audioQueue is not null) await _audioQueue.Sender.WaitAsync(Token).ConfigureAwait(false);
             State = DictationState.Processing;
             var result = await _complete(this, audioPath, Token).ConfigureAwait(false);
             Token.ThrowIfCancellationRequested(); // Reject providers that ignore cancellation and complete late.
@@ -75,12 +118,9 @@ public sealed class TranscriptionSession : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _lifetime.Cancel();
-        _setupReady.TrySetCanceled();
-        _audioQueue?.Close();
-        if (_setup is not null) { try { await _setup.ConfigureAwait(false); } catch { /* Observed setup failure. */ } }
-        if (Stream is not null) await Stream.DisposeAsync().ConfigureAwait(false);
-        if (_audioQueue is not null) { try { await _audioQueue.Sender.ConfigureAwait(false); } catch { /* Observed queue failure. */ } }
+        await AbandonStreamAsync().ConfigureAwait(false);
         if (_completion is not null) { try { await _completion.ConfigureAwait(false); } catch { /* Caller receives the failure. */ } }
         _lifetime.Dispose();
+        _streamLifetime.Dispose();
     }
 }
