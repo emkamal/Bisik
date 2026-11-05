@@ -68,6 +68,7 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
     public event EventHandler<RealtimeCompletedEventArgs>? TranscriptionCompleted;
     public event EventHandler<RealtimeFailedEventArgs>? TranscriptionFailed;
     public event EventHandler<CompletedTranscriptEventArgs>? CompletedTranscriptAvailable;
+    public bool IsConnected => !_disposed && !_finalizing && _failure is null && _socket?.State == WebSocketState.Open;
 
     public async Task StartAsync(AppSettings settings, string language, CancellationToken ct)
     {

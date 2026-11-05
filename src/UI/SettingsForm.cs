@@ -24,6 +24,8 @@ public sealed class SettingsForm : Form
     private ComboBox? _reasoningEffortComboBox;
     private TextBox? _insertLatestHotkeyTextBox;
     private TextBox? _fastOutputHotkeyTextBox;
+    private CheckBox? _prewarmRealtimeCheckBox;
+    private NumericUpDown? _prewarmIdleSecondsInput;
     private TextBox? _verifiedReasoningEffortsTextBox;
     private CheckBox? _speculativeCleanupCheckBox;
     private CheckBox? _launchAtStartupCheckBox;
@@ -363,6 +365,11 @@ public sealed class SettingsForm : Form
         root.Controls.Add(_pauseCommitsCheckBox, 1, 6);
         _speculativeCleanupCheckBox = new CheckBox { Text = "Prepare whole-text cleanup during pauses (extra requests; experimental)", AutoSize = true };
         root.Controls.Add(_speculativeCleanupCheckBox, 1, 7);
+        _prewarmRealtimeCheckBox = new CheckBox { Text = "Prewarm one fresh realtime connection (experimental)", AutoSize = true };
+        root.Controls.Add(_prewarmRealtimeCheckBox, 1, 8);
+        _prewarmIdleSecondsInput = new NumericUpDown { Minimum = 5, Maximum = 60, Value = 15, Width = 90 };
+        root.Controls.Add(CreateFieldLabel("Prewarm idle seconds"), 0, 9);
+        root.Controls.Add(_prewarmIdleSecondsInput, 1, 9);
 
         page.Controls.Add(root);
         ShowProviderPanel(settings.Provider.Type);
@@ -1025,6 +1032,8 @@ public sealed class SettingsForm : Form
         if (_transcriptionDelayComboBox is not null) _transcriptionDelayComboBox.SelectedItem = settings.Provider.TranscriptionDelay ?? "Provider default";
         if (_pauseCommitsCheckBox is not null) _pauseCommitsCheckBox.Checked = settings.PauseCommits;
         if (_speculativeCleanupCheckBox is not null) _speculativeCleanupCheckBox.Checked = settings.SpeculativeCleanup;
+        if (_prewarmRealtimeCheckBox is not null) _prewarmRealtimeCheckBox.Checked = settings.PrewarmRealtime;
+        if (_prewarmIdleSecondsInput is not null) _prewarmIdleSecondsInput.Value = Math.Clamp(settings.PrewarmIdleSeconds, 5, 60);
         if (_azureRealtimeCheckBox is not null) _azureRealtimeCheckBox.Checked = settings.Provider.AzureRealtime;
         if (_launchAtStartupCheckBox is not null)
         {
@@ -1143,6 +1152,8 @@ public sealed class SettingsForm : Form
             LiveCapture = _liveCaptureCheckBox?.Checked ?? defaults.LiveCapture,
             PauseCommits = _pauseCommitsCheckBox?.Checked ?? defaults.PauseCommits,
             SpeculativeCleanup = _speculativeCleanupCheckBox?.Checked ?? defaults.SpeculativeCleanup,
+            PrewarmRealtime = _prewarmRealtimeCheckBox?.Checked ?? defaults.PrewarmRealtime,
+            PrewarmIdleSeconds = (int?)_prewarmIdleSecondsInput?.Value ?? defaults.PrewarmIdleSeconds,
             LaunchAtStartup = _launchAtStartupCheckBox?.Checked ?? defaults.LaunchAtStartup,
             TriggerMode = GetSelectedComboValue(_triggerModeComboBox, defaults.TriggerMode),
             Hotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox?.Text) ? defaults.Hotkey : _hotkeyTextBox.Text,

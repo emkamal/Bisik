@@ -248,6 +248,12 @@ public sealed record AppSettings
     [JsonPropertyName("speculativeCleanup")]
     public bool SpeculativeCleanup { get; init; }
 
+    [JsonPropertyName("prewarmRealtime")]
+    public bool PrewarmRealtime { get; init; }
+
+    [JsonPropertyName("prewarmIdleSeconds")]
+    public int PrewarmIdleSeconds { get; init; } = 15;
+
     // Records are shallowly immutable; copy mutable collections at the session boundary.
     public AppSettings Snapshot() => this with
     {

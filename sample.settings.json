@@ -17,6 +17,8 @@
   "liveCapture": false,
   "pauseCommits": false,
   "speculativeCleanup": false,
+  "prewarmRealtime": false,
+  "prewarmIdleSeconds": 15,
   "provider": {
     "type": "azure-openai",
     "endpoint": "https://your-resource.openai.azure.com/",

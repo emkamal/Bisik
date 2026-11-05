@@ -121,6 +121,8 @@ static class Program
         private readonly WindowsTextOutput _textOutput;
         private readonly LatestResultStore _latestResult = new();
         private Task _recoveryTask = Task.CompletedTask;
+        private Task _prewarmSetup = Task.CompletedTask;
+        private Task _prewarmCleanup = Task.CompletedTask;
         private DictationTarget? _dictationTarget;
         private CancellationTokenSource? _sessionCancellation;
         private AppSettings? _sessionSettings;
@@ -206,6 +208,7 @@ static class Program
             });
             _trayIcon.SetPostProcessorEnabled(_settings.PostProcessor.Enabled);
             RegisterConfiguredHotkey();
+            _prewarmSetup = PrepareWarmAsync(_transcriptionService, _settings, Task.CompletedTask);
             _messageWindow.SettingsRequested += (_, _) => ShowSettings();
             if (showSettings) _messageWindow.BeginInvoke(ShowSettings);
 
@@ -311,7 +314,10 @@ static class Program
             _hotkeyGesture = gesture;
             _soundFeedback.SetEnabled(fresh.SoundEnabled);
             _transcriptionService.PhaseChanged -= OnTranscriptionPhaseChanged;
+            var oldService = _transcriptionService;
+            _prewarmCleanup = DisposeOldPrewarmerAsync(oldService, _prewarmCleanup);
             _transcriptionService = CreateTranscriptionService(fresh);
+            _prewarmSetup = PrepareWarmAsync(_transcriptionService, fresh, _prewarmCleanup);
             _transcriptionService.PhaseChanged += OnTranscriptionPhaseChanged;
             _trayIcon.SetSelectedLanguage(fresh.DefaultLanguage);
             _trayIcon.SetPostProcessorEnabled(fresh.PostProcessor.Enabled);
@@ -408,6 +414,9 @@ static class Program
                 else { _audioRecorder.AbortRecording(); ResetSession(); }
                 await _sessionDisposal;
                 await _recoveryTask;
+                await _prewarmSetup;
+                await _prewarmCleanup;
+                await _transcriptionService.DisposePrewarmerAsync();
                 await _textOutput.DrainAsync();
                 _latestResult.Clear();
                 await _soundFeedback.DisposeAsync();
@@ -624,6 +633,15 @@ static class Program
             catch (Exception exception) { _errorLogger.Log(exception); }
         }
 
+        private async Task PrepareWarmAsync(TranscriptionService service, AppSettings settings, Task prior)
+        {
+            try { await prior; if (!_isShuttingDown) await service.PrewarmAsync(settings, _shutdownCancellation.Token); }
+            catch (OperationCanceledException) { }
+            catch (Exception exception) { _errorLogger.Log(exception); }
+        }
+        private static async Task DisposeOldPrewarmerAsync(TranscriptionService service, Task prior)
+        { await prior; await service.DisposePrewarmerAsync(); }
+
         private void OnUi(Action action)
         {
             if (_isShuttingDown || _messageWindow.IsDisposed) return;
@@ -740,6 +758,7 @@ static class Program
                     catch (Exception exception) { _errorLogger.Log(exception); }
                 }
                 ResetSession();
+                if (!_isShuttingDown) _prewarmSetup = PrepareWarmAsync(_transcriptionService, _settings, _sessionDisposal);
                 if (!_isShuttingDown && restartVadMonitoring && _vadMonitoringEnabled)
                 {
                     try { StartVadMonitoring(); }

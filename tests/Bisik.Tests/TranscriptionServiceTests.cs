@@ -14,6 +14,53 @@ public sealed class TranscriptionServiceTests : IDisposable
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.TranscriptionServiceTests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task Prewarming_is_one_unused_session_and_claim_transfers_cancellation_ownership()
+    {
+        var stream = new FakeSessionStream();
+        var created = 0;
+        var expiry = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pool = new RealtimePrewarmer(_ => { created++; return stream; }, (_, ct) => expiry.Task.WaitAsync(ct));
+        var settings = new AppSettings();
+        await pool.PrepareAsync(settings, CancellationToken.None);
+        await pool.PrepareAsync(settings, CancellationToken.None);
+        Assert.Equal(1, created);
+        using var active = new CancellationTokenSource();
+        await using var claimed = pool.Claim(settings, active.Token)!;
+        Assert.NotNull(claimed);
+        Assert.Null(pool.Claim(settings, active.Token));
+        await pool.DisposeAsync();
+        Assert.False(stream.SetupToken.IsCancellationRequested);
+        active.Cancel();
+        Assert.True(stream.SetupToken.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task Prewarm_expiry_settings_change_and_disconnect_invalidate_unused_sessions()
+    {
+        var stream = new FakeSessionStream();
+        var expiry = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var pool = new RealtimePrewarmer(_ => stream, (_, ct) => expiry.Task.WaitAsync(ct));
+        var settings = new AppSettings();
+        await pool.PrepareAsync(settings, CancellationToken.None);
+        expiry.SetResult();
+        await stream.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Null(pool.Claim(settings, CancellationToken.None));
+        var other = new FakeSessionStream();
+        await using var second = new RealtimePrewarmer(_ => other);
+        await second.PrepareAsync(settings, CancellationToken.None);
+        Assert.Null(second.Claim(settings with { DefaultLanguage = "id" }, CancellationToken.None));
+        await second.DisposeAsync();
+        Assert.True(other.Disposed.Task.IsCompleted);
+        var disconnected = new FakeSessionStream();
+        await using var third = new RealtimePrewarmer(_ => disconnected);
+        await third.PrepareAsync(settings, CancellationToken.None);
+        disconnected.IsConnected = false;
+        Assert.Null(third.Claim(settings, CancellationToken.None));
+        await third.DisposeAsync();
+        Assert.True(disconnected.Disposed.Task.IsCompleted);
+    }
+
+    [Fact]
     public async Task Fast_selection_wins_once_and_ignores_late_cleanup()
     {
         var cleanup = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -180,12 +227,15 @@ public sealed class TranscriptionServiceTests : IDisposable
 
     private sealed class FakeSessionStream : IRealtimeTranscriber
     {
+        public bool IsConnected { get; set; } = true;
+        public CancellationToken SetupToken;
+        public TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<string> Final { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Task StartAsync(AppSettings settings, string language, CancellationToken ct) => Task.CompletedTask;
+        public Task StartAsync(AppSettings settings, string language, CancellationToken ct) { SetupToken = ct; return Task.CompletedTask; }
         public Task PushAudioChunkAsync(byte[] data, int count, CancellationToken ct) => Task.CompletedTask;
         public Task<string> CommitAndFinalizeAsync(CancellationToken ct) => Final.Task;
         public Task CommitIntermediateSegmentAsync(CancellationToken ct) => Task.CompletedTask;
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync() { Disposed.TrySetResult(); return ValueTask.CompletedTask; }
         public event EventHandler<PartialTranscriptEventArgs>? PartialTranscriptAvailable { add { } remove { } }
         public event EventHandler<RealtimeCompletedEventArgs>? TranscriptionCompleted { add { } remove { } }
         public event EventHandler<RealtimeFailedEventArgs>? TranscriptionFailed { add { } remove { } }

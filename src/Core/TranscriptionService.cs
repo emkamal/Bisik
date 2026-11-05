@@ -40,6 +40,19 @@ public sealed class TranscriptionService(
         throw new ArgumentNullException(nameof(playError));
 
     public event Action<ProcessingPhase>? PhaseChanged;
+    private RealtimePrewarmer? _prewarmer;
+    public Task PrewarmAsync(AppSettings settings, CancellationToken ct)
+    {
+        if (!settings.PrewarmRealtime || !settings.LiveCapture) return Task.CompletedTask;
+        _prewarmer ??= new RealtimePrewarmer(s => ResolveProvider(s.Provider) is IStreamingTranscriptionProvider { SupportsStreaming: true } live ? live.CreateStream() : null);
+        return _prewarmer.PrepareAsync(settings, ct);
+    }
+    public async ValueTask DisposePrewarmerAsync()
+    {
+        var prewarmer = _prewarmer;
+        _prewarmer = null;
+        if (prewarmer is not null) await prewarmer.DisposeAsync().ConfigureAwait(false);
+    }
 
     public void NotifyDeliveryCompleted()
     {
@@ -52,7 +65,7 @@ public sealed class TranscriptionService(
         var snapshot = settings.Snapshot();
         var provider = ResolveProvider(snapshot.Provider);
         var stream = snapshot.LiveCapture && provider is IStreamingTranscriptionProvider { SupportsStreaming: true } live
-            ? live.CreateStream() : null;
+            ? _prewarmer?.Claim(snapshot, ct) ?? live.CreateStream() : null;
         var created = new TranscriptionSession(snapshot, ct, stream, (session, path, token) =>
             TranscribeCoreAsync(path, session.Settings.DefaultLanguage, session.Settings, token,
                 ct => RecognizeSessionAsync(session, provider, path, ct), session.Persistence,

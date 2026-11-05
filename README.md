@@ -133,6 +133,10 @@ Optional whole-text speculation (`--speculation on` for diagnostics) coalesces c
 snapshots with a 250 ms debounce, at most two speculative requests plus required final cleanup.
 Only an exact final transcript/settings match is reused. It is disabled by default because
 extra requests and measured benefit depend on pauses and endpoint response time.
+Optional prewarming prepares one fresh unused connection for 15 seconds (configurable 5–60),
+without microphone capture or audio transmission. Claim transfers its lifetime to recording;
+Apply, expiry, disconnect and shutdown invalidate unused sessions. It is off by default.
+Diagnostics can compare `--mode live --prewarm on`; setup remains visible before CaptureStart.
 Missing stages are unavailable, including paste for this benchmark. `duration_ms` keeps its original
 transcription-plus-cleanup meaning. Set `BISIK_LATENCY_TRACE=1` before launching the app to opt into
 `%APPDATA%\Bisik\latency.jsonl` (100 sessions/2 MiB maximum).

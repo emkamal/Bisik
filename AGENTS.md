@@ -50,6 +50,7 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
     WindowsClipboard.cs      # Clipboard snapshots with sequence ownership
     LatestResultStore.cs     # Atomic result retention and explicit insertion claims
     FinalTextSelection.cs    # Exactly-once fast/edited result selection with independent cleanup cancellation
+    RealtimePrewarmer.cs     # Bounded unused connection and atomic lifetime transfer
     HistoryLogger.cs         # Appends TranscriptionEntry to history.jsonl
     SettingsManager.cs       # Load/save/migrate settings.json via DPAPI
   /Providers

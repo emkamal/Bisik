@@ -14,7 +14,7 @@ public enum TimingStage
     Ready, PasteDispatched, ClipboardRestored,
 }
 
-public enum MetricCount { QueuedBytes, SentBytes, Attempts, Fallbacks, SpeculativeRequests }
+public enum MetricCount { QueuedBytes, SentBytes, Attempts, Fallbacks, SpeculativeRequests, PrewarmSessions }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum SessionOutcome { Ready, Empty, Failed, Cancelled, PasteDispatched, Copied, NeedsReview }
 public sealed record TimingEvent(TimingStage Stage, double ElapsedMs);

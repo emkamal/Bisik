@@ -30,7 +30,7 @@ internal static class LatencyDiagnostics
             // Never load the active file: migration/repair writes affect only this encrypted copy.
             File.Copy(source, Path.Combine(scratch, "settings.json"));
             var settings = new SettingsManager(scratch).Load() with { HistoryEnabled = false, SoundEnabled = false };
-            settings = settings with { PauseCommits = options.PauseCommits, SpeculativeCleanup = options.Speculation,
+            settings = settings with { PauseCommits = options.PauseCommits, SpeculativeCleanup = options.Speculation, PrewarmRealtime = options.Prewarm, LiveCapture = options.LiveReplay,
                 Provider = settings.Provider with { TranscriptionDelay = options.Delay } };
             var cleanupSettings = settings.PostProcessor;
             if (options.CleanupModel is { } model)
@@ -75,6 +75,7 @@ internal static class LatencyDiagnostics
                     }
                     else if (options.LiveReplay)
                     {
+                        if (options.Prewarm) await service.PrewarmAsync(settings, deadline.Token);
                         if (reader is null) throw new InvalidOperationException();
                         if (reader.WaveFormat.BitsPerSample != 16 || reader.WaveFormat.Channels != 1 || reader.WaveFormat.Encoding != WaveFormatEncoding.Pcm)
                             throw new ArgumentException("Live replay requires PCM16 mono WAV.");
@@ -106,6 +107,7 @@ internal static class LatencyDiagnostics
                 catch (OperationCanceledException) { metrics.Publish(SessionOutcome.Cancelled); }
                 catch (Exception) { metrics.Publish(SessionOutcome.Failed); }
                 reports.Add(sink.Report!);
+                await service.DisposePrewarmerAsync();
             }
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(options.OutputPath))!);
             await File.WriteAllTextAsync(options.OutputPath, JsonSerializer.Serialize(new
