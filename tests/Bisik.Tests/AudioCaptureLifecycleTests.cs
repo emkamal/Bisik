@@ -10,6 +10,71 @@ public sealed class AudioCaptureLifecycleTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "bisik-capture-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task Queue_copies_orders_and_uploads_before_stop_after_delayed_setup()
+    {
+        var stream = new QueueStream();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queue = new LiveAudioQueue(stream, ready.Task, 16000, CancellationToken.None);
+        var buffer = new byte[] { 1, 0 };
+        queue.Enqueue(new(buffer, 2, 16000));
+        buffer[0] = 99;
+        queue.Enqueue(new([2, 0], 2, 16000));
+        Assert.Empty(stream.Chunks);
+        ready.SetResult();
+        await stream.Uploaded.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        queue.Close();
+        await queue.Sender;
+        Assert.Equal(new byte[] { 1, 0, 2, 0 }, stream.Chunks.SelectMany(c => c));
+    }
+
+    [Fact]
+    public async Task Queue_overflow_is_explicit_and_immediate_stop_drains()
+    {
+        var stream = new QueueStream();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queue = new LiveAudioQueue(stream, ready.Task, 16000, CancellationToken.None);
+        queue.Enqueue(new(new byte[320002], 320002, 16000));
+        ready.SetResult();
+        await Assert.ThrowsAnyAsync<Exception>(() => queue.Sender);
+        Assert.Empty(stream.Chunks);
+        var empty = new LiveAudioQueue(stream, Task.CompletedTask, 16000, CancellationToken.None);
+        empty.Close();
+        await empty.Sender;
+    }
+
+    [Fact]
+    public async Task Slow_upload_is_bounded_including_in_flight_bytes()
+    {
+        var stream = new QueueStream { DelaySend = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        var queue = new LiveAudioQueue(stream, Task.CompletedTask, 16000, CancellationToken.None);
+        queue.Enqueue(new(new byte[320000], 320000, 16000));
+        await stream.Uploaded.Task;
+        queue.Enqueue(new([1, 0], 2, 16000));
+        stream.DelaySend.SetResult();
+        await Assert.ThrowsAnyAsync<Exception>(() => queue.Sender);
+    }
+
+    private sealed class QueueStream : IRealtimeTranscriber
+    {
+        public List<byte[]> Chunks { get; } = [];
+        public TaskCompletionSource Uploaded { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource? DelaySend { get; init; }
+        public Task StartAsync(AppSettings settings, string language, CancellationToken ct) => Task.CompletedTask;
+        public async Task PushAudioChunkAsync(byte[] data, int count, CancellationToken ct)
+        {
+            Chunks.Add(data[..count]);
+            Uploaded.TrySetResult();
+            if (DelaySend is not null) await DelaySend.Task.WaitAsync(ct);
+        }
+        public Task<string> CommitAndFinalizeAsync(CancellationToken ct) => Task.FromResult("final");
+        public Task CommitIntermediateSegmentAsync(CancellationToken ct) => Task.CompletedTask;
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public event EventHandler<PartialTranscriptEventArgs>? PartialTranscriptAvailable { add { } remove { } }
+        public event EventHandler<RealtimeCompletedEventArgs>? TranscriptionCompleted { add { } remove { } }
+        public event EventHandler<RealtimeFailedEventArgs>? TranscriptionFailed { add { } remove { } }
+    }
+
+    [Fact]
     public async Task Stop_should_wait_for_the_final_audio_chunk_before_writing_the_wav()
     {
         var capture = new FakeCapture();
@@ -169,10 +234,16 @@ public sealed class AudioCaptureLifecycleTests : IDisposable
         recorder.StartVoiceActivityMonitoring((_, _) => { });
         monitor.Emit([1, 0, 2, 0]);
         recorder.StopVoiceActivityMonitoring(preserveAudio: true);
+        var stream = new QueueStream();
+        var queue = new LiveAudioQueue(stream, Task.CompletedTask, 16000, CancellationToken.None);
+        recorder.AudioChunkAvailable += (_, chunk) => queue.Enqueue(chunk);
         recorder.StartRecording();
         capture.Emit([3, 0, 4, 0]);
 
         var audio = await recorder.StopRecordingAsync(CancellationToken.None);
+        queue.Close();
+        await queue.Sender;
+        Assert.Equal(new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 }, stream.Chunks.SelectMany(c => c));
 
         using var reader = new WaveFileReader(new MemoryStream(audio.AudioData));
         var pcm = new byte[8];

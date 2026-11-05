@@ -19,7 +19,8 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
     private readonly Dictionary<string, TranscriptItem> _items = new(StringComparer.Ordinal);
     private readonly List<string> _committedItems = [];
     private readonly HashSet<string> _eventIds = new(StringComparer.Ordinal);
-    private readonly Pcm16Upsampler _upsampler = new();
+    private Pcm16Upsampler? _upsampler;
+    private int? _inputSampleRate;
     private CancellationTokenSource? _lifetime;
     private WebSocket? _socket;
     private Task? _receiveTask;
@@ -100,12 +101,15 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
     }
 
     public Task PushAudioChunkAsync(byte[] pcmData, int bytesRecorded, CancellationToken ct) =>
-        PushAudioAsync(pcmData, bytesRecorded, resample: true, ct);
+        PushAudioChunkAsync(pcmData, bytesRecorded, 16000, ct);
+
+    public Task PushAudioChunkAsync(byte[] pcmData, int bytesRecorded, int sampleRate, CancellationToken ct) =>
+        PushAudioAsync(pcmData, bytesRecorded, sampleRate, ct);
 
     internal Task PushPcm24KhzAsync(byte[] pcmData, int bytesRecorded, CancellationToken ct) =>
-        PushAudioAsync(pcmData, bytesRecorded, resample: false, ct);
+        PushAudioAsync(pcmData, bytesRecorded, null, ct);
 
-    private async Task PushAudioAsync(byte[] pcmData, int bytesRecorded, bool resample, CancellationToken ct)
+    private async Task PushAudioAsync(byte[] pcmData, int bytesRecorded, int? sampleRate, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(pcmData);
         if (bytesRecorded < 0 || bytesRecorded > pcmData.Length || bytesRecorded % 2 != 0)
@@ -116,7 +120,14 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
             EnsureAvailable();
             if (_finalizing)
                 throw new InvalidOperationException("Audio cannot be appended after finalization starts.");
-            var bytes = resample ? _upsampler.Convert(pcmData.AsSpan(0, bytesRecorded)) : pcmData[..bytesRecorded];
+            if (sampleRate is not null)
+            {
+                if (sampleRate is < 8000 or > 96000 || (_inputSampleRate is not null && _inputSampleRate != sampleRate))
+                    throw new InvalidDataException("Capture rate is unsupported or changed within a recording.");
+                _inputSampleRate = sampleRate;
+                _upsampler ??= new Pcm16Upsampler(sampleRate.Value);
+            }
+            var bytes = sampleRate is not null ? _upsampler!.Convert(pcmData.AsSpan(0, bytesRecorded)) : pcmData[..bytesRecorded];
             await AppendAsync(bytes, ct).ConfigureAwait(false);
         }
         finally { _sendLock.Release(); }
@@ -143,7 +154,7 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
             if (!_finalizing)
             {
                 // Flush the last resampling fraction instead of dropping the last input sample.
-                await AppendAsync(_upsampler.Flush(), ct).ConfigureAwait(false);
+                if (_upsampler is not null) await AppendAsync(_upsampler.Flush(), ct).ConfigureAwait(false);
                 if (_bufferedBytes > 0)
                 {
                     if (_bufferedBytes < MinimumCommitBytes)
@@ -347,7 +358,7 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
 }
 
 // Keep fractional position between chunks: restarting a resampler at every mic callback adds seams.
-internal sealed class Pcm16Upsampler
+internal sealed class Pcm16Upsampler(int inputRate = 16000)
 {
     private long _samples;
     private long _nextPosition;
@@ -360,12 +371,12 @@ internal sealed class Pcm16Upsampler
         for (var offset = 0; offset < input.Length; offset += 2)
         {
             var sample = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(input[offset..]);
-            var position = _samples * 3;
+            var position = _samples * 24000;
             while (_nextPosition <= position)
             {
-                var value = _samples == 0 ? sample : _previous + (sample - _previous) * (_nextPosition - position + 3) / 3;
+                var value = _samples == 0 ? sample : _previous + (sample - _previous) * (_nextPosition - position + 24000) / 24000;
                 writer.Write((short)value);
-                _nextPosition += 2;
+                _nextPosition += inputRate;
             }
             _previous = sample;
             _samples++;
@@ -377,10 +388,10 @@ internal sealed class Pcm16Upsampler
     {
         using var output = new MemoryStream();
         using var writer = new BinaryWriter(output);
-        while (_nextPosition < _samples * 3)
+        while (_nextPosition < _samples * 24000)
         {
             writer.Write(_previous);
-            _nextPosition += 2;
+            _nextPosition += inputRate;
         }
         return output.ToArray();
     }

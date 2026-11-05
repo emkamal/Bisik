@@ -41,6 +41,7 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
     SessionMetrics.cs       # Bounded monotonic stage/count receipts without content or secrets
     BenchmarkOptions.cs     # Bounded non-inserting diagnostic options
     TranscriptionSession.cs # Per-dictation settings, cancellation and exactly-once completion
+    LiveAudioQueue.cs       # Ordered bounded capture queue with one async sender
     HotkeyManager.cs         # Win32 RegisterHotKey P/Invoke wrapper
     OutputHandler.cs         # Final-text insertion / clipboard / popup dispatch
     WindowsTextOutput.cs     # Target guard and clipboard transaction orchestration

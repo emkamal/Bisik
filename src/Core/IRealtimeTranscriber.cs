@@ -46,6 +46,11 @@ public interface IRealtimeTranscriber : IAsyncDisposable
     /// </summary>
     Task PushAudioChunkAsync(byte[] pcmData, int bytesRecorded, CancellationToken ct);
 
+    /// <summary>PCM16 mono at the actual capture rate; conversion state spans callbacks.</summary>
+    Task PushAudioChunkAsync(byte[] pcmData, int bytesRecorded, int sampleRate, CancellationToken ct) =>
+        sampleRate == 16000 ? PushAudioChunkAsync(pcmData, bytesRecorded, ct) :
+            throw new NotSupportedException("This stream does not support the capture sample rate.");
+
     /// <summary>
     /// Commits the current audio buffer and waits for the final transcription result.
     /// Once returned, no more <see cref="PartialTranscriptAvailable"/> events will fire.

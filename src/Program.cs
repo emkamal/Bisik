@@ -120,6 +120,9 @@ static class Program
         private DictationTarget? _dictationTarget;
         private CancellationTokenSource? _sessionCancellation;
         private AppSettings? _sessionSettings;
+        private TranscriptionSession? _pipelineSession;
+        private EventHandler<AudioChunkEventArgs>? _audioSubscription;
+        private Task _sessionDisposal = Task.CompletedTask;
         private SessionMetrics? _sessionMetrics;
         private readonly IMetricsSink? _metricsSink = Environment.GetEnvironmentVariable("BISIK_LATENCY_TRACE") == "1"
             ? new BoundedMetricsFileSink(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik", "latency.jsonl")) : null;
@@ -441,8 +444,15 @@ static class Program
             _sessionMetrics = new SessionMetrics(_settings.Provider.Type.ToString(), _metricsSink);
             _sessionMetrics.Mark(TimingStage.CaptureStart);
             _sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCancellation.Token);
+            using var scope = _sessionMetrics.Activate();
+            _pipelineSession = _transcriptionService.CreateSession(_sessionSettings, _sessionCancellation.Token);
+            var session = _pipelineSession;
+            _audioSubscription = (_, chunk) => session.PushAudio(chunk);
+            _audioRecorder.AudioChunkAvailable += _audioSubscription;
             _audioRecorder.UpdateSettings(_sessionSettings.Audio);
             _audioRecorder.StartRecording();
+            // Listening starts before any network setup, including when VAD pre-roll is emitted.
+            _ = session.StartAsync(); // Owned/observed by CompleteAsync and DisposeAsync.
             ShowRecordingIndicator();
             _trayIcon.SetState(TrayIconState.Recording);
             _recordingLimitTimer.Start();
@@ -478,6 +488,13 @@ static class Program
 
         private void ResetSession()
         {
+            if (_audioSubscription is not null) _audioRecorder.AudioChunkAvailable -= _audioSubscription;
+            _audioSubscription = null;
+            if (_pipelineSession is { } session)
+            {
+                _pipelineSession = null;
+                _sessionDisposal = DisposeSessionAsync(session, _sessionDisposal);
+            }
             _recordingLimitTimer.Stop();
             _pushToTalkReleaseTimer.Stop();
             _dictationTarget?.Dispose();
@@ -492,6 +509,12 @@ static class Program
                 _overlayWindow.HideOverlay();
                 _trayIcon.SetState(TrayIconState.Idle);
             }
+        }
+
+        private async Task DisposeSessionAsync(TranscriptionSession session, Task previous)
+        {
+            try { await previous; await session.DisposeAsync(); }
+            catch (Exception exception) { _errorLogger.Log(exception); }
         }
 
         private void OnUi(Action action)
@@ -550,8 +573,7 @@ static class Program
                     ? (NAudio.Wave.WaveStream)new NAudio.Wave.WaveFileReader(new MemoryStream(audio.AudioData))
                     : new NAudio.Wave.MediaFoundationReader(audio.FilePath))
                     metrics.AudioDurationMs = reader.TotalTime.TotalMilliseconds;
-                var result = await _transcriptionService.TranscribeAsync(
-                    audio.FilePath, settings.DefaultLanguage, settings, cancellation.Token);
+                var result = await _pipelineSession!.CompleteAsync(audio.FilePath);
                 retainAudio = settings.HistoryEnabled && result.Succeeded && !string.IsNullOrWhiteSpace(result.RawText);
                 cancellation.Token.ThrowIfCancellationRequested();
                 if (!result.Succeeded)

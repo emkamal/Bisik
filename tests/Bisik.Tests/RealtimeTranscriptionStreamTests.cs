@@ -196,6 +196,27 @@ public sealed class RealtimeTranscriptionStreamTests
         Provider = new() { Endpoint = "https://example.openai.azure.com", ApiKey = "test-key", DeploymentName = "test-realtime" },
     };
 
+    [Theory]
+    [InlineData(8000)]
+    [InlineData(16000)]
+    [InlineData(24000)]
+    [InlineData(44100)]
+    [InlineData(48000)]
+    public void Continuous_conversion_preserves_chunk_boundaries_and_final_samples(int rate)
+    {
+        var input = Enumerable.Range(0, rate).SelectMany(i => BitConverter.GetBytes((short)(i % 3000))).ToArray();
+        var whole = new Pcm16Upsampler(rate);
+        var expected = whole.Convert(input).Concat(whole.Flush()).ToArray();
+        var split = new Pcm16Upsampler(rate);
+        var actual = new List<byte>();
+        for (var i = 0; i < input.Length; i += 98)
+            actual.AddRange(split.Convert(input.AsSpan(i, Math.Min(98, input.Length - i))));
+        actual.AddRange(split.Flush());
+        Assert.Equal(48000, actual.Count);
+        Assert.Equal(expected, actual);
+        Assert.Empty(split.Flush());
+    }
+
     private static RealtimeTranscriptionStream Create(HttpClient client, FakeSocket socket) =>
         new(client, (_, _, _) => Task.FromResult<WebSocket>(socket));
 
