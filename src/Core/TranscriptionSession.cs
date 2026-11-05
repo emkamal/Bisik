@@ -23,6 +23,8 @@ public sealed class TranscriptionSession : IAsyncDisposable
     public CancellationToken Token => _lifetime.Token;
     public IRealtimeTranscriber? Stream { get; }
     internal Task? Persistence { get; private set; }
+    internal SpeculativeCleanup? Speculation { get; set; }
+    internal EventHandler<CompletedTranscriptEventArgs>? SnapshotHandler { get; set; }
 
     internal TranscriptionSession(AppSettings settings, CancellationToken ct, IRealtimeTranscriber? stream,
         Func<TranscriptionSession, string, CancellationToken, Task<TranscriptionResult>> complete)
@@ -92,6 +94,7 @@ public sealed class TranscriptionSession : IAsyncDisposable
     private async Task AbandonStreamCoreAsync()
     {
         _streamLifetime.Cancel();
+        if (Stream is not null && SnapshotHandler is not null) Stream.CompletedTranscriptAvailable -= SnapshotHandler;
         _setupReady.TrySetCanceled();
         _audioQueue?.Close();
         if (Stream is not null) await Stream.DisposeAsync().ConfigureAwait(false);
@@ -121,6 +124,7 @@ public sealed class TranscriptionSession : IAsyncDisposable
         _lifetime.Cancel();
         await AbandonStreamAsync().ConfigureAwait(false);
         if (_completion is not null) { try { await _completion.ConfigureAwait(false); } catch { /* Caller receives the failure. */ } }
+        if (Speculation is not null) await Speculation.DisposeAsync().ConfigureAwait(false);
         _lifetime.Dispose();
         _streamLifetime.Dispose();
     }

@@ -245,6 +245,9 @@ public sealed record AppSettings
     [JsonPropertyName("pauseCommits")]
     public bool PauseCommits { get; init; }
 
+    [JsonPropertyName("speculativeCleanup")]
+    public bool SpeculativeCleanup { get; init; }
+
     // Records are shallowly immutable; copy mutable collections at the session boundary.
     public AppSettings Snapshot() => this with
     {

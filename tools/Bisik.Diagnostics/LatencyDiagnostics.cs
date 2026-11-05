@@ -30,7 +30,7 @@ internal static class LatencyDiagnostics
             // Never load the active file: migration/repair writes affect only this encrypted copy.
             File.Copy(source, Path.Combine(scratch, "settings.json"));
             var settings = new SettingsManager(scratch).Load() with { HistoryEnabled = false, SoundEnabled = false };
-            settings = settings with { PauseCommits = options.PauseCommits,
+            settings = settings with { PauseCommits = options.PauseCommits, SpeculativeCleanup = options.Speculation,
                 Provider = settings.Provider with { TranscriptionDelay = options.Delay } };
             var cleanupSettings = settings.PostProcessor;
             if (options.CleanupModel is { } model)

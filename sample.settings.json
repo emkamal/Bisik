@@ -14,6 +14,7 @@
   "historyEnabled": true,
   "liveCapture": false,
   "pauseCommits": false,
+  "speculativeCleanup": false,
   "provider": {
     "type": "azure-openai",
     "endpoint": "https://your-resource.openai.azure.com/",

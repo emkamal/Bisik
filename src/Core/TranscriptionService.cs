@@ -47,9 +47,17 @@ public sealed class TranscriptionService(
         var provider = ResolveProvider(snapshot.Provider);
         var stream = snapshot.LiveCapture && provider is IStreamingTranscriptionProvider { SupportsStreaming: true } live
             ? live.CreateStream() : null;
-        return new TranscriptionSession(snapshot, ct, stream, (session, path, token) =>
+        var created = new TranscriptionSession(snapshot, ct, stream, (session, path, token) =>
             TranscribeCoreAsync(path, session.Settings.DefaultLanguage, session.Settings, token,
-                ct => RecognizeSessionAsync(session, provider, path, ct), session.Persistence));
+                ct => RecognizeSessionAsync(session, provider, path, ct), session.Persistence,
+                session.Speculation is null ? null : (raw, token) => session.Speculation.FinishAsync(raw, session.Settings.PostProcessor, token)));
+        if (snapshot.SpeculativeCleanup && snapshot.PostProcessor.Enabled && stream is not null)
+        {
+            created.Speculation = new SpeculativeCleanup(snapshot.PostProcessor, _postProcessor.ProcessAsync, created.Token);
+            created.SnapshotHandler = (_, args) => created.Speculation.OnSnapshot(args.Text);
+            stream.CompletedTranscriptAvailable += created.SnapshotHandler;
+        }
+        return created;
     }
 
     private static async Task<string> RecognizeSessionAsync(TranscriptionSession session, ITranscriptionProvider provider,
@@ -99,7 +107,8 @@ public sealed class TranscriptionService(
         AppSettings settings,
         CancellationToken cancellationToken,
         Func<CancellationToken, Task<string>>? recognize = null,
-        Task? persistence = null)
+        Task? persistence = null,
+        Func<string, CancellationToken, Task<string>>? cleanup = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(audioFilePath);
         ArgumentNullException.ThrowIfNull(settings);
@@ -136,7 +145,8 @@ public sealed class TranscriptionService(
                 PhaseChanged?.Invoke(ProcessingPhase.PostProcessing);
                 var postProcessingStopwatch = Stopwatch.StartNew();
                 metrics.Mark(TimingStage.CleanupStart);
-                outputText = await _postProcessor.ProcessAsync(rawText, settings.PostProcessor, cancellationToken);
+                outputText = cleanup is null ? await _postProcessor.ProcessAsync(rawText, settings.PostProcessor, cancellationToken)
+                    : await cleanup(rawText, cancellationToken);
                 metrics.Mark(TimingStage.CleanupEnd);
                 postProcessingStopwatch.Stop();
                 postProcessingDurationMs = postProcessingStopwatch.ElapsedMilliseconds;

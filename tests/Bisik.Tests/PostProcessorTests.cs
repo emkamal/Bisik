@@ -2,6 +2,7 @@ using System.Net;
 using System.Reflection;
 using System.Text.Json;
 using Bisik.Models;
+using Bisik.Core;
 using FluentAssertions;
 using Xunit.Sdk;
 
@@ -9,6 +10,88 @@ namespace Bisik.Tests;
 
 public sealed class PostProcessorTests
 {
+    [Fact]
+    public async Task Speculation_cancellation_and_new_sessions_do_not_share_results()
+    {
+        var settings = new PostProcessorSettings { Enabled = true };
+        using var cancellation = new CancellationTokenSource();
+        var calls = 0;
+        await using (var first = new SpeculativeCleanup(settings, (raw, _, ct) => { calls++; return Task.FromResult(raw); }, cancellation.Token, limit: 0))
+        {
+            first.OnSnapshot("ignored");
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.FinishAsync("old", settings, cancellation.Token));
+        }
+        Assert.Equal(0, calls);
+        await using var second = new SpeculativeCleanup(settings, (raw, _, _) => { calls++; return Task.FromResult(raw); }, CancellationToken.None, limit: 0);
+        Assert.Equal("new session", await second.FinishAsync("new session", settings, CancellationToken.None));
+        Assert.Equal(1, calls);
+    }
+    [Fact]
+    public async Task Speculation_reuses_only_exact_whole_text_and_observes_obsolete_requests()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var obsolete = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = new List<string>();
+        var settings = new PostProcessorSettings { Enabled = true, PresetName = PostProcessorPreset.Custom, SystemPrompt = "Translate the entire text." };
+        await using var speculation = new SpeculativeCleanup(settings, (raw, _, _) =>
+        {
+            calls.Add(raw);
+            if (calls.Count == 1) { started.SetResult(); return obsolete.Task; }
+            return Task.FromResult(raw + " edited");
+        }, CancellationToken.None);
+        speculation.OnSnapshot("The pump is running.");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var result = await speculation.FinishAsync("The pump is not running. Katup belum terbuka.", settings, CancellationToken.None);
+        Assert.Equal("The pump is not running. Katup belum terbuka. edited", result);
+        Assert.False(obsolete.Task.IsCompleted);
+        obsolete.SetResult("Stale edited text");
+        Assert.Equal(2, calls.Count);
+    }
+
+    [Fact]
+    public async Task Exact_running_speculation_is_reused_and_snapshot_work_is_coalesced()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pending = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var settings = new PostProcessorSettings { Enabled = true };
+        await using var speculation = new SpeculativeCleanup(settings, (raw, _, _) =>
+        {
+            Assert.Equal("Latest whole text", raw);
+            calls++;
+            started.TrySetResult();
+            return pending.Task;
+        }, CancellationToken.None);
+        speculation.OnSnapshot("Old snapshot");
+        speculation.OnSnapshot("Latest whole text");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var final = speculation.FinishAsync("Latest whole text", settings, CancellationToken.None);
+        pending.SetResult("Cleaned whole text");
+        Assert.Equal("Cleaned whole text", await final);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task Changed_prompt_and_request_limit_reserve_required_final_cleanup()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var settings = new PostProcessorSettings { Enabled = true, SystemPrompt = "Original" };
+        await using var speculation = new SpeculativeCleanup(settings, (_, s, _) =>
+        {
+            if (++calls == 1) { started.SetResult(); return first.Task; }
+            return Task.FromResult(s.SystemPrompt);
+        }, CancellationToken.None, limit: 1);
+        speculation.OnSnapshot("");
+        speculation.OnSnapshot("Whole text");
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        speculation.OnSnapshot("Pending newer text");
+        Assert.Equal("New custom prompt", await speculation.FinishAsync("Whole text", settings with { SystemPrompt = "New custom prompt" }, CancellationToken.None));
+        first.SetResult("Obsolete");
+        Assert.Equal(2, calls);
+    }
     [Fact]
     public async Task Reasoning_is_scoped_to_verified_model_api_and_round_trips()
     {

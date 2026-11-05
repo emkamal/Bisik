@@ -23,6 +23,7 @@ public sealed class SettingsForm : Form
     private CheckBox? _pauseCommitsCheckBox;
     private ComboBox? _reasoningEffortComboBox;
     private TextBox? _verifiedReasoningEffortsTextBox;
+    private CheckBox? _speculativeCleanupCheckBox;
     private CheckBox? _launchAtStartupCheckBox;
     private ComboBox? _triggerModeComboBox;
     private TextBox? _hotkeyTextBox;
@@ -348,6 +349,8 @@ public sealed class SettingsForm : Form
         root.Controls.Add(_transcriptionDelayComboBox, 1, 5);
         _pauseCommitsCheckBox = new CheckBox { Text = "Commit phrases during pauses (live capture; experimental)", AutoSize = true };
         root.Controls.Add(_pauseCommitsCheckBox, 1, 6);
+        _speculativeCleanupCheckBox = new CheckBox { Text = "Prepare whole-text cleanup during pauses (extra requests; experimental)", AutoSize = true };
+        root.Controls.Add(_speculativeCleanupCheckBox, 1, 7);
 
         page.Controls.Add(root);
         ShowProviderPanel(settings.Provider.Type);
@@ -1009,6 +1012,7 @@ public sealed class SettingsForm : Form
         if (_liveCaptureCheckBox is not null) _liveCaptureCheckBox.Checked = settings.LiveCapture;
         if (_transcriptionDelayComboBox is not null) _transcriptionDelayComboBox.SelectedItem = settings.Provider.TranscriptionDelay ?? "Provider default";
         if (_pauseCommitsCheckBox is not null) _pauseCommitsCheckBox.Checked = settings.PauseCommits;
+        if (_speculativeCleanupCheckBox is not null) _speculativeCleanupCheckBox.Checked = settings.SpeculativeCleanup;
         if (_azureRealtimeCheckBox is not null) _azureRealtimeCheckBox.Checked = settings.Provider.AzureRealtime;
         if (_launchAtStartupCheckBox is not null)
         {
@@ -1124,6 +1128,7 @@ public sealed class SettingsForm : Form
         {
             LiveCapture = _liveCaptureCheckBox?.Checked ?? defaults.LiveCapture,
             PauseCommits = _pauseCommitsCheckBox?.Checked ?? defaults.PauseCommits,
+            SpeculativeCleanup = _speculativeCleanupCheckBox?.Checked ?? defaults.SpeculativeCleanup,
             LaunchAtStartup = _launchAtStartupCheckBox?.Checked ?? defaults.LaunchAtStartup,
             TriggerMode = GetSelectedComboValue(_triggerModeComboBox, defaults.TriggerMode),
             Hotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox?.Text) ? defaults.Hotkey : _hotkeyTextBox.Text,

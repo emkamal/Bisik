@@ -113,6 +113,10 @@ Use `--mode live` to replay PCM16 mono at capture speed. Optional `--delay low` 
 phrase commits (both off by default) and provider-default delay omission. The dedicated
 Azure transcription capability supports `minimal`, `low`, `medium`, `high`, `xhigh`;
 omission does not imply `medium`. See the [Azure microphone example](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-websockets#transcribe-audio-in-real-time).
+Optional whole-text speculation (`--speculation on` for diagnostics) coalesces completed
+snapshots with a 250 ms debounce, at most two speculative requests plus required final cleanup.
+Only an exact final transcript/settings match is reused. It is disabled by default because
+extra requests and measured benefit depend on pauses and endpoint response time.
 Missing stages are unavailable, including paste for this benchmark. `duration_ms` keeps its original
 transcription-plus-cleanup meaning. Set `BISIK_LATENCY_TRACE=1` before launching the app to opt into
 `%APPDATA%\Bisik\latency.jsonl` (100 sessions/2 MiB maximum).
