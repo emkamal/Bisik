@@ -12,6 +12,8 @@
   "launchAtStartup": false,
   "soundEnabled": true,
   "historyEnabled": true,
+  "liveCapture": false,
+  "pauseCommits": false,
   "provider": {
     "type": "azure-openai",
     "endpoint": "https://your-resource.openai.azure.com/",
@@ -39,6 +41,8 @@
       "model": "gpt-4o-mini"
     },
     "model": "gpt-4o-mini",
+    "reasoningEffort": null,
+    "reasoningCapability": null,
     "targetLanguage": "English",
     "presetName": "clean-up",
     "systemPrompt": "You are a transcription editor. Fix grammar, punctuation, and remove filler words. Return only the cleaned text, nothing else."

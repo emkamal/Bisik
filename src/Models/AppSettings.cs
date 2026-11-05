@@ -209,6 +209,12 @@ public sealed record PostProcessorSettings
     [JsonPropertyName("model")]
     public string Model { get; init; } = string.Empty;
 
+    [JsonPropertyName("reasoningEffort")]
+    public string? ReasoningEffort { get; init; }
+
+    [JsonPropertyName("reasoningCapability")]
+    public ReasoningCapability? ReasoningCapability { get; init; }
+
     [JsonPropertyName("targetLanguage")]
     public string TargetLanguage { get; init; } = string.Empty;
 
@@ -217,6 +223,18 @@ public sealed record PostProcessorSettings
 
     [JsonPropertyName("systemPrompt")]
     public string SystemPrompt { get; init; } = DefaultSystemPrompt;
+}
+
+/// <summary>Explicitly verified effort values, scoped to the exact model/API rather than an alias guess.</summary>
+public sealed record ReasoningCapability(string ApiFingerprint, string[] SupportedEfforts)
+{
+    public static string Fingerprint(PostProcessorSettings settings)
+    {
+        var p = settings.Provider;
+        var identity = string.Join("\n", p.Type, p.Endpoint.TrimEnd('/'), p.ApiVersion, p.DeploymentName, settings.Model, p.Model);
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)));
+    }
+    public bool Matches(PostProcessorSettings settings) => SupportedEfforts is { Length: > 0 } && ApiFingerprint == Fingerprint(settings);
 }
 
 public sealed record AppSettings
@@ -232,7 +250,9 @@ public sealed record AppSettings
     {
         QuickLanguages = (string[])QuickLanguages.Clone(),
         Provider = CopyProvider(Provider),
-        PostProcessor = PostProcessor with { Provider = CopyProvider(PostProcessor.Provider) },
+        PostProcessor = PostProcessor with { Provider = CopyProvider(PostProcessor.Provider),
+            ReasoningCapability = PostProcessor.ReasoningCapability is { } capability
+                ? capability with { SupportedEfforts = capability.SupportedEfforts is null ? [] : (string[])capability.SupportedEfforts.Clone() } : null },
     };
 
     private static ProviderSettings CopyProvider(ProviderSettings provider) => provider with
@@ -374,6 +394,8 @@ internal sealed class PostProcessorSettingsJsonConverter : JsonConverter<PostPro
             Enabled = enabled,
             Provider = provider,
             Model = model,
+            ReasoningEffort = root.TryGetProperty("reasoningEffort", out var effort) && effort.ValueKind != JsonValueKind.Null ? effort.GetString() : null,
+            ReasoningCapability = root.TryGetProperty("reasoningCapability", out var capability) ? capability.Deserialize<ReasoningCapability>(options) : null,
             TargetLanguage = targetLanguage,
             PresetName = presetName,
             SystemPrompt = systemPrompt,
@@ -387,6 +409,12 @@ internal sealed class PostProcessorSettingsJsonConverter : JsonConverter<PostPro
         writer.WritePropertyName("provider");
         JsonSerializer.Serialize(writer, value.Provider, options);
         writer.WriteString("model", value.Model);
+        if (value.ReasoningEffort is not null) writer.WriteString("reasoningEffort", value.ReasoningEffort);
+        if (value.ReasoningCapability is not null)
+        {
+            writer.WritePropertyName("reasoningCapability");
+            JsonSerializer.Serialize(writer, value.ReasoningCapability, options);
+        }
 
         if (!string.IsNullOrEmpty(value.TargetLanguage))
         {

@@ -10,6 +10,53 @@ namespace Bisik.Tests;
 public sealed class PostProcessorTests
 {
     [Fact]
+    public async Task Reasoning_is_scoped_to_verified_model_api_and_round_trips()
+    {
+        using var handler = new CapturingHttpMessageHandler();
+        using var client = new HttpClient(handler);
+        var processor = CreateProcessor(client);
+        var settings = new PostProcessorSettings { Enabled = true, Model = "alias", ReasoningEffort = "low",
+            PresetName = PostProcessorPreset.Custom, SystemPrompt = "Keep  every newline.\nJangan ubah makna.",
+            Provider = new() { Type = ProviderType.OpenAi, ApiKey = "test" } };
+        settings = settings with { ReasoningCapability = new(ReasoningCapability.Fingerprint(settings), ["low"]) };
+        settings = JsonSerializer.Deserialize<PostProcessorSettings>(JsonSerializer.Serialize(settings))!;
+        await ProcessAsync(processor, "Tidak restart ABB cpmPlus.History.", settings);
+        Assert.Equal("low", handler.CapturedRequest!.Body.RootElement.GetProperty("reasoning_effort").GetString());
+        Assert.Equal(settings.SystemPrompt, GetMessageContent(handler.CapturedRequest.Body, 0));
+        await ProcessAsync(processor, "fixture", settings with { Model = "different-model" });
+        Assert.False(handler.CapturedRequest!.Body.RootElement.TryGetProperty("reasoning_effort", out _));
+        await ProcessAsync(processor, "fixture", settings with { Provider = settings.Provider with { Type = ProviderType.CustomEndpoint, Endpoint = "https://example.test/chat" } });
+        Assert.False(handler.CapturedRequest!.Body.RootElement.TryGetProperty("reasoning_effort", out _));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ProcessAsync(processor, "fixture", settings with { ReasoningEffort = "high" }));
+        Assert.Null(JsonSerializer.Deserialize<PostProcessorSettings>("{}")!.ReasoningEffort);
+    }
+
+    [Theory]
+    [InlineData("length")]
+    [InlineData("content_filter")]
+    [InlineData("tool_calls")]
+    [InlineData(null)]
+    public async Task Incomplete_cleanup_is_rejected(string? finish)
+    {
+        using var handler = new CapturingHttpMessageHandler(JsonSerializer.Serialize(new
+        { choices = new[] { new { finish_reason = finish, message = new { content = "Clipped translation" } } } }));
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<InvalidDataException>(() => ProcessAsync(CreateProcessor(client), "fixture",
+            new PostProcessorSettings { Enabled = true, Model = "alias", Provider = new() { Type = ProviderType.OpenAi, ApiKey = "test" } }));
+    }
+
+    [Theory]
+    [InlineData("\"\"")]
+    [InlineData("[]")]
+    [InlineData("[{\"type\":\"text\",\"text\":\"ok\"},{\"type\":\"refusal\"}]")]
+    public async Task Empty_or_malformed_text_parts_are_rejected(string content)
+    {
+        using var handler = new CapturingHttpMessageHandler("{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":" + content + "}}]}");
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<InvalidDataException>(() => ProcessAsync(CreateProcessor(client), "fixture",
+            new PostProcessorSettings { Enabled = true, Model = "alias", Provider = new() { Type = ProviderType.OpenAi, ApiKey = "test" } }));
+    }
+    [Fact]
     public void Post_processor_contract_should_expose_expected_signature()
     {
         var contractType = RequireBisikType("Bisik.PostProcessor.IPostProcessor");
@@ -88,7 +135,7 @@ public sealed class PostProcessorTests
     [Fact]
     public async Task OpenAI_post_processor_should_send_bearer_auth_custom_prompt_and_parse_chat_output()
     {
-        using var handler = new CapturingHttpMessageHandler("""{"choices":[{"message":{"content":"Refined final text"}}]}""");
+        using var handler = new CapturingHttpMessageHandler("""{"choices":[{"finish_reason":"stop","message":{"content":"Refined final text"}}]}""");
         using var client = new HttpClient(handler);
         var processor = CreateProcessor(client);
         var settings = new PostProcessorSettings
@@ -118,7 +165,7 @@ public sealed class PostProcessorTests
     [Fact]
     public async Task Azure_post_processor_should_send_api_key_auth_to_the_chat_completions_endpoint()
     {
-        using var handler = new CapturingHttpMessageHandler("""{"choices":[{"message":{"content":"Rapikan hasilnya"}}]}""");
+        using var handler = new CapturingHttpMessageHandler("""{"choices":[{"finish_reason":"stop","message":{"content":"Rapikan hasilnya"}}]}""");
         using var client = new HttpClient(handler);
         var processor = CreateProcessor(client);
         var settings = new PostProcessorSettings
@@ -233,7 +280,7 @@ public sealed class PostProcessorTests
             .GetString();
     }
 
-    private sealed class CapturingHttpMessageHandler(string responseBody = """{"choices":[{"message":{"content":"ok"}}]}""")
+    private sealed class CapturingHttpMessageHandler(string responseBody = """{"choices":[{"finish_reason":"stop","message":{"content":"ok"}}]}""")
         : HttpMessageHandler
     {
         public CapturedRequest? CapturedRequest { get; private set; }

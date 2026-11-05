@@ -48,15 +48,21 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
     {
         var prompt = PostProcessorPresets.ResolveSystemPrompt(settings);
         var model = ResolveModel(settings);
-        var payload = new
+        var payload = new Dictionary<string, object>
         {
-            model,
-            messages = new object[]
+            ["model"] = model,
+            ["messages"] = new object[]
             {
                 new { role = "system", content = prompt },
                 new { role = "user", content = rawText },
             },
         };
+        if (settings.ReasoningEffort is { } effort && settings.ReasoningCapability is { } capability && capability.Matches(settings))
+        {
+            if (effort is not ("none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max") || !capability.SupportedEfforts.Contains(effort, StringComparer.Ordinal))
+                throw new InvalidOperationException("The selected reasoning effort has not been verified for this model/API.");
+            payload["reasoning_effort"] = effort;
+        }
 
         return JsonSerializer.Serialize(payload);
     }
@@ -216,7 +222,12 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
             throw new InvalidOperationException("Post-processor response did not contain any choices.");
         }
 
-        var message = choices[0].GetProperty("message");
+        var choice = choices[0];
+        if (!choice.TryGetProperty("finish_reason", out var finish) || finish.ValueKind != JsonValueKind.String || finish.GetString() != "stop")
+            throw new InvalidDataException("Post-processing was incomplete, filtered, or truncated. No edited text was accepted.");
+        if (!choice.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object ||
+            (message.TryGetProperty("refusal", out var refusal) && refusal.ValueKind != JsonValueKind.Null))
+            throw new InvalidDataException("Post-processor did not return a complete text message.");
         if (!message.TryGetProperty("content", out var content))
         {
             throw new InvalidOperationException("Post-processor response did not contain message content.");
@@ -224,11 +235,16 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
 
         if (content.ValueKind == JsonValueKind.String)
         {
-            return content.GetString() ?? string.Empty;
+            var text = content.GetString();
+            return !string.IsNullOrWhiteSpace(text) ? text : throw new InvalidDataException("Post-processor returned empty text.");
         }
 
         if (content.ValueKind == JsonValueKind.Array)
         {
+            if (content.EnumerateArray().Any(part => part.ValueKind != JsonValueKind.Object ||
+                !part.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String || type.GetString() != "text" ||
+                !part.TryGetProperty("text", out var text) || text.ValueKind != JsonValueKind.String))
+                throw new InvalidDataException("Post-processor returned unsupported or incomplete text parts.");
             var textParts = content.EnumerateArray()
                 .Where(part =>
                     part.ValueKind == JsonValueKind.Object &&
@@ -239,13 +255,13 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
                 .Where(text => !string.IsNullOrEmpty(text))
                 .ToArray();
 
-            if (textParts.Length > 0)
+            if (textParts.Length > 0 && !string.IsNullOrWhiteSpace(string.Concat(textParts)))
             {
                 return string.Concat(textParts);
             }
         }
 
-        throw new InvalidOperationException("Post-processor response contained an unsupported message content format.");
+        throw new InvalidDataException("Post-processor response contained an unsupported or empty message content format.");
     }
 
     private static Uri RequireAbsoluteUri(string endpoint, string parameterName)

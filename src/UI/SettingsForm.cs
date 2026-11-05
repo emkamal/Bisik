@@ -21,6 +21,8 @@ public sealed class SettingsForm : Form
     private CheckBox? _liveCaptureCheckBox;
     private ComboBox? _transcriptionDelayComboBox;
     private CheckBox? _pauseCommitsCheckBox;
+    private ComboBox? _reasoningEffortComboBox;
+    private TextBox? _verifiedReasoningEffortsTextBox;
     private CheckBox? _launchAtStartupCheckBox;
     private ComboBox? _triggerModeComboBox;
     private TextBox? _hotkeyTextBox;
@@ -730,6 +732,18 @@ public sealed class SettingsForm : Form
         providerLayout.Controls.Add(_postProcessorDeploymentNameTextBox, 1, 2);
         providerLayout.Controls.Add(CreateFieldLabel("Model"), 0, 3);
         providerLayout.Controls.Add(_postProcessorModelTextBox, 1, 3);
+        _reasoningEffortComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+        _reasoningEffortComboBox.Items.AddRange(new object[] { "Provider default", "none", "minimal", "low", "medium", "high", "xhigh", "max" });
+        _reasoningEffortComboBox.SelectedIndex = 0;
+        _verifiedReasoningEffortsTextBox = new TextBox { Width = 280 };
+        providerLayout.Controls.Add(CreateFieldLabel("Reasoning effort"), 0, 4);
+        providerLayout.Controls.Add(_reasoningEffortComboBox, 1, 4);
+        providerLayout.Controls.Add(CreateFieldLabel("Verified supported efforts"), 0, 5);
+        providerLayout.Controls.Add(_verifiedReasoningEffortsTextBox, 1, 5);
+        // A deployment alias or changed API cannot inherit another model's capability claim.
+        foreach (var field in new[] { _postProcessorEndpointTextBox, _postProcessorDeploymentNameTextBox, _postProcessorModelTextBox })
+            field.TextChanged += (_, _) => _verifiedReasoningEffortsTextBox.Text = string.Empty;
+        _postProcessorProviderComboBox.SelectedIndexChanged += (_, _) => _verifiedReasoningEffortsTextBox.Text = string.Empty;
         providerPanel.Controls.Add(providerLayout);
         root.Controls.Add(CreateFieldLabel("Provider fields"), 0, 2);
         root.Controls.Add(providerPanel, 1, 2);
@@ -1088,6 +1102,24 @@ public sealed class SettingsForm : Form
         var quickLanguages = (_quickLanguagesTextBox?.Text ?? string.Empty)
             .Split([Environment.NewLine, "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
+        var postProcessor = _loadedSettings.PostProcessor with
+        {
+            Enabled = _postProcessorEnabledCheckBox?.Checked ?? defaults.PostProcessor.Enabled,
+            Provider = postProcessorProvider,
+            Model = _postProcessorModelTextBox?.Text ?? string.Empty,
+            TargetLanguage = _postProcessorTargetLanguageTextBox?.Text ?? defaults.PostProcessor.TargetLanguage,
+            PresetName = GetSelectedComboValue(_postProcessorPresetComboBox, defaults.PostProcessor.PresetName),
+            SystemPrompt = _postProcessorSystemPromptTextBox?.Text ?? defaults.PostProcessor.SystemPrompt,
+            ReasoningEffort = _reasoningEffortComboBox?.SelectedIndex > 0 ? _reasoningEffortComboBox.SelectedItem?.ToString() : null,
+            ReasoningCapability = null,
+        };
+        var efforts = (_verifiedReasoningEffortsTextBox?.Text ?? string.Empty).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (efforts.Any(e => e is not ("none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max")))
+            throw new InvalidOperationException("Verified efforts must be comma-separated API-supported values.");
+        if (efforts.Length > 0) postProcessor = postProcessor with { ReasoningCapability = new(ReasoningCapability.Fingerprint(postProcessor), efforts) };
+        if (postProcessor.ReasoningEffort is { } selected && !efforts.Contains(selected, StringComparer.Ordinal))
+            throw new InvalidOperationException("Verify that this model/API supports the selected effort, or choose Provider default.");
+
         return _loadedSettings with
         {
             LiveCapture = _liveCaptureCheckBox?.Checked ?? defaults.LiveCapture,
@@ -1110,15 +1142,7 @@ public sealed class SettingsForm : Form
                 VadSilenceThreshold = (double?)_silenceThresholdInput?.Value ?? defaults.Audio.VadSilenceThreshold,
                 VadMinSpeechMs = (int?)_minSpeechInput?.Value ?? defaults.Audio.VadMinSpeechMs,
             },
-            PostProcessor = _loadedSettings.PostProcessor with
-            {
-                Enabled = _postProcessorEnabledCheckBox?.Checked ?? defaults.PostProcessor.Enabled,
-                Provider = postProcessorProvider,
-                Model = _postProcessorModelTextBox?.Text ?? string.Empty,
-                TargetLanguage = _postProcessorTargetLanguageTextBox?.Text ?? defaults.PostProcessor.TargetLanguage,
-                PresetName = GetSelectedComboValue(_postProcessorPresetComboBox, defaults.PostProcessor.PresetName),
-                SystemPrompt = _postProcessorSystemPromptTextBox?.Text ?? defaults.PostProcessor.SystemPrompt,
-            },
+            PostProcessor = postProcessor,
         };
     }
 
@@ -1174,6 +1198,9 @@ public sealed class SettingsForm : Form
         if (_postProcessorApiKeyTextBox is not null) _postProcessorApiKeyTextBox.Text = settings.Provider.ApiKey;
         if (_postProcessorDeploymentNameTextBox is not null) _postProcessorDeploymentNameTextBox.Text = settings.Provider.DeploymentName;
         if (_postProcessorModelTextBox is not null) _postProcessorModelTextBox.Text = settings.Model;
+        if (_reasoningEffortComboBox is not null) _reasoningEffortComboBox.SelectedItem = settings.ReasoningEffort ?? "Provider default";
+        if (_verifiedReasoningEffortsTextBox is not null) _verifiedReasoningEffortsTextBox.Text =
+            settings.ReasoningCapability is { } capability && capability.Matches(settings) ? string.Join(",", capability.SupportedEfforts) : string.Empty;
     }
 
     private ProviderSettings BuildProviderSettings(ProviderType providerType, string endpointLabel = "Endpoint URL")

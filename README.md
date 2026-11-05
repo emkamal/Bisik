@@ -74,6 +74,18 @@ Azure multipart models, OpenAI, OpenRouter, Local Whisper and Custom Endpoint su
 
 Optional LLM cleanup retains Clean up, Homogenize to English/Indonesian, Translate and Custom presets. It runs after final transcription and is disabled by default. WAV is recommended; MP3 uses Windows Media Foundation. OGG encoding is not implemented.
 
+Reasoning effort defaults to omission. Settings accepts verified supported efforts for the
+exact model/API; changing the model, deployment or endpoint clears that claim. Custom prompts
+remain verbatim. Cleanup requires a complete `finish_reason: stop` response; truncated,
+filtered, refused, malformed and empty responses fail without insertion. Compatible servers
+must return this completion marker. See [OpenAI reasoning controls](https://developers.openai.com/api/docs/guides/reasoning).
+
+`--cleanup-benchmark --output report.json` runs a fixed synthetic English/Indonesian corpus
+against the saved cleanup. `--probe-reasoning low` explicitly probes that request parameter;
+`--cleanup-model <existing-model>` compares an already accessible model. Overrides stay in
+memory. Successful probes establish compatibility for that run, not general model availability.
+Separate `.quality.json` files contain only that fixed synthetic input/output for meaning review.
+
 ## Local data
 
 Persistent user data is under %APPDATA%\Bisik\:
