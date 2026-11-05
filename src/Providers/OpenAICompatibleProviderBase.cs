@@ -314,7 +314,7 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
             // Gateways may return HTML/plain text. Never expose arbitrary response bodies to logs or tray UI.
         }
 
-        throw new ProviderRequestException(response.StatusCode, unsupportedAudioTranscriptions);
+        throw new ProviderRequestException(response.StatusCode, unsupportedAudioTranscriptions, Core.RetryPolicy.FromResponse(response));
     }
 
     private static async Task<string> ParseTextResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
@@ -337,9 +337,10 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
     }
 }
 
-internal sealed class ProviderRequestException(HttpStatusCode statusCode, bool unsupportedAudioTranscriptions)
+internal sealed class ProviderRequestException(HttpStatusCode statusCode, bool unsupportedAudioTranscriptions, TimeSpan? retryAfter = null)
     : HttpRequestException($"Provider request failed (HTTP {(int)statusCode}). Check provider settings and retry.", null, statusCode)
 {
+    public TimeSpan? RetryAfter { get; } = retryAfter;
     // Preserve the Azure fallback signal without retaining potentially sensitive response text.
     public bool UnsupportedAudioTranscriptions { get; } = unsupportedAudioTranscriptions;
 }

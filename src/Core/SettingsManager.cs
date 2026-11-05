@@ -75,6 +75,15 @@ public sealed class SettingsManager
         }
     }
 
+    /// <summary>Decrypt in memory and persist only an encrypted diagnostic copy; never migrate the source.</summary>
+    public static AppSettings LoadEncryptedCopy(string sourcePath, string copyDirectory)
+    {
+        var persisted = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(sourcePath), SerializerOptions);
+        var recovered = UnprotectSecrets(NormalizeSettings(persisted)).InMemorySettings;
+        new SettingsManager(copyDirectory).Save(recovered);
+        return recovered;
+    }
+
     public void Save(AppSettings settings)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_settingsPath)!);

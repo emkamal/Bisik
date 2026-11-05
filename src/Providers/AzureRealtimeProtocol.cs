@@ -32,7 +32,7 @@ internal static class AzureRealtimeProtocol
         using var response = await SendSecretRequestAsync(client, request, ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
             // Never put raw gateway response bodies (which may contain credentials) in error.log.
-            throw new HttpRequestException($"Azure realtime session request failed (HTTP {(int)response.StatusCode}). Check provider credentials, deployment and gateway access.", null, response.StatusCode);
+            throw new ProviderRequestException(response.StatusCode, false, Core.RetryPolicy.FromResponse(response));
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
         var root = document.RootElement;
         if (root.TryGetProperty("client_secret", out var nested)) root = nested;
@@ -100,7 +100,7 @@ internal static class AzureRealtimeProtocol
         return new UriBuilder(realtime) { Scheme = "wss", Port = realtime.IsDefaultPort ? -1 : realtime.Port, Query = "intent=transcription" }.Uri;
     }
 
-    private static Uri ApiUri(string endpoint, string suffix)
+    internal static Uri ApiUri(string endpoint, string suffix)
     {
         if (!Uri.TryCreate(endpoint?.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != "https" ||
             !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Fragment))

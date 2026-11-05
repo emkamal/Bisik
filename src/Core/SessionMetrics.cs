@@ -18,9 +18,11 @@ public enum MetricCount { QueuedBytes, SentBytes, Attempts, Fallbacks, Speculati
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum SessionOutcome { Ready, Empty, Failed, Cancelled, PasteDispatched, Copied, NeedsReview }
 public sealed record TimingEvent(TimingStage Stage, double ElapsedMs);
+public sealed record HttpTiming(int Attempt, double StartMs, double? FirstResponseMs = null,
+    double? CompleteResponseMs = null, int? Status = null, double? RetryAfterMs = null);
 public sealed record SessionTimingReport(Guid SessionId, string Configuration, double? AudioDurationMs,
     SessionOutcome Outcome, IReadOnlyList<TimingEvent> Events, IReadOnlyDictionary<MetricCount, long> Counts,
-    double? StopToReadyMs, double? StopToPasteMs);
+    double? StopToReadyMs, double? StopToPasteMs, IReadOnlyList<HttpTiming>? HttpRequests = null);
 
 public interface IMetricsSink { void Write(SessionTimingReport report); }
 
@@ -32,6 +34,7 @@ public sealed class SessionMetrics(string configuration, IMetricsSink? sink = nu
     private readonly object _gate = new();
     private readonly List<TimingEvent> _events = [];
     private readonly Dictionary<MetricCount, long> _counts = [];
+    private readonly List<HttpTiming> _http = [];
     private readonly string _configuration = ValidateLabel(configuration);
     public Guid Id { get; } = Guid.NewGuid();
     public SessionOutcome LastOutcome { get; private set; } = SessionOutcome.Ready;
@@ -58,6 +61,20 @@ public sealed class SessionMetrics(string configuration, IMetricsSink? sink = nu
     {
         lock (_gate) _counts[count] = _counts.GetValueOrDefault(count) + value;
     }
+    public int? BeginHttpRequest()
+    {
+        lock (_gate)
+        {
+            if (_http.Count >= 128) return null;
+            var id = _http.Count;
+            _http.Add(new(id + 1, Stopwatch.GetElapsedTime(_start).TotalMilliseconds));
+            return id;
+        }
+    }
+    public void HttpHeaders(int id, int status, TimeSpan? retryAfter)
+    { lock (_gate) _http[id] = _http[id] with { FirstResponseMs = Stopwatch.GetElapsedTime(_start).TotalMilliseconds, Status = status, RetryAfterMs = retryAfter?.TotalMilliseconds }; }
+    public void HttpBodyComplete(int id)
+    { lock (_gate) _http[id] = _http[id] with { CompleteResponseMs = Stopwatch.GetElapsedTime(_start).TotalMilliseconds }; }
 
     public SessionTimingReport Snapshot(SessionOutcome outcome)
     {
@@ -66,7 +83,7 @@ public sealed class SessionMetrics(string configuration, IMetricsSink? sink = nu
             double? At(TimingStage stage) => _events.FirstOrDefault(e => e.Stage == stage)?.ElapsedMs;
             double? SinceStop(TimingStage stage) => At(stage) - At(TimingStage.StopRequested);
             return new(Id, _configuration, AudioDurationMs, outcome, _events.ToArray(),
-                new Dictionary<MetricCount, long>(_counts), SinceStop(TimingStage.Ready), SinceStop(TimingStage.PasteDispatched));
+                new Dictionary<MetricCount, long>(_counts), SinceStop(TimingStage.Ready), SinceStop(TimingStage.PasteDispatched), _http.ToArray());
         }
     }
 
@@ -104,8 +121,13 @@ public sealed class BoundedMetricsFileSink(string path) : IMetricsSink
 }
 
 public sealed record TimingSummary(int Samples, int Failures, double? MedianMs, double? P95Ms);
+public sealed record TimingComparison(string Configuration, double? AudioDurationMs, TimingSummary Summary, double FallbackRate);
 public static class TimingAggregation
 {
+    public static IReadOnlyList<TimingComparison> Compare(IEnumerable<SessionTimingReport> reports) => reports
+        .GroupBy(r => (r.Configuration, r.AudioDurationMs))
+        .Select(group => new TimingComparison(group.Key.Configuration, group.Key.AudioDurationMs, Summarize(group),
+            (double)group.Count(r => r.Counts.GetValueOrDefault(MetricCount.Fallbacks) > 0) / group.Count())).ToArray();
     public static TimingSummary Summarize(IEnumerable<SessionTimingReport> reports)
     {
         var all = reports.ToArray();

@@ -26,8 +26,7 @@ internal static class AzureDiagnostics
         try
         {
             // Load only a disposable copy: SettingsManager may repair old settings while loading.
-            File.Copy(settingsPath, Path.Combine(scratch, "settings.json"));
-            var settings = new SettingsManager(scratch).Load();
+            var settings = SettingsManager.LoadEncryptedCopy(settingsPath, scratch);
             var configured = settings.Provider.Type == ProviderType.AzureOpenAi &&
                 !string.IsNullOrWhiteSpace(settings.Provider.Endpoint) &&
                 !string.IsNullOrWhiteSpace(settings.Provider.ApiKey) &&

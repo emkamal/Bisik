@@ -103,6 +103,7 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
 
     private static string BuildAzureUri(ProviderSettings settings)
     {
+        if (settings.AzureV1) return Bisik.Providers.AzureRealtimeProtocol.ApiUri(settings.Endpoint, "chat/completions").ToString();
         if (string.IsNullOrWhiteSpace(settings.DeploymentName))
         {
             throw new InvalidOperationException("Azure OpenAI post-processing requires a deployment name.");
@@ -192,17 +193,9 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
             return;
         }
 
-        var body = response.Content is null
-            ? string.Empty
-            : await response.Content.ReadAsStringAsync(cancellationToken);
-        var detail = string.IsNullOrWhiteSpace(body)
-            ? response.ReasonPhrase ?? response.StatusCode.ToString()
-            : body;
-
-        throw new HttpRequestException(
-            $"Post-processor request failed with status {(int)response.StatusCode} ({response.StatusCode}): {detail}",
-            null,
-            response.StatusCode);
+        cancellationToken.ThrowIfCancellationRequested();
+        // Error bodies and reason phrases can contain private routing/credential data.
+        throw new Bisik.Providers.ProviderRequestException(response.StatusCode, false, Core.RetryPolicy.FromResponse(response));
     }
 
     private static async Task<string> ParseChatCompletionAsync(HttpResponseMessage response, CancellationToken cancellationToken)

@@ -244,7 +244,7 @@ public sealed class TranscriptionService(
         }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested && IsRetryable(exception))
         {
-            await Task.Delay(300, cancellationToken);
+            await RetryPolicy.WaitAsync((exception as ProviderRequestException)?.RetryAfter, cancellationToken);
             SessionMetrics.Current?.Add(MetricCount.Attempts);
             return await provider.TranscribeAsync(audioFilePath, language, cancellationToken);
         }

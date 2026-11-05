@@ -142,7 +142,7 @@ static class Program
         {
             _settingsManager = new SettingsManager();
             _settings = _settingsManager.Load();
-            _httpClient = new HttpClient();
+            _httpClient = new HttpClient(new HttpMetricsHandler());
             _historyLogger = new HistoryLogger();
             _errorLogger = new ErrorLogger();
             _textOutput = new WindowsTextOutput(_errorLogger.Log);

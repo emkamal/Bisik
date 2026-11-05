@@ -13,6 +13,23 @@ public sealed class SettingsManagerTests : IDisposable
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.SettingsManagerTests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public void Diagnostic_copy_does_not_migrate_source_and_encrypts_scratch_secrets()
+    {
+        Directory.CreateDirectory(_baseDirectory);
+        var source = Path.Combine(_baseDirectory, "source.json");
+        var settings = new AppSettings { Provider = new() { Endpoint = "https://private.example", ApiKey = "legacy-key" } };
+        var original = JsonSerializer.Serialize(settings);
+        File.WriteAllText(source, original);
+        var copyDirectory = Path.Combine(_baseDirectory, "copy");
+        var copy = SettingsManager.LoadEncryptedCopy(source, copyDirectory);
+        Assert.Equal(original, File.ReadAllText(source));
+        Assert.Equal("legacy-key", copy.Provider.ApiKey);
+        var scratch = File.ReadAllText(Path.Combine(copyDirectory, "settings.json"));
+        Assert.DoesNotContain("legacy-key", scratch);
+        Assert.DoesNotContain("private.example", scratch);
+    }
+
+    [Fact]
     public void Save_should_encrypt_both_provider_endpoints_and_keep_runtime_values_usable()
     {
         var manager = new SettingsManager(_baseDirectory);

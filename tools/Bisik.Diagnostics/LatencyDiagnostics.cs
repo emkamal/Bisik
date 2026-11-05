@@ -16,7 +16,7 @@ internal static class LatencyDiagnostics
         BenchmarkOptions options;
         try { options = BenchmarkOptions.Parse(args); }
         catch (ArgumentException) { Console.WriteLine("Usage: --benchmark <synthetic.wav> --output report.json [--repeat 1..5] [--timeout-seconds 1..120]"); return 2; }
-        var source = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik", "settings.json");
+        var source = options.SettingsPath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik", "settings.json");
         if (!File.Exists(source) || (!cleanupOnly && !File.Exists(options.AudioPath))) return 2;
         var scratch = Path.Combine(Path.GetFullPath("artifacts/latency"), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
@@ -28,11 +28,12 @@ internal static class LatencyDiagnostics
         try
         {
             // Never load the active file: migration/repair writes affect only this encrypted copy.
-            File.Copy(source, Path.Combine(scratch, "settings.json"));
-            var settings = new SettingsManager(scratch).Load() with { HistoryEnabled = false, SoundEnabled = false };
+            var settings = SettingsManager.LoadEncryptedCopy(source, scratch) with { HistoryEnabled = false, SoundEnabled = false };
             settings = settings with { PauseCommits = options.PauseCommits, SpeculativeCleanup = options.Speculation, PrewarmRealtime = options.Prewarm, LiveCapture = options.LiveReplay,
                 Provider = settings.Provider with { TranscriptionDelay = options.Delay } };
             var cleanupSettings = settings.PostProcessor;
+            if (options.CleanupFromTranscription) cleanupSettings = cleanupSettings with { Provider = settings.Provider, ReasoningCapability = null };
+            if (options.CleanupV1) cleanupSettings = cleanupSettings with { Provider = cleanupSettings.Provider with { AzureV1 = true }, ReasoningCapability = null };
             if (options.CleanupModel is { } model)
                 cleanupSettings = cleanupSettings with { Model = model, Provider = cleanupSettings.Provider with { Model = model,
                     DeploymentName = cleanupSettings.Provider.Type == ProviderType.AzureOpenAi ? model : cleanupSettings.Provider.DeploymentName }, ReasoningCapability = null };
@@ -40,7 +41,7 @@ internal static class LatencyDiagnostics
                 cleanupSettings = cleanupSettings with { ReasoningEffort = effort,
                     ReasoningCapability = new(ReasoningCapability.Fingerprint(cleanupSettings), [effort]) };
             settings = settings with { PostProcessor = cleanupSettings };
-            using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            using var client = new HttpClient(new HttpMetricsHandler()) { Timeout = Timeout.InfiniteTimeSpan };
             ITranscriptionProvider provider = settings.Provider.Type switch
             {
                 ProviderType.AzureOpenAi => new AzureOpenAIProvider(client, settings.Provider),
@@ -57,7 +58,10 @@ internal static class LatencyDiagnostics
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token);
                 deadline.CancelAfter(TimeSpan.FromMinutes(5));
                 var sink = new ReceiptSink();
-                var metrics = new SessionMetrics(cleanupOnly ? "cleanup-candidate" : options.LiveReplay ? "configured-live" : "configured-file", sink) { AudioDurationMs = reader?.TotalTime.TotalMilliseconds };
+                var label = options.Label + (cleanupOnly ? "-cleanup" : options.LiveReplay ? "-live" : "-file") +
+                    (options.Delay is null ? "" : "-" + options.Delay) + (options.PauseCommits ? "-pauses" : "") +
+                    (options.Speculation ? "-spec" : "") + (options.Prewarm ? "-warm" : "") + (options.ReasoningProbe is null ? "" : "-" + options.ReasoningProbe);
+                var metrics = new SessionMetrics(label, sink) { AudioDurationMs = reader?.TotalTime.TotalMilliseconds };
                 using var scope = metrics.Activate();
                 try
                 {
@@ -113,6 +117,7 @@ internal static class LatencyDiagnostics
             await File.WriteAllTextAsync(options.OutputPath, JsonSerializer.Serialize(new
             {
                 SchemaVersion = 1, InsertionUsed = false, CleanupUsed = settings.PostProcessor.Enabled,
+                Features = new { options.LiveReplay, options.Delay, options.PauseCommits, options.Speculation, options.Prewarm },
                 Reports = reports, Summary = TimingAggregation.Summarize(reports),
             }, new JsonSerializerOptions { WriteIndented = true }));
             Console.WriteLine(JsonSerializer.Serialize(TimingAggregation.Summarize(reports)));

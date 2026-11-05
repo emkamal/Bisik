@@ -101,6 +101,9 @@ public sealed record ProviderSettings
     [JsonPropertyName("azureRealtime")]
     public bool AzureRealtime { get; init; }
 
+    [JsonPropertyName("azureV1")]
+    public bool AzureV1 { get; init; }
+
     [JsonPropertyName("transcriptionDelay")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? TranscriptionDelay { get; init; }
@@ -231,7 +234,7 @@ public sealed record ReasoningCapability(string ApiFingerprint, string[] Support
     public static string Fingerprint(PostProcessorSettings settings)
     {
         var p = settings.Provider;
-        var identity = string.Join("\n", p.Type, p.Endpoint.TrimEnd('/'), p.ApiVersion, p.DeploymentName, settings.Model, p.Model);
+        var identity = string.Join("\n", p.Type, p.Endpoint.TrimEnd('/'), p.ApiVersion, p.AzureV1, p.DeploymentName, settings.Model, p.Model);
         return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(identity)));
     }
     public bool Matches(PostProcessorSettings settings) => SupportedEfforts is { Length: > 0 } && ApiFingerprint == Fingerprint(settings);

@@ -51,6 +51,8 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
     LatestResultStore.cs     # Atomic result retention and explicit insertion claims
     FinalTextSelection.cs    # Exactly-once fast/edited result selection with independent cleanup cancellation
     RealtimePrewarmer.cs     # Bounded unused connection and atomic lifetime transfer
+    HttpMetricsHandler.cs   # Content-free HTTP first/full response and safe status receipts
+    RetryPolicy.cs          # Validated server retry delays within the shared deadline
     HistoryLogger.cs         # Appends TranscriptionEntry to history.jsonl
     SettingsManager.cs       # Load/save/migrate settings.json via DPAPI
   /Providers

@@ -96,6 +96,15 @@ against the saved cleanup. `--probe-reasoning low` explicitly probes that reques
 `--cleanup-model <existing-model>` compares an already accessible model. Overrides stay in
 memory. Successful probes establish compatibility for that run, not general model availability.
 Separate `.quality.json` files contain only that fixed synthetic input/output for meaning review.
+Candidates can use `--settings <existing-encrypted-settings.json> --label <opaque-name>`;
+the source is never migrated. `--cleanup-api v1` and `--cleanup-endpoint-source transcription`
+are diagnostic overrides for an advertised API, leaving production routing intact. A catalog
+entry is not proof of a callable deployment; unavailable probes remain failed/untested.
+`--discover --output report.json` records safe discovery status and candidate availability;
+`--compare artifacts/latency --output comparison.md` groups compatible report identities,
+showing sample count, median, p95, failures and fallback rate. HTTP receipts record first/full
+arrival, status and Retry-After without connection details. Valid retry delays respect the
+single post-Stop deadline; a larger requested delay cannot trigger an early retry.
 
 ## Local data
 
