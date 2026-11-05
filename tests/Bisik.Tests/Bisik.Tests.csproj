@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Bisik.csproj" />
+    <ProjectReference Include="..\..\tools\Bisik.Diagnostics\Bisik.Diagnostics.csproj" />
   </ItemGroup>
 
 </Project>

@@ -11,6 +11,18 @@ namespace Bisik.Tests;
 public sealed class PostProcessorTests
 {
     [Fact]
+    public void Diagnostic_audio_adapter_requires_advertised_generation_contract_and_text_only_output()
+    {
+        Assert.Throws<NotSupportedException>(() => InstructedAudioDiagnostics.BuildPayload("gpt-realtime-whisper", "edit", [1], true));
+        Assert.Throws<NotSupportedException>(() => InstructedAudioDiagnostics.BuildPayload("gpt-audio", "edit", [1], false));
+        using var payload = JsonDocument.Parse(InstructedAudioDiagnostics.BuildPayload("gpt-audio", "Custom bilingual editing\nverbatim", [1, 2, 3], true));
+        Assert.Equal("text", payload.RootElement.GetProperty("modalities")[0].GetString());
+        Assert.Equal("Custom bilingual editing\nverbatim", payload.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
+        var audio = payload.RootElement.GetProperty("messages")[1].GetProperty("content")[0].GetProperty("input_audio");
+        Assert.Equal("wav", audio.GetProperty("format").GetString());
+        Assert.Equal(new byte[] { 1, 2, 3 }, Convert.FromBase64String(audio.GetProperty("data").GetString()!));
+    }
+    [Fact]
     public async Task Speculation_cancellation_and_new_sessions_do_not_share_results()
     {
         var settings = new PostProcessorSettings { Enabled = true };

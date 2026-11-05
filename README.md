@@ -105,6 +105,11 @@ entry is not proof of a callable deployment; unavailable probes remain failed/un
 showing sample count, median, p95, failures and fallback rate. HTTP receipts record first/full
 arrival, status and Retry-After without connection details. Valid retry delays respect the
 single post-Stop deadline; a larger requested delay cannot trigger an early retry.
+Diagnostic-only `--audio-edit <synthetic.wav> --output report.json` gates instructed audio on
+an advertised generation model and the [documented audio Chat Completions contract](https://developers.openai.com/api/docs/guides/audio-chat-completions).
+It never sends editing instructions to the dedicated transcription protocol. The current
+bounded probe returned 404; one-stage quality/latency are unverified, and production keeps
+the two-stage route. No deployment is created by this tool.
 
 ## Local data
 

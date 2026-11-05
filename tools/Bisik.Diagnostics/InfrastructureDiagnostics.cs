@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Bisik.Core;
 using Bisik.Models;
+using Bisik.Providers;
 
 internal static class InfrastructureDiagnostics
 {
@@ -21,16 +22,8 @@ internal static class InfrastructureDiagnostics
             if (p.Type == ProviderType.AzureOpenAi)
             {
                 // Azure v1 model listing is read-only; model catalog entries do not prove deployments or editing capability.
-                var uri = new UriBuilder(p.Endpoint);
-                var path = uri.Path.TrimEnd('/');
-                var index = path.IndexOf("/openai/", StringComparison.OrdinalIgnoreCase);
-                if (index >= 0) path = path[..index];
-                uri.Path = path + "/openai/v1/models";
-                using var request = new HttpRequestMessage(HttpMethod.Get, uri.Uri);
-                request.Headers.TryAddWithoutValidation("api-key", p.ApiKey);
-                if (p.ExtraHeaders is not null)
-                    foreach (var header in p.ExtraHeaders.Where(h => !h.Key.Equals("Bisik-Realtime-Calls-Endpoint", StringComparison.OrdinalIgnoreCase)))
-                        request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                using var request = new HttpRequestMessage(HttpMethod.Get, AzureOpenAIProvider.BuildV1Uri(p, "models"));
+                ApplyHeaders(request, p);
                 try
                 {
                     using var response = await client.SendAsync(request, timeout.Token);
@@ -61,5 +54,12 @@ internal static class InfrastructureDiagnostics
             return 0;
         }
         finally { Directory.Delete(scratch, recursive: true); }
+    }
+    internal static void ApplyHeaders(HttpRequestMessage request, ProviderSettings provider)
+    {
+        request.Headers.TryAddWithoutValidation("api-key", provider.ApiKey);
+        if (provider.ExtraHeaders is not null)
+            foreach (var header in provider.ExtraHeaders.Where(h => !new[] { "Bisik-Realtime-Calls-Endpoint", "api-key", "Authorization", "Content-Type" }.Contains(h.Key, StringComparer.OrdinalIgnoreCase)))
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
     }
 }

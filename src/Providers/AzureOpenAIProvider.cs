@@ -10,6 +10,7 @@ public sealed class AzureOpenAIProvider(HttpClient httpClient, ProviderSettings 
     public override string Name => "Azure OpenAI";
 
     public override ProviderType Type => ProviderType.AzureOpenAi;
+    public static Uri BuildV1Uri(ProviderSettings settings, string operation) => AzureRealtimeProtocol.ApiUri(settings.Endpoint, operation);
 
     public bool SupportsStreaming => UsesRealtime(Settings);
     public Bisik.Core.IRealtimeTranscriber CreateStream() => new Bisik.Core.RealtimeTranscriptionStream(HttpClient);

@@ -257,6 +257,8 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
         throw new InvalidDataException("Post-processor response contained an unsupported or empty message content format.");
     }
 
+    public static Task<string> ReadCompleteTextAsync(HttpResponseMessage response, CancellationToken ct) => ParseChatCompletionAsync(response, ct);
+
     private static Uri RequireAbsoluteUri(string endpoint, string parameterName)
     {
         if (!Uri.TryCreate(endpoint?.Trim(), UriKind.Absolute, out var uri))
