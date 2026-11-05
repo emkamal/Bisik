@@ -6,12 +6,31 @@ using System.Text.Json;
 using System.Threading.Channels;
 using Bisik.Core;
 using Bisik.Models;
+using Bisik.Providers;
 using FluentAssertions;
 
 namespace Bisik.Tests;
 
 public sealed class RealtimeTranscriptionStreamTests
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("minimal")]
+    [InlineData("low")]
+    [InlineData("medium")]
+    [InlineData("high")]
+    [InlineData("xhigh")]
+    public void Delay_is_optional_validated_and_round_trips(string? delay)
+    {
+        using var payload = JsonDocument.Parse(JsonSerializer.Serialize(AzureRealtimeProtocol.SessionUpdate("realtime-whisper", "auto", delay)));
+        var transcription = payload.RootElement.GetProperty("session").GetProperty("audio").GetProperty("input").GetProperty("transcription");
+        Assert.Equal(delay is not null, transcription.TryGetProperty("delay", out var value));
+        if (delay is not null) Assert.Equal(delay, value.GetString());
+        var settings = new AppSettings { Provider = new() { TranscriptionDelay = delay }, PauseCommits = true };
+        Assert.Equal(delay, JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(settings))!.Provider.TranscriptionDelay);
+        Assert.Throws<ArgumentException>(() => AzureRealtimeProtocol.SessionUpdate("model", "en", "fast"));
+    }
+
     [Theory]
     [InlineData("auto")]
     [InlineData("en")]
@@ -56,6 +75,8 @@ public sealed class RealtimeTranscriptionStreamTests
         using var client = new HttpClient(new SecretHandler());
         using var socket = new FakeSocket();
         await using var stream = Create(client, socket);
+        var snapshots = new List<string>();
+        stream.CompletedTranscriptAvailable += (_, e) => snapshots.Add(e.Text);
         await stream.StartAsync(Settings(), "auto", CancellationToken.None);
         await stream.PushAudioChunkAsync(new byte[6400], 6400, CancellationToken.None);
         await stream.CommitIntermediateSegmentAsync(CancellationToken.None);
@@ -73,6 +94,7 @@ public sealed class RealtimeTranscriptionStreamTests
         socket.Queue("""{"type":"conversation.item.input_audio_transcription.completed","item_id":"first","transcript":"Hello dunia!"}""");
 
         (await result.WaitAsync(TimeSpan.FromSeconds(2))).Should().Be("Hello dunia! Baris kedua, Indonesia.");
+        Assert.Equal(new[] { "Hello dunia! Baris kedua, Indonesia." }, snapshots);
     }
 
     [Fact]

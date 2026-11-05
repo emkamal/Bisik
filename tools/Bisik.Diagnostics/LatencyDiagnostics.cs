@@ -25,6 +25,8 @@ internal static class LatencyDiagnostics
             // Never load the active file: migration/repair writes affect only this encrypted copy.
             File.Copy(source, Path.Combine(scratch, "settings.json"));
             var settings = new SettingsManager(scratch).Load() with { HistoryEnabled = false, SoundEnabled = false };
+            settings = settings with { PauseCommits = options.PauseCommits,
+                Provider = settings.Provider with { TranscriptionDelay = options.Delay } };
             using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             ITranscriptionProvider provider = settings.Provider.Type switch
             {

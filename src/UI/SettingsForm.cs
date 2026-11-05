@@ -19,6 +19,8 @@ public sealed class SettingsForm : Form
     private CancellationTokenSource? _connectionTestCancellation;
     private CheckBox? _azureRealtimeCheckBox;
     private CheckBox? _liveCaptureCheckBox;
+    private ComboBox? _transcriptionDelayComboBox;
+    private CheckBox? _pauseCommitsCheckBox;
     private CheckBox? _launchAtStartupCheckBox;
     private ComboBox? _triggerModeComboBox;
     private TextBox? _hotkeyTextBox;
@@ -337,6 +339,13 @@ public sealed class SettingsForm : Form
         _liveCaptureCheckBox = new CheckBox { Text = "Stream microphone audio while recording (Azure realtime; experimental)", AutoSize = true };
         root.Controls.Add(CreateFieldLabel("Live capture"), 0, 4);
         root.Controls.Add(_liveCaptureCheckBox, 1, 4);
+        _transcriptionDelayComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+        _transcriptionDelayComboBox.Items.AddRange(new object[] { "Provider default", "minimal", "low", "medium", "high", "xhigh" });
+        _transcriptionDelayComboBox.SelectedIndex = 0;
+        root.Controls.Add(CreateFieldLabel("Realtime delay"), 0, 5);
+        root.Controls.Add(_transcriptionDelayComboBox, 1, 5);
+        _pauseCommitsCheckBox = new CheckBox { Text = "Commit phrases during pauses (live capture; experimental)", AutoSize = true };
+        root.Controls.Add(_pauseCommitsCheckBox, 1, 6);
 
         page.Controls.Add(root);
         ShowProviderPanel(settings.Provider.Type);
@@ -984,6 +993,8 @@ public sealed class SettingsForm : Form
     {
         _loadedSettings = settings;
         if (_liveCaptureCheckBox is not null) _liveCaptureCheckBox.Checked = settings.LiveCapture;
+        if (_transcriptionDelayComboBox is not null) _transcriptionDelayComboBox.SelectedItem = settings.Provider.TranscriptionDelay ?? "Provider default";
+        if (_pauseCommitsCheckBox is not null) _pauseCommitsCheckBox.Checked = settings.PauseCommits;
         if (_azureRealtimeCheckBox is not null) _azureRealtimeCheckBox.Checked = settings.Provider.AzureRealtime;
         if (_launchAtStartupCheckBox is not null)
         {
@@ -1080,6 +1091,7 @@ public sealed class SettingsForm : Form
         return _loadedSettings with
         {
             LiveCapture = _liveCaptureCheckBox?.Checked ?? defaults.LiveCapture,
+            PauseCommits = _pauseCommitsCheckBox?.Checked ?? defaults.PauseCommits,
             LaunchAtStartup = _launchAtStartupCheckBox?.Checked ?? defaults.LaunchAtStartup,
             TriggerMode = GetSelectedComboValue(_triggerModeComboBox, defaults.TriggerMode),
             Hotkey = string.IsNullOrWhiteSpace(_hotkeyTextBox?.Text) ? defaults.Hotkey : _hotkeyTextBox.Text,
@@ -1180,6 +1192,8 @@ public sealed class SettingsForm : Form
                 ApiVersion = GetFieldText(fields, "API Version", "2024-06-01"),
                 Model = GetFieldText(fields, "Model", GetFieldText(fields, "Model (optional)")),
                 AzureRealtime = providerType == ProviderType.AzureOpenAi && (_azureRealtimeCheckBox?.Checked ?? false),
+                TranscriptionDelay = providerType == ProviderType.AzureOpenAi && _transcriptionDelayComboBox?.SelectedIndex > 0
+                    ? _transcriptionDelayComboBox.SelectedItem?.ToString() : null,
                 ExtraHeaders = BuildProviderExtraHeaders(provider, fields),
             };
         }

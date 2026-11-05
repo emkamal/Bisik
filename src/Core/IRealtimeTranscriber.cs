@@ -20,6 +20,12 @@ public sealed class RealtimeCompletedEventArgs(string finalText) : EventArgs
     public string FinalText { get; } = finalText;
 }
 
+public sealed class CompletedTranscriptEventArgs(string text, long revision) : EventArgs
+{
+    public string Text { get; } = text;
+    public long Revision { get; } = revision;
+}
+
 /// <summary>
 /// Arguments for the <see cref="IRealtimeTranscriber.TranscriptionFailed"/> event.
 /// </summary>
@@ -34,6 +40,7 @@ public sealed class RealtimeFailedEventArgs(string errorMessage) : EventArgs
 /// </summary>
 public interface IRealtimeTranscriber : IAsyncDisposable
 {
+    event EventHandler<CompletedTranscriptEventArgs>? CompletedTranscriptAvailable { add { } remove { } }
     /// <summary>
     /// Opens a WebSocket/streaming connection to the transcription provider.
     /// Must be called before <see cref="PushAudioChunkAsync"/>.

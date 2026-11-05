@@ -101,6 +101,10 @@ public sealed record ProviderSettings
     [JsonPropertyName("azureRealtime")]
     public bool AzureRealtime { get; init; }
 
+    [JsonPropertyName("transcriptionDelay")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TranscriptionDelay { get; init; }
+
     [JsonPropertyName("model")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Model { get; init; }
@@ -219,6 +223,9 @@ public sealed record AppSettings
 {
     [JsonPropertyName("liveCapture")]
     public bool LiveCapture { get; init; }
+
+    [JsonPropertyName("pauseCommits")]
+    public bool PauseCommits { get; init; }
 
     // Records are shallowly immutable; copy mutable collections at the session boundary.
     public AppSettings Snapshot() => this with

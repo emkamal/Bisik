@@ -51,9 +51,15 @@ internal static class AzureRealtimeProtocol
         }
     }
 
-    internal static object SessionUpdate(string deployment, string language)
+    internal static object SessionUpdate(string deployment, string language, string? delay = null)
     {
         var transcription = new Dictionary<string, object> { ["model"] = deployment };
+        if (delay is not null)
+        {
+            if (delay is not ("minimal" or "low" or "medium" or "high" or "xhigh"))
+                throw new ArgumentException("Unsupported realtime transcription delay.");
+            transcription["delay"] = delay;
+        }
         if (!string.IsNullOrWhiteSpace(language) && !language.Equals("auto", StringComparison.OrdinalIgnoreCase))
             transcription["language"] = language.Trim();
         return new

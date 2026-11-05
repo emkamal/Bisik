@@ -32,7 +32,8 @@ public sealed class TranscriptionSession : IAsyncDisposable
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _streamLifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _complete = complete;
-        if (stream is not null) _audioQueue = new LiveAudioQueue(stream, _setupReady.Task, Settings.Audio.SampleRate, _streamLifetime.Token);
+        if (stream is not null) _audioQueue = new LiveAudioQueue(stream, _setupReady.Task, Settings.Audio.SampleRate,
+            _streamLifetime.Token, Settings.PauseCommits, Settings.Audio);
     }
 
     public Task StartAsync()

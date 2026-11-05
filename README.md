@@ -96,6 +96,11 @@ dotnet run --project tools/Bisik.Diagnostics -- --benchmark artifacts/latency/sy
 
 Repetitions are limited to 1–5 and each attempt to 120 seconds; Ctrl+C cancels.
 Reports contain opaque labels, monotonic stages and byte/attempt counts, without transcripts or endpoints.
+Use `--mode live` to replay PCM16 mono at capture speed. Optional `--delay low` and
+`--pause-commits on` override only the diagnostic copy. Settings exposes live capture,
+phrase commits (both off by default) and provider-default delay omission. The dedicated
+Azure transcription capability supports `minimal`, `low`, `medium`, `high`, `xhigh`;
+omission does not imply `medium`. See the [Azure microphone example](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/realtime-audio-websockets#transcribe-audio-in-real-time).
 Missing stages are unavailable, including paste for this benchmark. `duration_ms` keeps its original
 transcription-plus-cleanup meaning. Set `BISIK_LATENCY_TRACE=1` before launching the app to opt into
 `%APPDATA%\Bisik\latency.jsonl` (100 sessions/2 MiB maximum).

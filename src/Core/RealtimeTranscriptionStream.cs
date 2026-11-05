@@ -31,6 +31,8 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
     private bool _disposed;
     private int _completionRaised;
     private Exception? _failure;
+    private string _lastSnapshot = string.Empty;
+    private long _snapshotRevision;
 
     public RealtimeTranscriptionStream(HttpClient httpClient, Func<ClientWebSocket>? webSocketFactory = null)
         : this(httpClient, async (uri, token, ct) =>
@@ -65,6 +67,7 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
     public event EventHandler<PartialTranscriptEventArgs>? PartialTranscriptAvailable;
     public event EventHandler<RealtimeCompletedEventArgs>? TranscriptionCompleted;
     public event EventHandler<RealtimeFailedEventArgs>? TranscriptionFailed;
+    public event EventHandler<CompletedTranscriptEventArgs>? CompletedTranscriptAvailable;
 
     public async Task StartAsync(AppSettings settings, string language, CancellationToken ct)
     {
@@ -83,7 +86,11 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
             SessionMetrics.Current?.Mark(TimingStage.SecretEnd);
             _socket = await _connect(AzureRealtimeProtocol.BuildRealtimeUri(settings.Provider), token, timeout.Token).ConfigureAwait(false);
             _receiveTask = ReceiveLoopAsync(_lifetime.Token);
-            await SendAsync(AzureRealtimeProtocol.SessionUpdate(settings.Provider.DeploymentName, language), timeout.Token).ConfigureAwait(false);
+            // Dedicated transcription capability is explicit for aliases, or identified by the documented model.
+            var supportsDelay = settings.Provider.AzureRealtime || settings.Provider.DeploymentName.Contains("realtime-whisper", StringComparison.OrdinalIgnoreCase) ||
+                (settings.Provider.Model?.Contains("realtime-whisper", StringComparison.OrdinalIgnoreCase) ?? false);
+            await SendAsync(AzureRealtimeProtocol.SessionUpdate(settings.Provider.DeploymentName, language,
+                supportsDelay ? settings.Provider.TranscriptionDelay : null), timeout.Token).ConfigureAwait(false);
             await _ready.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
             _started = true;
             SessionMetrics.Current?.Mark(TimingStage.WssReady);
@@ -306,11 +313,19 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
                     }
                     break;
                 case "conversation.item.input_audio_transcription.completed":
+                    if (item.Completed) break;
                     // Completed text is authoritative, including an empty transcript for silence.
                     item.Text = Text(root, "transcript");
                     item.Completed = true;
                     SessionMetrics.Current?.Mark(TimingStage.ItemCompleted);
                     break;
+            }
+            var snapshot = string.Join(" ", _committedItems.TakeWhile(id => _items[id].Completed)
+                .Select(id => _items[id].Text.Trim()).Where(text => text.Length > 0));
+            if (snapshot != _lastSnapshot)
+            {
+                _lastSnapshot = snapshot;
+                CompletedTranscriptAvailable?.Invoke(this, new(snapshot, ++_snapshotRevision));
             }
             TryFinish();
         }

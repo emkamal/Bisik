@@ -10,6 +10,21 @@ public sealed class AudioCaptureLifecycleTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "bisik-capture-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task Pause_commit_marker_cannot_overtake_queued_speech()
+    {
+        var stream = new QueueStream();
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queue = new LiveAudioQueue(stream, ready.Task, 16000, CancellationToken.None, pauseCommits: true);
+        var speech = Enumerable.Repeat((short)12000, 9600).SelectMany(BitConverter.GetBytes).ToArray();
+        queue.Enqueue(new(speech, speech.Length, 16000));
+        queue.Enqueue(new(new byte[19200], 19200, 16000));
+        ready.SetResult();
+        queue.Close();
+        await queue.Sender;
+        Assert.Equal(new[] { "audio", "audio", "commit" }, stream.Actions);
+    }
+
+    [Fact]
     public async Task Drained_capture_owns_complete_buffer_before_optional_export()
     {
         var capture = new FakeCapture { CompleteOnStop = true };
@@ -74,6 +89,7 @@ public sealed class AudioCaptureLifecycleTests : IDisposable
 
     private sealed class QueueStream : IRealtimeTranscriber
     {
+        public List<string> Actions { get; } = [];
         public List<byte[]> Chunks { get; } = [];
         public TaskCompletionSource Uploaded { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource? DelaySend { get; init; }
@@ -81,11 +97,12 @@ public sealed class AudioCaptureLifecycleTests : IDisposable
         public async Task PushAudioChunkAsync(byte[] data, int count, CancellationToken ct)
         {
             Chunks.Add(data[..count]);
+            Actions.Add("audio");
             Uploaded.TrySetResult();
             if (DelaySend is not null) await DelaySend.Task.WaitAsync(ct);
         }
         public Task<string> CommitAndFinalizeAsync(CancellationToken ct) => Task.FromResult("final");
-        public Task CommitIntermediateSegmentAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task CommitIntermediateSegmentAsync(CancellationToken ct) { Actions.Add("commit"); return Task.CompletedTask; }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         public event EventHandler<PartialTranscriptEventArgs>? PartialTranscriptAvailable { add { } remove { } }
         public event EventHandler<RealtimeCompletedEventArgs>? TranscriptionCompleted { add { } remove { } }
