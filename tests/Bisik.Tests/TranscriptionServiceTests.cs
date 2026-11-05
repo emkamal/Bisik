@@ -178,6 +178,8 @@ public sealed class TranscriptionServiceTests : IDisposable
         await using var session = service.CreateSession(settings, CancellationToken.None);
         headers["test"] = "changed";
         Assert.Equal("original", session.Settings.Provider.ExtraHeaders!["test"]);
+        session.Settings.Provider.ExtraHeaders!["test"] = "mutated exposed copy";
+        Assert.Equal("original", session.Settings.Provider.ExtraHeaders!["test"]);
         await session.StartAsync();
         var first = session.CompleteAsync("fixture.wav");
         var second = session.CompleteAsync("fixture.wav");

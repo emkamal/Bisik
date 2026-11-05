@@ -19,7 +19,8 @@ public sealed class TranscriptionSession : IAsyncDisposable
     private readonly LiveAudioQueue? _audioQueue;
     private readonly FinalTextSelection _selection = new();
     public Guid Id { get; } = Guid.NewGuid();
-    public AppSettings Settings { get; }
+    private readonly AppSettings _settings;
+    public AppSettings Settings => _settings.Snapshot();
     public DictationState State { get; private set; } = DictationState.Recording;
     public CancellationToken Token => _lifetime.Token;
     public IRealtimeTranscriber? Stream { get; }
@@ -40,8 +41,9 @@ public sealed class TranscriptionSession : IAsyncDisposable
     internal TranscriptionSession(AppSettings settings, CancellationToken ct, IRealtimeTranscriber? stream,
         Func<TranscriptionSession, string, CancellationToken, Task<TranscriptionResult>> complete)
     {
-        Settings = settings.Snapshot();
+        _settings = settings.Snapshot();
         Stream = stream;
+        if (stream is not null && SessionMetrics.Current is { } metrics) stream.BindMetrics(metrics);
         _lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _streamLifetime = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _complete = complete;

@@ -25,6 +25,15 @@ internal static class LatencyDiagnostics
         Console.CancelKeyPress += cancel;
         var reports = new List<SessionTimingReport>();
         var qualityOutputs = new List<string>();
+        var transcriptionQuality = new List<object>();
+        string? expectedSynthetic = null;
+        var manifestPath = options.AudioPath + ".fixture.json";
+        if (!cleanupOnly && File.Exists(manifestPath))
+        {
+            using var manifest = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath));
+            if (manifest.RootElement.TryGetProperty("Synthetic", out var synthetic) && synthetic.ValueKind == JsonValueKind.True)
+                expectedSynthetic = manifest.RootElement.GetProperty("Text").GetString();
+        }
         try
         {
             // Never load the active file: migration/repair writes affect only this encrypted copy.
@@ -107,6 +116,7 @@ internal static class LatencyDiagnostics
                         result = await service.TranscribeAsync(options.AudioPath, settings.DefaultLanguage, settings, deadline.Token);
                     }
                     metrics.Publish(!result.Succeeded ? SessionOutcome.Failed : string.IsNullOrWhiteSpace(result.RawText) ? SessionOutcome.Empty : SessionOutcome.Ready);
+                    if (expectedSynthetic is not null) transcriptionQuality.Add(new { result.Succeeded, RawObserved = result.RawText, FinalObserved = result.OutputText });
                 }
                 catch (OperationCanceledException) { metrics.Publish(SessionOutcome.Cancelled); }
                 catch (Exception) { metrics.Publish(SessionOutcome.Failed); }
@@ -123,6 +133,8 @@ internal static class LatencyDiagnostics
             Console.WriteLine(JsonSerializer.Serialize(TimingAggregation.Summarize(reports)));
             if (cleanupOnly) await File.WriteAllTextAsync(Path.ChangeExtension(options.OutputPath, ".quality.json"),
                 JsonSerializer.Serialize(new { SyntheticInput = CleanupCorpus, Outputs = qualityOutputs }, new JsonSerializerOptions { WriteIndented = true }));
+            else if (expectedSynthetic is not null) await File.WriteAllTextAsync(Path.ChangeExtension(options.OutputPath, ".quality.json"),
+                JsonSerializer.Serialize(new { SyntheticExpected = expectedSynthetic, Observations = transcriptionQuality }, new JsonSerializerOptions { WriteIndented = true }));
             return reports.Count > 0 && reports.All(r => r.Outcome == SessionOutcome.Ready) ? 0 : 1;
         }
         finally

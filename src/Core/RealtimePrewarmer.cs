@@ -95,6 +95,7 @@ internal sealed class RealtimePrewarmer(Func<AppSettings, IRealtimeTranscriber?>
         private readonly CancellationTokenRegistration _activeCancellation;
         public ClaimedStream(Slot slot, CancellationToken ct) { _slot = slot; _activeCancellation = ct.Register(slot.Lifetime.Cancel); }
         public bool IsConnected => _slot.Stream.IsConnected;
+        public void BindMetrics(SessionMetrics metrics) => _slot.Stream.BindMetrics(metrics);
         public Task StartAsync(AppSettings settings, string language, CancellationToken ct) => _slot.Setup.WaitAsync(ct);
         public Task PushAudioChunkAsync(byte[] data, int count, CancellationToken ct) => _slot.Stream.PushAudioChunkAsync(data, count, ct);
         public Task PushAudioChunkAsync(byte[] data, int count, int rate, CancellationToken ct) => _slot.Stream.PushAudioChunkAsync(data, count, rate, ct);

@@ -5,6 +5,7 @@ using System.Text.Json;
 using Bisik.Models;
 
 [assembly: InternalsVisibleTo("Bisik.Tests")]
+[assembly: InternalsVisibleTo("Bisik.Diagnostics")]
 
 namespace Bisik.Core;
 

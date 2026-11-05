@@ -41,6 +41,7 @@ public sealed class RealtimeFailedEventArgs(string errorMessage) : EventArgs
 public interface IRealtimeTranscriber : IAsyncDisposable
 {
     bool IsConnected => true;
+    void BindMetrics(SessionMetrics metrics) { }
     event EventHandler<CompletedTranscriptEventArgs>? CompletedTranscriptAvailable { add { } remove { } }
     /// <summary>
     /// Opens a WebSocket/streaming connection to the transcription provider.

@@ -42,7 +42,12 @@ Settings cannot open during dictation. Stop listening first. Language and post-p
 
 - Toggle: hotkey starts; hotkey stops and transcribes. Push-to-talk: hold, then release to transcribe. Optional VAD is armed/disarmed by the hotkey, with a short pre-roll buffer for speech onset.
 - The indicator stays above other windows without activating them. Recording is limited to five minutes; stopping/upload/processing has a two-minute overall timeout. Pressing the hotkey during processing cancels. In VAD mode this also stops listening.
-- Azure receives the completed recording after Stop through the realtime WebSocket protocol. Text is inserted once, after every committed transcript item is final. Legacy realtime-auto-type settings now use the same final-text behavior.
+- Completed-file capture remains the default. Opt-in live capture starts listening immediately,
+  queues PCM while Azure connects, and uploads during recording. Stop drains capture, queued
+  sends and conversion, then waits for all acknowledged final transcript items. A stream failure
+  may use the complete file within the same Stop deadline and bounded retry policy. Turn live
+  capture off to return to the file path. Text is inserted once; legacy realtime-auto-type uses
+  the same final-only behavior.
 - Bisik captures the foreground window, accessible text field and selection before recording. Switching fields/windows, moving the caret, or switching away and back invalidates insertion. Do not edit the destination while dictating.
 - Automatic insertion uses **Ctrl+V**, preserving Unicode, punctuation and paragraphs. Bisik never sends Enter, submits a message, or interprets transcription as a command. Terminal fields are excluded because pasting newlines there can execute commands.
 - If the target changed or cannot be verified, a balloon explains manual paste. If another clipboard copy occurred, Bisik offers a review window instead of replacing that newer content. Review's Copy button is an explicit user action.
@@ -110,6 +115,10 @@ an advertised generation model and the [documented audio Chat Completions contra
 It never sends editing instructions to the dedicated transcription protocol. The current
 bounded probe returned 404; one-stage quality/latency are unverified, and production keeps
 the two-stage route. No deployment is created by this tool.
+English fixtures can be generated with `New-SyntheticSpeech.ps1 -Fixture short|medium|long`.
+`--scratch-insert --output report.json` creates disposable native fields and checks actual
+acceptance, recovery, Enter events and clipboard preservation. This run was blocked by Win32
+clipboard access denied (5), so successful acceptance remains unverified. No installed app was updated.
 
 ## Local data
 

@@ -31,6 +31,7 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
     private bool _disposed;
     private int _completionRaised;
     private Exception? _failure;
+    private SessionMetrics? _metrics;
     private string _lastSnapshot = string.Empty;
     private long _snapshotRevision;
 
@@ -69,10 +70,12 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
     public event EventHandler<RealtimeFailedEventArgs>? TranscriptionFailed;
     public event EventHandler<CompletedTranscriptEventArgs>? CompletedTranscriptAvailable;
     public bool IsConnected => !_disposed && !_finalizing && _failure is null && _socket?.State == WebSocketState.Open;
+    public void BindMetrics(SessionMetrics metrics) => _metrics = metrics;
 
     public async Task StartAsync(AppSettings settings, string language, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        _metrics ??= SessionMetrics.Current;
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_lifetime is not null)
             throw new InvalidOperationException("Create a new realtime stream for each recording.");
@@ -82,9 +85,9 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
-            SessionMetrics.Current?.Mark(TimingStage.SecretStart);
+            (_metrics ?? SessionMetrics.Current)?.Mark(TimingStage.SecretStart);
             var token = await AzureRealtimeProtocol.CreateClientSecretAsync(_httpClient, settings.Provider, timeout.Token).ConfigureAwait(false);
-            SessionMetrics.Current?.Mark(TimingStage.SecretEnd);
+            (_metrics ?? SessionMetrics.Current)?.Mark(TimingStage.SecretEnd);
             _socket = await _connect(AzureRealtimeProtocol.BuildRealtimeUri(settings.Provider), token, timeout.Token).ConfigureAwait(false);
             _receiveTask = ReceiveLoopAsync(_lifetime.Token);
             // Dedicated transcription capability is explicit for aliases, or identified by the documented model.
@@ -94,7 +97,7 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
                 supportsDelay ? settings.Provider.TranscriptionDelay : null), timeout.Token).ConfigureAwait(false);
             await _ready.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
             _started = true;
-            SessionMetrics.Current?.Mark(TimingStage.WssReady);
+            (_metrics ?? SessionMetrics.Current)?.Mark(TimingStage.WssReady);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -207,14 +210,14 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
             var count = Math.Min(32 * 1024, bytes.Length - offset);
             await SendAsync(new { type = "input_audio_buffer.append", audio = Convert.ToBase64String(bytes, offset, count) }, ct).ConfigureAwait(false);
             _bufferedBytes += count;
-            SessionMetrics.Current?.Add(MetricCount.SentBytes, count);
+            (_metrics ?? SessionMetrics.Current)?.Add(MetricCount.SentBytes, count);
         }
     }
 
     private async Task CommitAsync(CancellationToken ct)
     {
         lock (_stateLock) _pendingCommits++;
-        SessionMetrics.Current?.Mark(TimingStage.CommitSent);
+        (_metrics ?? SessionMetrics.Current)?.Mark(TimingStage.CommitSent);
         await SendAsync(new { type = "input_audio_buffer.commit" }, ct).ConfigureAwait(false);
         _bufferedBytes = 0;
     }
@@ -301,14 +304,14 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
                     {
                         _committedItems.Add(id);
                         if (_pendingCommits > 0) _pendingCommits--;
-                        SessionMetrics.Current?.Mark(TimingStage.CommitAcknowledged);
+                        (_metrics ?? SessionMetrics.Current)?.Mark(TimingStage.CommitAcknowledged);
                     }
                     break;
                 case "conversation.item.input_audio_transcription.delta":
                     if (!item.Completed)
                     {
                         var delta = Text(root, "delta");
-                        SessionMetrics.Current?.Mark(TimingStage.FirstPartial, once: true);
+                        (_metrics ?? SessionMetrics.Current)?.Mark(TimingStage.FirstPartial, once: true);
                         item.Partial.Append(delta);
                         PartialTranscriptAvailable?.Invoke(this, new PartialTranscriptEventArgs(delta, JoinTranscript()));
                     }
@@ -318,7 +321,7 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
                     // Completed text is authoritative, including an empty transcript for silence.
                     item.Text = Text(root, "transcript");
                     item.Completed = true;
-                    SessionMetrics.Current?.Mark(TimingStage.ItemCompleted);
+                    (_metrics ?? SessionMetrics.Current)?.Mark(TimingStage.ItemCompleted);
                     break;
             }
             var snapshot = string.Join(" ", _committedItems.TakeWhile(id => _items[id].Completed)

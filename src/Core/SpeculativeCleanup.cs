@@ -12,6 +12,7 @@ internal sealed class SpeculativeCleanup : IAsyncDisposable
     private readonly CancellationToken _sessionToken;
     private readonly SessionMetrics? _metrics = SessionMetrics.Current;
     private readonly int _limit;
+    private readonly Action<Exception> _logError;
     private readonly Dictionary<string, string> _cache = new(StringComparer.Ordinal);
     private CancellationTokenSource? _activeCancellation;
     private Task? _worker;
@@ -22,19 +23,21 @@ internal sealed class SpeculativeCleanup : IAsyncDisposable
     private bool _finalizing;
 
     public SpeculativeCleanup(PostProcessorSettings settings,
-        Func<string, PostProcessorSettings, CancellationToken, Task<string>> process, CancellationToken ct, int limit = 2)
+        Func<string, PostProcessorSettings, CancellationToken, Task<string>> process, CancellationToken ct, int limit = 2,
+        Action<Exception>? logError = null)
     {
         _settings = new AppSettings { PostProcessor = settings }.Snapshot().PostProcessor;
         _process = process;
         _sessionToken = ct;
         _limit = Math.Clamp(limit, 0, 3); // Required final cleanup is outside this speculative allowance.
+        _logError = logError ?? (_ => { });
     }
 
     public void OnSnapshot(string raw)
     {
         lock (_gate)
         {
-            if (_finalizing || string.IsNullOrWhiteSpace(raw) || _requests >= _limit || raw == _activeText || _cache.ContainsKey(raw)) return;
+            if (_finalizing || _sessionToken.IsCancellationRequested || string.IsNullOrWhiteSpace(raw) || _requests >= _limit || raw == _activeText || _cache.ContainsKey(raw)) return;
             _pending = raw;
             if (_worker is null || _worker.IsCompleted) _worker = Task.Run(WorkAsync);
         }
@@ -51,7 +54,7 @@ internal sealed class SpeculativeCleanup : IAsyncDisposable
                 Task<string> request;
                 lock (_gate)
                 {
-                    if (_finalizing || _pending is null || _requests >= _limit) return;
+                    if (_finalizing || _pending is null || _requests >= _limit) { _worker = null; return; }
                     text = _pending;
                     _pending = null;
                     _activeText = text;
@@ -66,16 +69,18 @@ internal sealed class SpeculativeCleanup : IAsyncDisposable
                     var result = await request.ConfigureAwait(false);
                     lock (_gate) if (!_finalizing && !string.IsNullOrWhiteSpace(result)) _cache[text] = result;
                 }
-                catch { /* A speculative failure cannot replace the required final cleanup. */ }
+                catch (OperationCanceledException) when (_activeCancellation.IsCancellationRequested) { }
+                catch (Exception exception) { Log(exception); }
                 lock (_gate)
                 {
                     _active = null;
                     _activeText = null;
-                    if (_pending is null || _finalizing) return;
+                    if (_pending is null || _finalizing) { _worker = null; return; }
                 }
             }
         }
         catch (OperationCanceledException) { }
+        catch (Exception exception) { Log(exception); }
     }
 
     public async Task<string> FinishAsync(string raw, PostProcessorSettings settings, CancellationToken ct)
@@ -117,4 +122,5 @@ internal sealed class SpeculativeCleanup : IAsyncDisposable
     }
     public void CancelPending()
     { lock (_gate) { _finalizing = true; _pending = null; _activeCancellation?.Cancel(); } }
+    private void Log(Exception exception) { try { _logError(exception); } catch { /* Keep required cleanup independent. */ } }
 }

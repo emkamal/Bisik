@@ -74,7 +74,7 @@ public sealed class TranscriptionService(
                     : session.Speculation.FinishAsync(raw, session.Settings.PostProcessor, cleanupToken), token)));
         if (snapshot.SpeculativeCleanup && snapshot.PostProcessor.Enabled && stream is not null)
         {
-            created.Speculation = new SpeculativeCleanup(snapshot.PostProcessor, _postProcessor.ProcessAsync, created.Token);
+            created.Speculation = new SpeculativeCleanup(snapshot.PostProcessor, _postProcessor.ProcessAsync, created.Token, logError: _errorLogger.Log);
             created.SnapshotHandler = (_, args) => created.Speculation.OnSnapshot(args.Text);
             stream.CompletedTranscriptAvailable += created.SnapshotHandler;
         }

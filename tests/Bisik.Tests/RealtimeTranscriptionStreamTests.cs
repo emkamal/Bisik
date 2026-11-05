@@ -13,6 +13,24 @@ namespace Bisik.Tests;
 
 public sealed class RealtimeTranscriptionStreamTests
 {
+    [Fact]
+    public async Task Claimed_stream_metrics_follow_active_session_across_receive_context()
+    {
+        using var client = new HttpClient(new SecretHandler());
+        using var socket = new FakeSocket { OnSend = m => m.GetProperty("type").GetString() == "input_audio_buffer.commit"
+            ? ["""{"type":"input_audio_buffer.committed","item_id":"item"}""", """{"type":"conversation.item.input_audio_transcription.completed","item_id":"item","transcript":"final"}"""] : [] };
+        await using var stream = Create(client, socket);
+        await stream.StartAsync(Settings(), "en", CancellationToken.None);
+        var active = new SessionMetrics("active-recording");
+        stream.BindMetrics(active);
+        await stream.PushAudioChunkAsync(new byte[6400], 6400, CancellationToken.None);
+        Assert.Equal("final", await stream.CommitAndFinalizeAsync(CancellationToken.None));
+        var report = active.Snapshot(SessionOutcome.Ready);
+        Assert.Contains(report.Events, e => e.Stage == TimingStage.CommitAcknowledged);
+        Assert.Contains(report.Events, e => e.Stage == TimingStage.ItemCompleted);
+        Assert.Equal(9600, report.Counts[MetricCount.SentBytes]);
+        Assert.DoesNotContain(report.Events, e => e.Stage == TimingStage.SecretStart);
+    }
     [Theory]
     [InlineData(null)]
     [InlineData("minimal")]

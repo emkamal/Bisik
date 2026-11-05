@@ -349,9 +349,11 @@ public sealed class OverlayWindow : Form
                     RenderTranscribing(graphics, content);
                     break;
                 case OverlayWindowMode.Processing when _processingPhase == OverlayProcessingPhase.Ready:
+                    DrawShell(graphics, content, Color.FromArgb(235, 96, 178, 180));
                     using (var font = new Font((SystemFonts.MessageBoxFont ?? SystemFonts.DefaultFont).FontFamily, 11))
                     using (var brush = new SolidBrush(Color.White))
-                        graphics.DrawString("Ready · Insert", font, brush, content);
+                    using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                        graphics.DrawString("Ready", font, brush, content, format);
                     break;
                 case OverlayWindowMode.Processing:
                     RenderPostProcessing(graphics, content);

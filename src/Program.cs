@@ -408,6 +408,8 @@ static class Program
             _shutdownCancellation.Cancel();
             _sessionCancellation?.Cancel();
             _pipelineSession?.Cancel();
+            _vadMonitoringEnabled = false;
+            _audioRecorder.StopVoiceActivityMonitoring();
             try
             {
                 if (_processing && _processingTask is not null) await _processingTask;
@@ -629,6 +631,7 @@ static class Program
 
         private async Task DisposeSessionAsync(TranscriptionSession session, Task previous)
         {
+            session.Cancel();
             try { await previous; await session.DisposeAsync(); }
             catch (Exception exception) { _errorLogger.Log(exception); }
         }
@@ -693,7 +696,6 @@ static class Program
             metrics.Mark(TimingStage.StopRequested);
             cancellation.CancelAfter(TimeSpan.FromMinutes(2));
             _pipelineSession!.RequestStop();
-            RecordedAudio? audio = null;
             CapturedRecording? captured = null;
             Task<RecordedAudio>? persistence = null;
             var retainAudio = false;
@@ -748,7 +750,7 @@ static class Program
             {
                 if (persistence is not null)
                 {
-                    try { audio = await persistence; }
+                    try { _ = await persistence; }
                     catch (OperationCanceledException) { }
                     catch (Exception exception) { _errorLogger.Log(exception); }
                 }

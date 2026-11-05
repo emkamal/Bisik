@@ -12,10 +12,12 @@ internal sealed class WindowsClipboard : NativeWindow, IDisposable
 
     public WindowsClipboard() => CreateHandle(new CreateParams { Parent = new IntPtr(-3) });
     public static uint Sequence => GetClipboardSequenceNumber();
+    public string LastCaptureFailure { get; private set; } = string.Empty;
 
     public ClipboardSnapshot? Capture()
     {
-        if (!OpenClipboard(Handle)) return null;
+        LastCaptureFailure = string.Empty;
+        if (!OpenClipboard(Handle)) { LastCaptureFailure = Marshal.GetLastWin32Error() == 5 ? "ClipboardAccessDenied" : "ClipboardBusy"; return null; }
         try
         {
             var formats = new List<ClipboardFormat>();
@@ -24,12 +26,12 @@ internal sealed class WindowsClipboard : NativeWindow, IDisposable
             {
                 // Opaque global-memory formats cover Unicode, RTF, HTML, DIB images and file lists.
                 // GDI handles and owner-rendered formats need different lifetimes: leave them untouched.
-                if (format is 2 or 3 or 9 or 14 or 0x80) return null;
+                if (format is 2 or 3 or 9 or 14 or 0x80) { LastCaptureFailure = "UnsupportedGdiOrOwnerRenderedFormat"; return null; }
                 var handle = GetClipboardData(format);
                 var size = (long)GlobalSize(handle);
-                if (size <= 0 || (total += size) > MaximumSnapshotBytes) return null;
+                if (size <= 0 || (total += size) > MaximumSnapshotBytes) { LastCaptureFailure = "UnsupportedOrOversizedGlobalMemoryFormat"; return null; }
                 var pointer = GlobalLock(handle);
-                if (pointer == IntPtr.Zero) return null;
+                if (pointer == IntPtr.Zero) { LastCaptureFailure = "ClipboardDataUnavailable"; return null; }
                 try
                 {
                     var bytes = new byte[(int)size];
@@ -49,7 +51,8 @@ internal sealed class WindowsClipboard : NativeWindow, IDisposable
         return TryWrite(formats, expectedSequence);
     }
 
-    public bool TryRestore(ClipboardSnapshot snapshot, uint expectedSequence) => TryWrite(snapshot.Formats, expectedSequence) is not null;
+    public bool TryRestore(ClipboardSnapshot snapshot, uint expectedSequence) => TryRestoreWithReceipt(snapshot, expectedSequence) is not null;
+    public uint? TryRestoreWithReceipt(ClipboardSnapshot snapshot, uint expectedSequence) => TryWrite(snapshot.Formats, expectedSequence);
 
     private uint? TryWrite(IReadOnlyList<ClipboardFormat> formats, uint expectedSequence)
     {
@@ -112,7 +115,7 @@ internal sealed class WindowsClipboard : NativeWindow, IDisposable
 
     [DllImport("user32.dll")] private static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] private static extern IntPtr GetClipboardOwner();
-    [DllImport("user32.dll")] private static extern bool OpenClipboard(IntPtr owner);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool OpenClipboard(IntPtr owner);
     [DllImport("user32.dll")] private static extern bool CloseClipboard();
     [DllImport("user32.dll")] private static extern bool EmptyClipboard();
     [DllImport("user32.dll")] private static extern uint EnumClipboardFormats(uint format);

@@ -20,6 +20,8 @@ internal static class Program
             return InfrastructureDiagnostics.RunAsync(args[1..]).GetAwaiter().GetResult();
         if (args.Length > 0 && args[0] == "--audio-edit")
             return InstructedAudioDiagnostics.RunAsync(args[1..]).GetAwaiter().GetResult();
+        if (args.Length > 0 && args[0] == "--scratch-insert")
+            return ScratchInsertionDiagnostics.Run(args[1..]);
         if (args.Length > 0 && args[0] is "--azure-file" or "--azure-once")
             return AzureDiagnostics.RunAsync(args[1..], singleRequest: args[0] == "--azure-once").GetAwaiter().GetResult();
 

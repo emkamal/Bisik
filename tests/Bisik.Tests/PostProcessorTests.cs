@@ -11,6 +11,26 @@ namespace Bisik.Tests;
 public sealed class PostProcessorTests
 {
     [Fact]
+    public async Task New_completed_snapshot_restarts_idle_worker_within_request_limit()
+    {
+        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var settings = new PostProcessorSettings { Enabled = true };
+        await using var speculation = new SpeculativeCleanup(settings, (raw, _, _) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) first.TrySetResult(); else second.TrySetResult();
+            return Task.FromResult(raw + " edited");
+        }, CancellationToken.None);
+        speculation.OnSnapshot("First complete snapshot");
+        await first.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await Task.Delay(50);
+        speculation.OnSnapshot("Later whole snapshot");
+        await second.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal("Later whole snapshot edited", await speculation.FinishAsync("Later whole snapshot", settings, CancellationToken.None));
+        Assert.Equal(2, calls);
+    }
+    [Fact]
     public void Diagnostic_audio_adapter_requires_advertised_generation_contract_and_text_only_output()
     {
         Assert.Throws<NotSupportedException>(() => InstructedAudioDiagnostics.BuildPayload("gpt-realtime-whisper", "edit", [1], true));

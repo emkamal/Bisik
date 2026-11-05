@@ -56,7 +56,7 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
     HistoryLogger.cs         # Appends TranscriptionEntry to history.jsonl
     SettingsManager.cs       # Load/save/migrate settings.json via DPAPI
   /Providers
-    ITranscriptionProvider.cs       # Task<string> TranscribeAsync(byte[] audio, string language)
+    ITranscriptionProvider.cs       # File-path contract plus optional streaming capability
     AzureOpenAIProvider.cs
     AzureRealtimeTranscriber.cs # Recorded audio through Azure realtime WebSocket
     AzureRealtimeProtocol.cs # Session creation and provider protocol configuration
@@ -68,9 +68,8 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
     IPostProcessor.cs               # Task<string> ProcessAsync(string rawText)
     LLMPostProcessor.cs
   /Models
-    AppSettings.cs                  # Full settings model including PostProcessorSettings
+    AppSettings.cs                  # All settings records, ProviderType and reasoning capability metadata
     TranscriptionEntry.cs           # { timestamp, rawText, processedText, provider, language, durationMs }
-    ProviderSettings.cs             # Shared model for provider config (transcription + post-processor)
   /UI
     TrayIcon.cs                     # NotifyIcon, context menu, icon state machine
     OverlayWindow.cs                # Frameless always-on-top recording indicator
@@ -111,6 +110,7 @@ Never call provider APIs directly from UI code.
 ### Settings
 - All settings are loaded once at startup via `SettingsManager` and injected where needed.
 - API keys, endpoints, and sensitive extra headers are stored encrypted using DPAPI (`ProtectedData.Protect` with `DataProtectionScope.CurrentUser`). Never store keys as plain strings in `settings.json`.
+- Diagnostic candidates use `SettingsManager.LoadEncryptedCopy`: decrypt in memory, write only an encrypted scratch copy, and never migrate the active source.
 - When adding a new settings field, always provide a sensible default and handle the case where the field is missing (forward compatibility for older settings files).
 
 ### Error handling
@@ -160,6 +160,8 @@ Never call provider APIs directly from UI code.
 - Do not use `Thread.Sleep`. Use `await Task.Delay` instead.
 - Do not use `dynamic` types. Keep everything strongly typed.
 - Azure realtime transcription is explicitly supported. gpt-realtime-whisper uses Azure client_secrets + WSS transcription sessions, not multipart /audio/transcriptions. Preserve multipart support for other models/providers. Do not introduce a browser UI.
+- Live capture, phrase commits, speculative cleanup and prewarming are optional and default off. The file path remains the rollback/fallback. One post-Stop deadline covers drain, fallback/retries and cleanup; all background work is owned through shutdown.
+- Final results are retained for explicit recovery; raw/edited completion arbitrates once. Clipboard restoration remains serialized and owned after paste dispatch. Dispatch does not prove acceptance by the target.
 - Do not add Electron, WebView2, or any browser-based UI component. This must be a native WinForms app.
 - Do not store sensitive data (API keys, endpoints) as plain text anywhere.
 
@@ -170,7 +172,7 @@ Never call provider APIs directly from UI code.
 Automated xUnit tests are under tests/Bisik.Tests. Explicit opt-in insertion and Azure probes are under tools/Bisik.Diagnostics. They reference production components; their files and synthetic recordings go under ignored artifacts/. When adding logic:
 - Write pure functions in Core where possible so they can be unit tested later without mocking UI or audio.
 - Keep provider implementations thin — just HTTP call + response parsing. All retry/error logic lives in `TranscriptionService`, not in individual providers.
-- The "Test connection" button in Settings should exercise the full pipeline: record 3 seconds → call provider → show result in a dialog. This is the primary integration test for now.
+- Settings' "Test connection" records 3 seconds and calls the selected provider through `TranscriptionService`, with cleanup/history disabled, then displays a result. The non-inserting `--benchmark` diagnostic includes configured cleanup for full-pipeline measurements.
 
 ---
 
@@ -206,8 +208,8 @@ The output `Bisik.exe` in `./publish` requires no installer and no admin rights.
 ## Adding a New Provider
 
 1. Create `src/Providers/YourProviderName.cs` implementing `ITranscriptionProvider`
-2. Add a new entry to the `ProviderType` enum in `Models/ProviderSettings.cs`
-3. Register it in the provider factory in `TranscriptionService.cs`
+2. Add a new entry to the `ProviderType` enum in `Models/AppSettings.cs`
+3. Register it in the composition root's `Program.BuildProviderMap`
 4. Add UI fields for it in `SettingsForm.cs` (show/hide based on selected provider)
 5. Document the required fields (endpoint, key format, etc.) in `README.md`
 
