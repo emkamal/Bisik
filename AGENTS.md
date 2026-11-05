@@ -8,7 +8,7 @@ This file is the authoritative guide for AI coding agents working on this reposi
 
 **Bisik** (Indonesian for "whisper") is a lightweight Windows-first desktop transcription app. It lives in the system tray, activates on a configurable hotkey, records microphone audio, sends it to a speech-to-text API (Whisper-compatible), and outputs the transcribed text at the cursor. It supports an optional LLM post-processing step for cleanup, rephrasing, or translation.
 
-Full feature specification is in [`BUILDPROMPT.md`](./BUILDPROMPT.md). When in doubt about a feature's intended behavior, that document is the source of truth.
+Current behavior and verification instructions are in [`README.md`](./README.md). The historical BUILDPROMPT.md is not present. Explicit user requirements take precedence over older guidance.
 
 ---
 
@@ -20,7 +20,7 @@ Full feature specification is in [`BUILDPROMPT.md`](./BUILDPROMPT.md). When in d
 | UI | WinForms (Windows-first) |
 | Audio | NAudio |
 | HTTP | `System.Net.Http.HttpClient` (built-in, no extra HTTP library) |
-| Auto-type | `InputSimulator` NuGet package |
+| Auto-type | UI Automation target guard + `InputSimulatorCore` Ctrl+V |
 | Global hotkeys | Win32 `RegisterHotKey` via P/Invoke |
 | Settings | `System.Text.Json` → `%APPDATA%\Bisik\settings.json` |
 | History | Append-only JSONL → `%APPDATA%\Bisik\history.jsonl` |
@@ -39,12 +39,17 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
     AudioRecorder.cs         # NAudio mic capture + waveform data stream
     TranscriptionService.cs  # Orchestrates provider call + post-processor call
     HotkeyManager.cs         # Win32 RegisterHotKey P/Invoke wrapper
-    OutputHandler.cs         # Auto-type / clipboard / popup dispatch
+    OutputHandler.cs         # Final-text insertion / clipboard / popup dispatch
+    WindowsTextOutput.cs     # Target guard and clipboard transaction orchestration
+    WindowsTextOutputPlatform.cs # Win32/UI Automation focus validation
+    WindowsClipboard.cs      # Clipboard snapshots with sequence ownership
     HistoryLogger.cs         # Appends TranscriptionEntry to history.jsonl
     SettingsManager.cs       # Load/save/migrate settings.json via DPAPI
   /Providers
     ITranscriptionProvider.cs       # Task<string> TranscribeAsync(byte[] audio, string language)
     AzureOpenAIProvider.cs
+    AzureRealtimeTranscriber.cs # Recorded audio through Azure realtime WebSocket
+    AzureRealtimeProtocol.cs # Session creation and provider protocol configuration
     OpenAIProvider.cs
     OpenRouterProvider.cs
     LocalWhisperProvider.cs
@@ -81,21 +86,21 @@ Every transcription provider implements:
 public interface ITranscriptionProvider
 {
     string Name { get; }
-    Task<string> TranscribeAsync(byte[] audioData, string language, CancellationToken ct);
+    Task<string> TranscribeAsync(string audioFilePath, string language, CancellationToken ct);
 }
 ```
 The post-processor interface:
 ```csharp
 public interface IPostProcessor
 {
-    Task<string> ProcessAsync(string rawText, CancellationToken ct);
+    Task<string> ProcessAsync(string rawText, PostProcessorSettings settings, CancellationToken ct);
 }
 ```
 Never call provider APIs directly from UI code.
 
 ### Settings
 - All settings are loaded once at startup via `SettingsManager` and injected where needed.
-- API keys are stored encrypted using DPAPI (`ProtectedData.Protect` with `DataProtectionScope.CurrentUser`). Never store keys as plain strings in `settings.json`.
+- API keys, endpoints, and sensitive extra headers are stored encrypted using DPAPI (`ProtectedData.Protect` with `DataProtectionScope.CurrentUser`). Never store keys as plain strings in `settings.json`.
 - When adding a new settings field, always provide a sensible default and handle the case where the field is missing (forward compatibility for older settings files).
 
 ### Error handling
@@ -107,14 +112,14 @@ Never call provider APIs directly from UI code.
 
 ## Key Implementation Notes
 
-### Hotkey (Ctrl+Win)
+### Hotkey (Ctrl+Shift+Space by default)
 - Use `RegisterHotKey` via P/Invoke. Override `WndProc` in the main `ApplicationContext` form to receive `WM_HOTKEY`.
-- Be aware: `Win` key combinations can be intercepted by Windows before reaching the app. If `Ctrl+Win` proves unreliable in testing, fall back to `Ctrl+Shift+Space` as default and document this in `README.md`.
+- New settings default to Toggle with `Ctrl+Shift+Space`. Preserve existing bindings. Win-key combinations remain supported but may be intercepted by Windows. Check registration failure and use MOD_NOREPEAT.
 - For push-to-talk mode, use both `RegisterHotKey` (keydown) and `WM_HOTKEY` release detection — or alternatively use a low-level keyboard hook (`SetWindowsHookEx WH_KEYBOARD_LL`) which is more reliable for held-key detection.
 
 ### Audio recording
 - Record as 16-bit PCM, 16000 Hz mono (optimal for Whisper).
-- Buffer audio in memory (`MemoryStream`) during recording; do not write temp files to disk unless necessary.
+- Buffer in memory during capture and await RecordingStopped before finalizing the file. The existing provider/history contract uses recorded files; delete failed/empty/no-history recordings. Azure realtime converts continuously to PCM16 mono 24 kHz.
 - Expose a `WaveformDataAvailable` event from `AudioRecorder` that fires with recent amplitude values so the overlay can render a live level meter.
 
 ### Overlay window
@@ -124,7 +129,7 @@ Never call provider APIs directly from UI code.
 - The overlay must not steal focus from the active window under any circumstances (`SetWindowPos` with `HWND_TOPMOST` and `SWP_NOACTIVATE`).
 
 ### Auto-type output
-- Use `InputSimulator` for auto-typing. It is more reliable than `SendKeys` for Unicode characters (important for Indonesian text).
+- Capture the intended field and selection before recording. Insert finalized text with Ctrl+V only after verifying focus, field, selection, and modifier release. Never type partials, backspace over user text, send Enter, or automatically submit/execute transcription.
 - Add a small delay (~50ms) after recording stops and before typing begins, to allow the user to release modifier keys.
 - For clipboard mode: set clipboard text, then optionally simulate `Ctrl+V` (configurable — some users may not want the auto-paste).
 
@@ -144,7 +149,7 @@ Never call provider APIs directly from UI code.
 - Do not hardcode any API endpoints, keys, or model names.
 - Do not use `Thread.Sleep`. Use `await Task.Delay` instead.
 - Do not use `dynamic` types. Keep everything strongly typed.
-- Do not implement the WebSocket/streaming Whisper protocol. Bisik uses standard request-response (`multipart/form-data` POST) even with streaming-capable models like `gpt-realtime-whisper`.
+- Azure realtime transcription is explicitly supported. gpt-realtime-whisper uses Azure client_secrets + WSS transcription sessions, not multipart /audio/transcriptions. Preserve multipart support for other models/providers. Do not introduce a browser UI.
 - Do not add Electron, WebView2, or any browser-based UI component. This must be a native WinForms app.
 - Do not store sensitive data (API keys, endpoints) as plain text anywhere.
 
@@ -152,7 +157,7 @@ Never call provider APIs directly from UI code.
 
 ## Testing Guidance
 
-There are no automated tests yet. When adding logic:
+Automated xUnit tests are under tests/Bisik.Tests. Explicit opt-in insertion and Azure probes are under tools/Bisik.Diagnostics. They reference production components; their files and synthetic recordings go under ignored artifacts/. When adding logic:
 - Write pure functions in Core where possible so they can be unit tested later without mocking UI or audio.
 - Keep provider implementations thin — just HTTP call + response parsing. All retry/error logic lives in `TranscriptionService`, not in individual providers.
 - The "Test connection" button in Settings should exercise the full pipeline: record 3 seconds → call provider → show result in a dialog. This is the primary integration test for now.

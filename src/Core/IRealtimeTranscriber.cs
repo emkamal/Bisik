@@ -41,7 +41,7 @@ public interface IRealtimeTranscriber : IAsyncDisposable
     Task StartAsync(Models.AppSettings settings, string language, CancellationToken ct);
 
     /// <summary>
-    /// Pushes a PCM 16-bit mono audio chunk to the streaming session.
+    /// Pushes a PCM 16-bit mono 16 kHz audio chunk to the streaming session.
     /// Chunks should be pushed in chronological order as they are captured.
     /// </summary>
     Task PushAudioChunkAsync(byte[] pcmData, int bytesRecorded, CancellationToken ct);
@@ -65,7 +65,7 @@ public interface IRealtimeTranscriber : IAsyncDisposable
     event EventHandler<PartialTranscriptEventArgs>? PartialTranscriptAvailable;
 
     /// <summary>
-    /// Fires when the final transcription is ready after a commit.
+    /// Fires once when all committed items have completed at finalization.
     /// </summary>
     event EventHandler<RealtimeCompletedEventArgs>? TranscriptionCompleted;
 

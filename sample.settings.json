@@ -1,6 +1,6 @@
 {
-  "triggerMode": "push-to-talk",
-  "hotkey": "Ctrl+Win",
+  "triggerMode": "toggle",
+  "hotkey": "Ctrl+Shift+Space",
   "outputMode": "auto-type",
   "indicatorStyle": "bar-overlay",
   "defaultLanguage": "auto",
@@ -18,7 +18,8 @@
     "apiKey": "YOUR_API_KEY",
     "deploymentName": "your-whisper-deployment",
     "apiVersion": "2024-06-01",
-    "model": "whisper-1"
+    "model": "whisper-1",
+    "azureRealtime": false
   },
   "audio": {
     "deviceId": null,
@@ -41,5 +42,6 @@
     "targetLanguage": "English",
     "presetName": "clean-up",
     "systemPrompt": "You are a transcription editor. Fix grammar, punctuation, and remove filler words. Return only the cleaned text, nothing else."
-  }
+  },
+  "alwaysCopyToClipboard": false
 }

@@ -3,7 +3,6 @@ using Bisik.Core;
 using Bisik.Models;
 using Bisik.PostProcessor;
 using Bisik.Providers;
-using WindowsInput;
 
 namespace Bisik;
 
@@ -11,24 +10,26 @@ static class Program
 {
     private const string SingleInstanceMutexName = @"Global\Bisik.SingleInstance";
     private const int MainHotkeyId = 0x4249;
+    private static readonly uint ShowSettingsMessage = RegisterWindowMessage("Bisik.ShowSettings");
     private static readonly object GlobalExceptionHandlerLock = new();
     private static Mutex? _singleInstanceMutex;
     private static Action<Exception, string>? _runtimeExceptionHandler;
 
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
         _singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
         if (!createdNew)
         {
+            PostMessage(new IntPtr(0xffff), ShowSettingsMessage, IntPtr.Zero, IntPtr.Zero);
             _singleInstanceMutex.Dispose();
             _singleInstanceMutex = null;
             return;
         }
 
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ApplicationExit += HandleApplicationExit;
         Application.ThreadException += (_, args) => HandleUnhandledException(args.Exception, "UI thread");
@@ -45,7 +46,15 @@ static class Program
         };
 
         // Start the message loop from an application context so the tray shell can own app lifetime later.
-        Application.Run(new BisikApplicationContext());
+        try
+        {
+            Application.Run(new BisikApplicationContext(args.Contains("--settings")));
+        }
+        catch (Exception exception)
+        {
+            HandleUnhandledException(exception, "Startup");
+            MessageBox.Show("Bisik could not start. See %APPDATA%\\Bisik\\error.log.", "Bisik", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private static void HandleApplicationExit(object? sender, EventArgs eventArgs)
@@ -73,17 +82,12 @@ static class Program
 
         try
         {
-            new ErrorLogger().Log(WrapUnhandledException(exception, source));
+            new ErrorLogger().Log(exception);
         }
         catch
         {
             // Logging should never be able to trigger a second fatal exception path.
         }
-    }
-
-    private static Exception WrapUnhandledException(Exception exception, string source)
-    {
-        return new InvalidOperationException($"Unhandled {source} exception.", exception);
     }
 
     private sealed class BisikApplicationContext : ApplicationContext
@@ -99,13 +103,12 @@ static class Program
         private readonly IPostProcessor _postProcessor;
         private TranscriptionService _transcriptionService;
         private readonly OutputHandler _outputHandler;
-        private readonly SoundFeedback _soundFeedback;
+        private SoundFeedback _soundFeedback;
         private readonly StartupRegistration _startupRegistration;
         private readonly OverlayWindow _overlayWindow;
         private readonly HiddenMessageWindow _messageWindow;
         private readonly System.Windows.Forms.Timer _pushToTalkReleaseTimer;
         private HotkeyGesture _hotkeyGesture;
-        private readonly InputSimulator _inputSimulator;
         private readonly CancellationTokenSource _shutdownCancellation = new();
         private VoiceActivityTracker? _vadTracker;
         private bool _vadMonitoringEnabled;
@@ -113,30 +116,28 @@ static class Program
         private SettingsForm? _settingsForm;
         private HistoryForm? _historyForm;
 
-        // Realtime transcription state
-        private IRealtimeTranscriber? _realtimeTranscriber;
-        private int _realtimeTypedLength;
-        private bool _realtimePartialTyped;
-        private readonly System.Windows.Forms.Timer _realtimeCommitTimer = new()
-        {
-            Interval = 1200, // Commit every 1.2 seconds to trigger partial results
-        };
+        private readonly WindowsTextOutput _textOutput;
+        private DictationTarget? _dictationTarget;
+        private CancellationTokenSource? _sessionCancellation;
+        private AppSettings? _sessionSettings;
+        private bool _processing;
+        private readonly System.Windows.Forms.Timer _recordingLimitTimer = new() { Interval = 5 * 60 * 1000 };
 
-        public BisikApplicationContext()
+        public BisikApplicationContext(bool showSettings = false)
         {
             _settingsManager = new SettingsManager();
             _settings = _settingsManager.Load();
             _httpClient = new HttpClient();
             _historyLogger = new HistoryLogger();
             _errorLogger = new ErrorLogger();
+            _textOutput = new WindowsTextOutput(_errorLogger.Log);
             _audioRecorder = new AudioRecorder(_settings.Audio);
             _overlayWindow = new OverlayWindow();
             _messageWindow = CreateMessageWindow();
             _hotkeyManager = new HotkeyManager(new Win32HotkeyRegistrar(), _messageWindow.Handle);
-            _hotkeyGesture = HotkeyManager.ParseHotkey(_settings.Hotkey);
+            _hotkeyGesture = HotkeyManager.ParseHotkey(new AppSettings().Hotkey);
             _postProcessor = new LLMPostProcessor(_httpClient);
             _soundFeedback = new SoundFeedback(_settings.SoundEnabled);
-            _inputSimulator = new InputSimulator();
             _transcriptionService = new TranscriptionService(
                 providers: BuildProviderMap(_httpClient, _settings),
                 postProcessor: _postProcessor,
@@ -145,17 +146,21 @@ static class Program
                 playSuccess: _soundFeedback.PlaySuccess,
                 playError: _soundFeedback.PlayError);
             _transcriptionService.PhaseChanged += OnTranscriptionPhaseChanged;
-            _outputHandler = new OutputHandler(
-                autoTypeSink: HandleAutoTypeOutput,
-                clipboardSink: HandleClipboardOutput,
-                popupSink: HandlePopupOutput);
+            _outputHandler = new OutputHandler(_textOutput, HandlePopupOutput);
             _startupRegistration = new StartupRegistration();
             _pushToTalkReleaseTimer = new System.Windows.Forms.Timer
             {
                 Interval = 35,
             };
             _pushToTalkReleaseTimer.Tick += async (_, _) => await CheckPushToTalkReleaseAsync();
-            _audioRecorder.AudioLevelChanged += (_, args) => _overlayWindow.SetLevel(args.Level);
+            _audioRecorder.AudioLevelChanged += (_, args) => OnUi(() =>
+            {
+                _overlayWindow.SetLevel(args.Level);
+                if (_audioRecorder.State == RecordingState.Recording)
+                    HandleVadLevelSample(args.Level, args.ElapsedMilliseconds);
+            });
+            _audioRecorder.RecordingFailed += (_, args) => OnUi(() => HandleCaptureFailure(args.Exception));
+            _recordingLimitTimer.Tick += async (_, _) => await CompleteRecordingAndTranscriptionAsync();
             _messageWindow.HotkeyPressed += async (_, hotkeyId) =>
             {
                 if (hotkeyId == MainHotkeyId)
@@ -163,13 +168,6 @@ static class Program
                     await HandleRegisteredHotkeyAsync();
                 }
             };
-
-            if (_settings.LaunchAtStartup)
-            {
-                _startupRegistration.SetEnabled(true, Application.ExecutablePath);
-            }
-
-            _hotkeyManager.Register(MainHotkeyId, _hotkeyGesture);
 
             _trayIcon = new TrayIcon(
                 onOpenSettings: ShowSettings,
@@ -180,8 +178,16 @@ static class Program
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information),
                 onExit: ExitThread,
-                onLanguageSelected: static _ => { },
-                onTogglePostProcessor: static _ => { });
+                onLanguageSelected: language => SaveQuickSettings(_settings with { DefaultLanguage = language }),
+                onTogglePostProcessor: enabled => SaveQuickSettings(_settings with
+                {
+                    PostProcessor = _settings.PostProcessor with { Enabled = enabled },
+                }));
+            _trayIcon.SetSelectedLanguage(_settings.DefaultLanguage);
+            _trayIcon.SetPostProcessorEnabled(_settings.PostProcessor.Enabled);
+            RegisterConfiguredHotkey();
+            _messageWindow.SettingsRequested += (_, _) => ShowSettings();
+            if (showSettings) _messageWindow.BeginInvoke(ShowSettings);
 
             lock (GlobalExceptionHandlerLock)
             {
@@ -193,12 +199,18 @@ static class Program
         {
             try
             {
+                if (_sessionCancellation is not null || _vadMonitoringEnabled)
+                {
+                    _trayIcon.ShowBalloon("Bisik", "Stop or cancel dictation before opening Settings.");
+                    return;
+                }
                 if (_settingsForm is null || _settingsForm.IsDisposed)
                 {
                     _settingsForm = new SettingsForm(
                         audioRecorder: _audioRecorder,
                         transcriptionService: _transcriptionService,
-                        settingsManager: _settingsManager);
+                        settingsManager: _settingsManager,
+                        serviceFactory: CreateTranscriptionService);
                     // React immediately to both Apply and OK so changes like deployment name,
                     // hotkey, endpoint, etc. take effect without requiring the form to close.
                     _settingsForm.SettingsApplied += ApplySettingsAndRebuildProviders;
@@ -226,31 +238,63 @@ static class Program
             }
         }
 
+        private TranscriptionService CreateTranscriptionService(AppSettings settings)
+        {
+            return new TranscriptionService(BuildProviderMap(_httpClient, settings), _postProcessor,
+                _historyLogger, _errorLogger, _soundFeedback.PlaySuccess, _soundFeedback.PlayError);
+        }
+
+        private void RegisterConfiguredHotkey()
+        {
+            try
+            {
+                _hotkeyGesture = HotkeyManager.ParseHotkey(_settings.Hotkey);
+                if (!_hotkeyManager.Register(MainHotkeyId, _hotkeyGesture))
+                    throw new InvalidOperationException("The hotkey is already registered by another application.");
+            }
+            catch (Exception exception)
+            {
+                _errorLogger.Log(exception);
+                _trayIcon.ShowBalloon("Hotkey unavailable", "Open Settings and choose another hotkey. " + exception.Message, ToolTipIcon.Warning);
+            }
+        }
+
         private void ApplySettingsAndRebuildProviders(AppSettings fresh)
         {
-            _settings = fresh;
-            // Rebuild the provider map so the deployment name and other provider fields
-            // take effect immediately without requiring an application restart.
-            _transcriptionService = new TranscriptionService(
-                providers: BuildProviderMap(_httpClient, fresh),
-                postProcessor: _postProcessor,
-                historyLogger: _historyLogger,
-                errorLogger: _errorLogger,
-                playSuccess: _soundFeedback.PlaySuccess,
-                playError: _soundFeedback.PlayError);
-            _transcriptionService.PhaseChanged += OnTranscriptionPhaseChanged;
+            var gesture = HotkeyManager.ParseHotkey(fresh.Hotkey);
             _hotkeyManager.UnregisterAll();
             try
             {
-                _hotkeyGesture = HotkeyManager.ParseHotkey(fresh.Hotkey);
-                _hotkeyManager.Register(MainHotkeyId, _hotkeyGesture);
+                if (!_hotkeyManager.Register(MainHotkeyId, gesture))
+                    throw new InvalidOperationException("The hotkey is already registered by another application.");
             }
             catch
             {
-                // If the saved hotkey is invalid, fall back to the default.
-                _hotkeyGesture = HotkeyManager.ParseHotkey(new AppSettings().Hotkey);
                 _hotkeyManager.Register(MainHotkeyId, _hotkeyGesture);
+                throw;
             }
+            // Only an explicit change in Settings touches startup registration.
+            if (fresh.LaunchAtStartup != _settings.LaunchAtStartup)
+                _startupRegistration.SetEnabled(fresh.LaunchAtStartup, Application.ExecutablePath);
+            _settings = fresh;
+            _hotkeyGesture = gesture;
+            _soundFeedback = new SoundFeedback(fresh.SoundEnabled);
+            _transcriptionService.PhaseChanged -= OnTranscriptionPhaseChanged;
+            _transcriptionService = CreateTranscriptionService(fresh);
+            _transcriptionService.PhaseChanged += OnTranscriptionPhaseChanged;
+            _trayIcon.SetSelectedLanguage(fresh.DefaultLanguage);
+            _trayIcon.SetPostProcessorEnabled(fresh.PostProcessor.Enabled);
+        }
+
+        private void SaveQuickSettings(AppSettings fresh)
+        {
+            if (_settings == fresh) return;
+            try
+            {
+                _settingsManager.Save(fresh);
+                _settings = fresh;
+            }
+            catch (Exception exception) { HandleRuntimeException(exception, "Settings"); }
         }
 
         private void ShowHistory()
@@ -294,7 +338,11 @@ static class Program
             _vadMonitoringEnabled = false;
             _vadTracker = null;
             _audioRecorder.StopVoiceActivityMonitoring();
-            CleanupRealtimeTranscriber();
+            _sessionCancellation?.Cancel();
+            _dictationTarget?.Dispose();
+            _textOutput.Dispose();
+            _recordingLimitTimer.Dispose();
+            _pushToTalkReleaseTimer.Dispose();
             _hotkeyManager.UnregisterAll();
             _audioRecorder.Dispose();
             _overlayWindow.Dispose();
@@ -314,11 +362,14 @@ static class Program
 
         private void HandleRuntimeException(Exception exception, string source)
         {
-            var wrappedException = WrapUnhandledException(exception, source);
-
+            if (_messageWindow.InvokeRequired)
+            {
+                OnUi(() => HandleRuntimeException(exception, source));
+                return;
+            }
             try
             {
-                _errorLogger.Log(wrappedException);
+                _errorLogger.Log(exception);
             }
             catch
             {
@@ -344,430 +395,105 @@ static class Program
 
         private async Task HandleRegisteredHotkeyAsync()
         {
-            if (_isShuttingDown)
-            {
-                return;
-            }
-
-            if (_settings.TriggerMode == TriggerMode.Vad)
-            {
-                await HandleVadHotkeyAsync();
-                return;
-            }
-
-            if (_settings.TriggerMode == TriggerMode.Toggle)
-            {
-                await HandleToggleHotkeyAsync();
-                return;
-            }
-
-            if (_settings.TriggerMode != TriggerMode.PushToTalk)
-            {
-                return;
-            }
-
-            var action = _hotkeyManager.HandleKeyDown(_settings.TriggerMode);
-            if (action != HotkeyAction.StartRecording)
-            {
-                return;
-            }
-
-            // Realtime auto-type mode starts the realtime stream along with recording
-            if (_settings.OutputMode == OutputMode.RealtimeAutoType)
-            {
-                await StartRealtimeTranscriptionAsync();
-                return;
-            }
-
+            if (_isShuttingDown || _settingsForm is { Visible: true }) return;
             try
             {
-                _audioRecorder.UpdateSettings(_settings.Audio);
-                _audioRecorder.StartRecording();
-                ShowRecordingIndicator();
-                _trayIcon.SetState(TrayIconState.Recording);
-                _pushToTalkReleaseTimer.Start();
-            }
-            catch (Exception exception)
-            {
-                _errorLogger.Log(exception);
-                _trayIcon.SetState(TrayIconState.Idle);
-                _overlayWindow.HideOverlay();
-            }
-        }
-
-        private async Task HandleVadHotkeyAsync()
-        {
-            if (_isShuttingDown)
-            {
-                return;
-            }
-
-            var action = _hotkeyManager.HandleKeyDown(_settings.TriggerMode);
-
-            switch (action)
-            {
-                case HotkeyAction.StartVoiceActivityDetection:
-                    try
-                    {
+                if (_processing)
+                {
+                    if (_settings.TriggerMode == TriggerMode.Vad) _vadMonitoringEnabled = false;
+                    _sessionCancellation?.Cancel();
+                    return;
+                }
+                var action = _hotkeyManager.HandleKeyDown(_settings.TriggerMode);
+                switch (action)
+                {
+                    case HotkeyAction.StartRecording:
+                        StartRecording();
+                        break;
+                    case HotkeyAction.StopRecordingAndTranscribe:
+                        await CompleteRecordingAndTranscriptionAsync();
+                        break;
+                    case HotkeyAction.StartVoiceActivityDetection:
                         _vadMonitoringEnabled = true;
-                        _vadTracker = new VoiceActivityTracker(_settings.Audio);
-                        _audioRecorder.UpdateSettings(_settings.Audio);
-                        _audioRecorder.StartVoiceActivityMonitoring(HandleVadLevelSample);
-                    }
-                    catch (Exception exception)
-                    {
+                        StartVadMonitoring();
+                        _trayIcon.ShowBalloon("Bisik listening", "Speech starts dictation. Press the hotkey again to stop listening.");
+                        break;
+                    case HotkeyAction.StopVoiceActivityDetection:
                         _vadMonitoringEnabled = false;
-                        _vadTracker = null;
                         _audioRecorder.StopVoiceActivityMonitoring();
-                        _errorLogger.Log(exception);
-                    }
-
-                    break;
-
-                case HotkeyAction.StopVoiceActivityDetection:
-                    _vadMonitoringEnabled = false;
-                    _vadTracker = null;
-                    _audioRecorder.StopVoiceActivityMonitoring();
-
-                    if (_audioRecorder.State == RecordingState.Recording)
-                    {
-                        await CompleteRecordingAndTranscriptionAsync(restartVadMonitoring: false);
-                    }
-
-                    break;
+                        if (_audioRecorder.State == RecordingState.Recording)
+                            await CompleteRecordingAndTranscriptionAsync(false);
+                        break;
+                }
             }
+            catch (Exception exception) { HandleCaptureFailure(exception); }
         }
 
-        private async Task HandleToggleHotkeyAsync()
+        private void StartRecording()
         {
-            if (_isShuttingDown)
-            {
-                return;
-            }
-
-            var action = _hotkeyManager.HandleKeyDown(_settings.TriggerMode);
-
-            switch (action)
-            {
-                case HotkeyAction.StartRecording:
-                    // Realtime auto-type mode starts the realtime stream along with recording
-                    if (_settings.OutputMode == OutputMode.RealtimeAutoType)
-                    {
-                        await StartRealtimeTranscriptionAsync();
-                        return;
-                    }
-
-                    try
-                    {
-                        _audioRecorder.UpdateSettings(_settings.Audio);
-                        _audioRecorder.StartRecording();
-                        ShowRecordingIndicator();
-                        _trayIcon.SetState(TrayIconState.Recording);
-                    }
-                    catch (Exception exception)
-                    {
-                        _errorLogger.Log(exception);
-                        _trayIcon.SetState(TrayIconState.Idle);
-                        _overlayWindow.HideOverlay();
-                    }
-
-                    break;
-
-                case HotkeyAction.StopRecordingAndTranscribe:
-                    if (_settings.OutputMode == OutputMode.RealtimeAutoType)
-                    {
-                        await StopRealtimeTranscriptionAsync();
-                        return;
-                    }
-
-                    await CompleteRecordingAndTranscriptionAsync();
-                    break;
-            }
+            if (_sessionCancellation is not null || _processing) return;
+            // Capture the field before any overlay or asynchronous work can change focus.
+            _dictationTarget = _textOutput.CaptureTarget();
+            _sessionSettings = _settings;
+            _sessionCancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdownCancellation.Token);
+            _audioRecorder.UpdateSettings(_sessionSettings.Audio);
+            _audioRecorder.StartRecording();
+            ShowRecordingIndicator();
+            _trayIcon.SetState(TrayIconState.Recording);
+            _recordingLimitTimer.Start();
+            if (_sessionSettings.TriggerMode == TriggerMode.PushToTalk) _pushToTalkReleaseTimer.Start();
         }
 
         private async Task CheckPushToTalkReleaseAsync()
         {
-            if (_isShuttingDown)
-            {
-                return;
-            }
-
-            if (IsGestureStillPressed(_hotkeyGesture))
-            {
-                return;
-            }
-
+            if (_isShuttingDown || IsGestureStillPressed(_hotkeyGesture)) return;
             _pushToTalkReleaseTimer.Stop();
-            var action = _hotkeyManager.HandleKeyUp(_settings.TriggerMode);
-            if (action != HotkeyAction.StopRecordingAndTranscribe)
-            {
-                return;
-            }
-
-            if (_settings.OutputMode == OutputMode.RealtimeAutoType)
-            {
-                await StopRealtimeTranscriptionAsync();
-                return;
-            }
-
-            await CompleteRecordingAndTranscriptionAsync();
+            if (_hotkeyManager.HandleKeyUp(_settings.TriggerMode) == HotkeyAction.StopRecordingAndTranscribe)
+                await CompleteRecordingAndTranscriptionAsync();
         }
 
-        /// <summary>
-        /// Starts recording and simultaneously opens a realtime WebSocket transcription stream.
-        /// Audio chunks are pushed to the stream as they arrive, and partial results are
-        /// immediately typed at the cursor.
-        /// </summary>
-        private async Task StartRealtimeTranscriptionAsync()
+        private void HandleCaptureFailure(Exception exception)
         {
+            if (_processing)
+            {
+                _errorLogger.Log(exception);
+                _sessionCancellation?.Cancel();
+                return;
+            }
+            _vadMonitoringEnabled = false;
             try
             {
-                _audioRecorder.UpdateSettings(_settings.Audio);
-                _audioRecorder.StartRecording();
-                ShowRecordingIndicator();
-                _trayIcon.SetState(TrayIconState.Recording);
-                _realtimeTypedLength = 0;
-                _realtimePartialTyped = false;
-
-                var transcriber = new RealtimeTranscriptionStream(_httpClient);
-
-                // Wire up partial transcript events for live typing
-                transcriber.PartialTranscriptAvailable += OnRealtimePartialTranscript;
-                transcriber.TranscriptionCompleted += OnRealtimeCompleted;
-                transcriber.TranscriptionFailed += OnRealtimeFailed;
-
-                // Start the WebSocket connection to the realtime provider
-                await transcriber.StartAsync(_settings, _settings.DefaultLanguage, _shutdownCancellation.Token);
-
-                // Wire up audio chunks to be pushed to the stream as they arrive from the mic
-                _audioRecorder.AudioChunkAvailable += OnAudioChunkAvailable;
-
-                _realtimeTranscriber = transcriber;
-
-                // Start the periodic commit timer to trigger partial results
-                _realtimeCommitTimer.Tick += OnRealtimeCommitTimerTick;
-                _realtimeCommitTimer.Start();
-
-                if (_settings.TriggerMode == TriggerMode.PushToTalk)
-                {
-                    _pushToTalkReleaseTimer.Start();
-                }
+                _audioRecorder.StopVoiceActivityMonitoring();
+                _audioRecorder.AbortRecording();
             }
-            catch (Exception exception)
-            {
-                CleanupRealtimeTranscriber();
-                _errorLogger.Log(exception);
-                _trayIcon.SetState(TrayIconState.Idle);
-                _overlayWindow.HideOverlay();
-                _trayIcon.ShowBalloon(
-                    title: "Realtime Transcription Failed",
-                    message: exception.Message,
-                    icon: ToolTipIcon.Error);
-            }
+            catch (Exception cleanupException) { _errorLogger.Log(cleanupException); }
+            finally { ResetSession(); }
+            HandleRuntimeException(exception, "Microphone");
         }
 
-        /// <summary>
-        /// Stops recording, commits the realtime buffer, waits for the final result,
-        /// logs it to history, and resets state.
-        /// </summary>
-        private async Task StopRealtimeTranscriptionAsync()
+        private void ResetSession()
         {
-            try
+            _recordingLimitTimer.Stop();
+            _pushToTalkReleaseTimer.Stop();
+            _dictationTarget?.Dispose();
+            _dictationTarget = null;
+            _sessionCancellation?.Dispose();
+            _sessionCancellation = null;
+            _sessionSettings = null;
+            _hotkeyManager.ResetState(_vadMonitoringEnabled);
+            _processing = false;
+            if (!_isShuttingDown)
             {
-                _trayIcon.SetState(TrayIconState.Transcribing);
                 _overlayWindow.HideOverlay();
-
-                // Unsubscribe from the chunk event so no more chunks are pushed
-                _audioRecorder.AudioChunkAvailable -= OnAudioChunkAvailable;
-
-                // Stop the actual audio capture
-                var recordedAudio = await _audioRecorder.StopRecordingAsync(_shutdownCancellation.Token);
-
-                string finalText;
-                if (_realtimeTranscriber is not null)
-                {
-                    // Commit the realtime buffer and get the final transcript
-                    finalText = await _realtimeTranscriber.CommitAndFinalizeAsync(_shutdownCancellation.Token);
-
-                    // If we had typed partial text, backspace over it and type the final text
-                    if (_realtimePartialTyped && _realtimeTypedLength > 0)
-                    {
-                        // Backspace over the previously typed partial text
-                        for (var i = 0; i < _realtimeTypedLength; i++)
-                        {
-                            _inputSimulator.Keyboard.KeyPress(WindowsInput.Native.VirtualKeyCode.BACK);
-                        }
-
-                        await Task.Delay(30);
-                    }
-
-                    // Type the final text
-                    if (!string.IsNullOrWhiteSpace(finalText))
-                    {
-                        _inputSimulator.Keyboard.TextEntry(finalText);
-                    }
-                }
-                else
-                {
-                    finalText = string.Empty;
-                }
-
-                // Log to history (post-processor is always disabled in realtime mode)
-                var entry = new TranscriptionEntry(
-                    DateTimeOffset.UtcNow,
-                    finalText,
-                    finalText,
-                    _settings.Provider.Type.ToString(),
-                    _settings.DefaultLanguage,
-                    DurationMs: 0,
-                    AudioFilePath: recordedAudio.FilePath);
-                await _historyLogger.AppendAsync(entry, _shutdownCancellation.Token);
-
-                _soundFeedback.PlaySuccess();
-            }
-            catch (Exception exception)
-            {
-                _errorLogger.Log(exception);
-                _trayIcon.ShowBalloon(
-                    title: "Realtime Transcription Failed",
-                    message: exception.Message,
-                    icon: ToolTipIcon.Error);
-            }
-            finally
-            {
-                CleanupRealtimeTranscriber();
                 _trayIcon.SetState(TrayIconState.Idle);
             }
         }
 
-        /// <summary>
-        /// When a PCM audio chunk is available from the microphone, push it to the realtime stream.
-        /// </summary>
-        private async void OnAudioChunkAvailable(object? sender, AudioChunkEventArgs args)
+        private void OnUi(Action action)
         {
-            if (_realtimeTranscriber is null || _isShuttingDown)
-            {
-                return;
-            }
-
-            try
-            {
-                await _realtimeTranscriber.PushAudioChunkAsync(args.Buffer, args.BytesRecorded, _shutdownCancellation.Token);
-            }
-            catch (Exception exception)
-            {
-                _errorLogger.Log(exception);
-            }
-        }
-
-        /// <summary>
-        /// Fired when a partial (delta) transcript is available from the realtime stream.
-        /// Types the delta at the current cursor position, tracking total typed length
-        /// so we can backspace and replace later when the final text arrives.
-        /// </summary>
-        private void OnRealtimePartialTranscript(object? sender, PartialTranscriptEventArgs args)
-        {
-            if (_isShuttingDown)
-            {
-                return;
-            }
-
-            try
-            {
-                // On first partial, we just start typing from scratch.
-                // On subsequent deltas, the delta is the incremental addition, so we append.
-                if (!_realtimePartialTyped)
-                {
-                    // First partial result: type the accumulated text so far
-                    _inputSimulator.Keyboard.TextEntry(args.AccumulatedText);
-                    _realtimeTypedLength = args.AccumulatedText.Length;
-                    _realtimePartialTyped = true;
-                }
-                else
-                {
-                    // Subsequent deltas: the delta is the new text that was just recognized.
-                    // We append it at the cursor.
-                    _inputSimulator.Keyboard.TextEntry(args.Delta);
-                    _realtimeTypedLength += args.Delta.Length;
-                }
-            }
-            catch (Exception exception)
-            {
-                _errorLogger.Log(exception);
-            }
-        }
-
-        /// <summary>
-        /// Fired when the final transcript is available from the realtime stream.
-        /// Handled in StopRealtimeTranscriptionAsync via CommitAndFinalizeAsync.
-        /// </summary>
-        private void OnRealtimeCompleted(object? sender, RealtimeCompletedEventArgs args)
-        {
-            // The final text is obtained from CommitAndFinalizeAsync return value.
-            // This event is just informational.
-        }
-
-        /// <summary>
-        /// Fired when the realtime stream encounters a non-recoverable error.
-        /// </summary>
-        private void OnRealtimeFailed(object? sender, RealtimeFailedEventArgs args)
-        {
-            if (_isShuttingDown)
-            {
-                return;
-            }
-
-            _errorLogger.Log(new InvalidOperationException($"Realtime transcription failed: {args.ErrorMessage}"));
-        }
-
-        /// <summary>
-        /// Periodic timer tick that commits the intermediate audio buffer to trigger
-        /// partial transcription results from the server.
-        /// </summary>
-        private async void OnRealtimeCommitTimerTick(object? sender, EventArgs args)
-        {
-            if (_realtimeTranscriber is null || _isShuttingDown)
-            {
-                return;
-            }
-
-            try
-            {
-                await _realtimeTranscriber.CommitIntermediateSegmentAsync(_shutdownCancellation.Token);
-            }
-            catch
-            {
-                // Intermediate commit failures are non-fatal; the final commit will be retried.
-            }
-        }
-
-        private void CleanupRealtimeTranscriber()
-        {
-            _realtimeCommitTimer.Stop();
-            _realtimeCommitTimer.Tick -= OnRealtimeCommitTimerTick;
-
-            _audioRecorder.AudioChunkAvailable -= OnAudioChunkAvailable;
-
-            if (_realtimeTranscriber is not null)
-            {
-                _realtimeTranscriber.PartialTranscriptAvailable -= OnRealtimePartialTranscript;
-                _realtimeTranscriber.TranscriptionCompleted -= OnRealtimeCompleted;
-                _realtimeTranscriber.TranscriptionFailed -= OnRealtimeFailed;
-
-                try
-                {
-                    _ = _realtimeTranscriber.DisposeAsync();
-                }
-                catch
-                {
-                    // Best-effort cleanup.
-                }
-
-                _realtimeTranscriber = null;
-            }
-
-            _realtimeTypedLength = 0;
-            _realtimePartialTyped = false;
+            if (_isShuttingDown || _messageWindow.IsDisposed) return;
+            if (_messageWindow.InvokeRequired) _messageWindow.BeginInvoke(action);
+            else action();
         }
 
         private void OnTranscriptionPhaseChanged(ProcessingPhase phase)
@@ -798,93 +524,83 @@ static class Program
 
         private async Task CompleteRecordingAndTranscriptionAsync(bool restartVadMonitoring = true)
         {
+            if (_processing || _sessionCancellation is null || _audioRecorder.State != RecordingState.Recording) return;
+            _processing = true;
+            _recordingLimitTimer.Stop();
+            _pushToTalkReleaseTimer.Stop();
+            var settings = _sessionSettings!;
+            var cancellation = _sessionCancellation;
+            cancellation.CancelAfter(TimeSpan.FromMinutes(2));
+            RecordedAudio? audio = null;
+            var retainAudio = false;
             try
             {
-                // Show transcribing overlay immediately (PhaseChanged event will also fire from TranscriptionService)
                 _overlayWindow.ShowProcessingOverlay(OverlayProcessingPhase.Transcribing);
                 _trayIcon.SetState(TrayIconState.Transcribing);
-                var recordedAudio = await _audioRecorder.StopRecordingAsync(_shutdownCancellation.Token);
+                audio = await _audioRecorder.StopRecordingAsync(cancellation.Token);
                 var result = await _transcriptionService.TranscribeAsync(
-                    recordedAudio.FilePath,
-                    _settings.DefaultLanguage,
-                    _settings,
-                    _shutdownCancellation.Token);
-
+                    audio.FilePath, settings.DefaultLanguage, settings, cancellation.Token);
+                retainAudio = settings.HistoryEnabled && result.Succeeded && !string.IsNullOrWhiteSpace(result.RawText);
+                cancellation.Token.ThrowIfCancellationRequested();
                 if (!result.Succeeded)
                 {
-                    _trayIcon.ShowBalloon(
-                        title: "Transcription Failed",
-                        message: string.IsNullOrWhiteSpace(result.ErrorMessage) ? "The transcription request failed." : result.ErrorMessage,
-                        icon: ToolTipIcon.Error);
+                    _trayIcon.ShowBalloon("Transcription failed", result.ErrorMessage, ToolTipIcon.Error);
+                    return;
                 }
-
-                await _outputHandler.DispatchAsync(result, _settings.OutputMode, CancellationToken.None);
+                if (string.IsNullOrWhiteSpace(result.OutputText))
+                {
+                    _trayIcon.ShowBalloon("Bisik", "No speech was recognized.");
+                    return;
+                }
+                var output = await _outputHandler.DispatchAsync(result, settings.OutputMode,
+                    settings.AlwaysCopyToClipboard, _dictationTarget, cancellation.Token);
+                if (!string.IsNullOrEmpty(output.Message)) _trayIcon.ShowBalloon("Bisik", output.Message);
             }
-            catch (Exception exception)
+            catch (OperationCanceledException)
             {
-                _errorLogger.Log(exception);
-                _trayIcon.ShowBalloon(
-                    title: "Transcription Failed",
-                    message: exception.Message,
-                    icon: ToolTipIcon.Error);
+                if (!_isShuttingDown) _trayIcon.ShowBalloon("Bisik", "Dictation cancelled or timed out. No text was inserted.");
             }
+            catch (Exception exception) { HandleRuntimeException(exception, "Dictation"); }
             finally
             {
-                _overlayWindow.HideOverlay();
-                _trayIcon.SetState(TrayIconState.Idle);
-
-                if (restartVadMonitoring && _vadMonitoringEnabled)
+                if (!retainAudio && audio is not null)
                 {
-                    StartVadMonitoring();
+                    try { File.Delete(audio.FilePath); }
+                    catch (Exception exception) { _errorLogger.Log(exception); }
+                }
+                ResetSession();
+                if (!_isShuttingDown && restartVadMonitoring && _vadMonitoringEnabled)
+                {
+                    try { StartVadMonitoring(); }
+                    catch (Exception exception) { HandleCaptureFailure(exception); }
                 }
             }
         }
 
         private void HandleVadLevelSample(double level, int elapsedMs)
         {
+            if (!_vadMonitoringEnabled || _processing) return;
             _vadTracker ??= new VoiceActivityTracker(_settings.Audio);
             var action = _vadTracker.ProcessLevel(level, elapsedMs);
-
-            switch (action)
+            if (action == VoiceActivityAction.StartRecording)
             {
-                case VoiceActivityAction.StartRecording:
-                    try
-                    {
-                        _audioRecorder.StopVoiceActivityMonitoring();
-                        _audioRecorder.UpdateSettings(_settings.Audio);
-                        _audioRecorder.StartRecording();
-                        ShowRecordingIndicator();
-                        _trayIcon.SetState(TrayIconState.Recording);
-                    }
-                    catch (Exception exception)
-                    {
-                        _errorLogger.Log(exception);
-                        _trayIcon.SetState(TrayIconState.Idle);
-                        _overlayWindow.HideOverlay();
-                        if (_vadMonitoringEnabled)
-                        {
-                            StartVadMonitoring();
-                        }
-                    }
-
-                    break;
-
-                case VoiceActivityAction.StopRecording:
-                    _ = CompleteRecordingAndTranscriptionAsync();
-                    break;
+                try
+                {
+                    _audioRecorder.StopVoiceActivityMonitoring(preserveAudio: true);
+                    StartRecording();
+                }
+                catch (Exception exception) { HandleCaptureFailure(exception); }
             }
+            else if (action == VoiceActivityAction.StopRecording)
+                _ = CompleteRecordingAndTranscriptionAsync();
         }
 
         private void StartVadMonitoring()
         {
-            if (!_vadMonitoringEnabled)
-            {
-                return;
-            }
-
+            if (!_vadMonitoringEnabled || _isShuttingDown) return;
             _vadTracker = new VoiceActivityTracker(_settings.Audio);
             _audioRecorder.UpdateSettings(_settings.Audio);
-            _audioRecorder.StartVoiceActivityMonitoring(HandleVadLevelSample);
+            _audioRecorder.StartVoiceActivityMonitoring((level, elapsed) => OnUi(() => HandleVadLevelSample(level, elapsed)));
         }
 
         private void ShowRecordingIndicator()
@@ -905,17 +621,6 @@ static class Program
             }
         }
 
-        private void HandleAutoTypeOutput(string text)
-        {
-            Task.Delay(50).GetAwaiter().GetResult();
-            _inputSimulator.Keyboard.TextEntry(text);
-        }
-
-        private static void HandleClipboardOutput(string text)
-        {
-            Clipboard.SetText(text);
-        }
-
         private static void HandlePopupOutput(string text)
         {
             using var popup = new ReviewPopupForm(text);
@@ -933,8 +638,7 @@ static class Program
                 StartPosition = FormStartPosition.Manual,
                 Location = new Point(-32000, -32000),
             };
-            form.Load += (_, _) => form.Hide();
-            form.Show();
+            _ = form.Handle;
             return form;
         }
 
@@ -995,17 +699,28 @@ static class Program
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int vKey);
 
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern uint RegisterWindowMessage(string message);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
     private sealed class HiddenMessageWindow : Form
     {
         private const int WmHotkey = 0x0312;
 
         public event EventHandler<int>? HotkeyPressed;
+        public event EventHandler? SettingsRequested;
 
         protected override void WndProc(ref Message message)
         {
             if (message.Msg == WmHotkey)
             {
                 HotkeyPressed?.Invoke(this, message.WParam.ToInt32());
+            }
+            else if (message.Msg == ShowSettingsMessage)
+            {
+                SettingsRequested?.Invoke(this, EventArgs.Empty);
             }
 
             base.WndProc(ref message);

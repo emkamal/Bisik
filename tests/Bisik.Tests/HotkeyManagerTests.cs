@@ -8,6 +8,54 @@ namespace Bisik.Tests;
 public sealed class HotkeyManagerTests
 {
     [Fact]
+    public void Native_registration_should_suppress_repeat_notifications_while_the_hotkey_is_held()
+    {
+        var registrar = new FakeRegistrar();
+        var manager = new Bisik.Core.HotkeyManager(registrar, IntPtr.Zero);
+
+        manager.Register(1, Bisik.Core.HotkeyManager.ParseHotkey("Ctrl+Shift+Space"));
+
+        registrar.LastModifiers.Should().Be(0x4000u | (uint)(Bisik.Core.HotkeyModifiers.Ctrl | Bisik.Core.HotkeyModifiers.Shift));
+    }
+
+    [Theory]
+    [InlineData(TriggerMode.Toggle)]
+    [InlineData(TriggerMode.PushToTalk)]
+    public void Failed_or_cancelled_recording_can_reset_hotkey_state_for_the_next_press(TriggerMode mode)
+    {
+        var manager = new Bisik.Core.HotkeyManager(new FakeRegistrar(), IntPtr.Zero);
+        manager.HandleKeyDown(mode).Should().Be(Bisik.Core.HotkeyAction.StartRecording);
+
+        manager.ResetState();
+
+        manager.HandleKeyDown(mode).Should().Be(Bisik.Core.HotkeyAction.StartRecording);
+    }
+
+    [Fact]
+    public void Recording_reset_can_preserve_an_armed_vad_session()
+    {
+        var manager = new Bisik.Core.HotkeyManager(new FakeRegistrar(), IntPtr.Zero);
+        manager.HandleKeyDown(TriggerMode.Vad);
+
+        manager.ResetState(preserveVadListening: true);
+
+        manager.HandleVoiceActivityAction(Bisik.Core.VoiceActivityAction.StartRecording)
+            .Should().Be(Bisik.Core.HotkeyAction.StartRecording);
+        manager.ResetState();
+        manager.HandleVoiceActivityAction(Bisik.Core.VoiceActivityAction.StartRecording)
+            .Should().Be(Bisik.Core.HotkeyAction.None);
+    }
+
+    [Fact]
+    public void Digit_hotkeys_should_use_keyboard_digits_instead_of_numeric_enum_values()
+    {
+        var gesture = Bisik.Core.HotkeyManager.ParseHotkey("Ctrl+1");
+
+        gesture.Key.Should().Be(System.Windows.Forms.Keys.D1);
+        Bisik.Core.HotkeyManager.FormatHotkey(gesture).Should().Be("Ctrl+1");
+    }
+
+    [Fact]
     public void Push_to_talk_key_down_should_start_recording_only_once_per_hold()
     {
         var manager = CreateManager();
@@ -244,8 +292,11 @@ public sealed class HotkeyManagerTests
 
     private sealed class FakeRegistrar : Bisik.Core.IHotkeyRegistrar
     {
+        public uint LastModifiers { get; private set; }
+
         public bool RegisterHotKey(IntPtr windowHandle, int id, uint modifiers, uint virtualKey)
         {
+            LastModifiers = modifiers;
             return true;
         }
 

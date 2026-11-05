@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Net;
 using Bisik.Core;
 using Bisik.Models;
 using Bisik.PostProcessor;
@@ -11,6 +12,161 @@ namespace Bisik.Tests;
 public sealed class TranscriptionServiceTests : IDisposable
 {
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.TranscriptionServiceTests", Guid.NewGuid().ToString("N"));
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" \r\n")]
+    public async Task Silence_should_not_invoke_cleanup_history_or_success_feedback(string transcript)
+    {
+        var provider = new FakeProvider(ProviderType.OpenAi, "OpenAI", _ => transcript);
+        var postProcessor = new FakePostProcessor((_, _) => "hallucinated cleanup");
+        var service = CreateService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            postProcessor, out var history, out _);
+        var settings = new AppSettings
+        {
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi },
+            PostProcessor = new PostProcessorSettings { Enabled = true },
+        };
+
+        var result = await InvokeTranscribeAsync(service, CreateAudioFile(), "auto", settings);
+
+        GetResultBool(result, "Succeeded").Should().BeTrue();
+        GetResultString(result, "OutputText").Should().BeEmpty();
+        postProcessor.CallCount.Should().Be(0);
+        (await history.ReadAllAsync()).Should().BeEmpty();
+        GetSuccessSounds(service).Should().Be(0);
+        GetErrorSounds(service).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Disabling_history_should_preserve_successful_output_without_writing_history()
+    {
+        var provider = new FakeProvider(ProviderType.OpenAi, "OpenAI", _ => "Selamat pagi.");
+        var service = CreateService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            new FakePostProcessor((raw, _) => raw), out var history, out _);
+        var settings = new AppSettings
+        {
+            HistoryEnabled = false,
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi },
+        };
+
+        var result = await InvokeTranscribeAsync(service, CreateAudioFile(), "id", settings);
+
+        GetResultString(result, "OutputText").Should().Be("Selamat pagi.");
+        (await history.ReadAllAsync()).Should().BeEmpty();
+        File.Exists(Path.Combine(_baseDirectory, "history.jsonl")).Should().BeFalse();
+        GetSuccessSounds(service).Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData(400)]
+    [InlineData(401)]
+    [InlineData(403)]
+    [InlineData(404)]
+    [InlineData(422)]
+    public async Task Terminal_http_errors_should_fail_once_without_retry(int status)
+    {
+        var provider = new FakeProvider(ProviderType.OpenAi, "OpenAI", _ =>
+            throw new HttpRequestException("Provider rejected request.", null, (HttpStatusCode)status));
+        var postProcessor = new FakePostProcessor((raw, _) => raw);
+        var service = CreateService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            postProcessor, out var history, out _);
+
+        var result = await InvokeTranscribeAsync(service, CreateAudioFile(), "en", new AppSettings
+        {
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi },
+        });
+
+        GetResultBool(result, "Succeeded").Should().BeFalse();
+        GetResultString(result, "OutputText").Should().BeEmpty();
+        provider.CallCount.Should().Be(1);
+        postProcessor.CallCount.Should().Be(0);
+        (await history.ReadAllAsync()).Should().BeEmpty();
+    }
+
+    [Theory]
+    [InlineData(408)]
+    [InlineData(429)]
+    [InlineData(500)]
+    [InlineData(503)]
+    public async Task Transient_http_errors_should_retry_once_and_not_duplicate_history(int status)
+    {
+        var provider = new FakeProvider(ProviderType.OpenAi, "OpenAI", attempt => attempt == 1
+            ? throw new HttpRequestException("Temporary failure.", null, (HttpStatusCode)status)
+            : "Recovered.");
+        var service = CreateService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            new FakePostProcessor((raw, _) => raw), out var history, out _);
+
+        var result = await InvokeTranscribeAsync(service, CreateAudioFile(), "en", new AppSettings
+        {
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi },
+        });
+
+        GetResultString(result, "OutputText").Should().Be("Recovered.");
+        provider.CallCount.Should().Be(2);
+        (await history.ReadAllAsync()).Should().ContainSingle();
+        GetSuccessSounds(service).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Cancellation_during_provider_call_should_skip_cleanup_history_and_error_feedback()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var provider = new FakeProvider(ProviderType.OpenAi, "OpenAI", _ => "unused")
+        {
+            AsyncTranscribe = async cancellation =>
+            {
+                entered.SetResult();
+                await Task.Delay(Timeout.Infinite, cancellation);
+                return "unused";
+            },
+        };
+        var postProcessor = new FakePostProcessor((raw, _) => raw);
+        var service = CreateService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            postProcessor, out var history, out _);
+        using var cancellation = new CancellationTokenSource();
+        var pending = InvokeTranscribeAsync(service, CreateAudioFile(), "en", new AppSettings
+        {
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi },
+            PostProcessor = new PostProcessorSettings { Enabled = true },
+        }, cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        cancellation.Cancel();
+
+        await FluentActions.Awaiting(() => pending).Should().ThrowAsync<OperationCanceledException>();
+        provider.CallCount.Should().Be(1);
+        postProcessor.CallCount.Should().Be(0);
+        (await history.ReadAllAsync()).Should().BeEmpty();
+        GetSuccessSounds(service).Should().Be(0);
+        GetErrorSounds(service).Should().Be(0);
+        File.Exists(Path.Combine(_baseDirectory, "error.log")).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Cancellation_after_provider_returns_should_not_accept_late_results()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var provider = new FakeProvider(ProviderType.OpenAi, "OpenAI", _ =>
+        {
+            cancellation.Cancel();
+            return "late result";
+        });
+        var postProcessor = new FakePostProcessor((raw, _) => raw);
+        var service = CreateService(new Dictionary<ProviderType, ITranscriptionProvider> { [ProviderType.OpenAi] = provider },
+            postProcessor, out var history, out _);
+
+        await FluentActions.Awaiting(() => InvokeTranscribeAsync(service, CreateAudioFile(), "en", new AppSettings
+        {
+            Provider = new ProviderSettings { Type = ProviderType.OpenAi },
+            PostProcessor = new PostProcessorSettings { Enabled = true },
+        }, cancellation.Token)).Should().ThrowAsync<OperationCanceledException>();
+
+        postProcessor.CallCount.Should().Be(0);
+        (await history.ReadAllAsync()).Should().BeEmpty();
+        GetSuccessSounds(service).Should().Be(0);
+        GetErrorSounds(service).Should().Be(0);
+    }
 
     [Fact]
     public void Resolve_provider_should_select_provider_by_provider_type()
@@ -209,7 +365,8 @@ public sealed class TranscriptionServiceTests : IDisposable
         return new ServiceWithSoundCounters(service, soundCounters);
     }
 
-    private static async Task<object> InvokeTranscribeAsync(object service, string audioFilePath, string language, AppSettings settings)
+    private static async Task<object> InvokeTranscribeAsync(object service, string audioFilePath, string language, AppSettings settings,
+        CancellationToken cancellationToken = default)
     {
         var serviceInstance = service is ServiceWithSoundCounters wrapper ? wrapper.Service : service;
         var method = serviceInstance.GetType().GetMethod(
@@ -224,7 +381,7 @@ public sealed class TranscriptionServiceTests : IDisposable
             throw new XunitException("Expected TranscriptionService.TranscribeAsync(string, string, AppSettings, CancellationToken).");
         }
 
-        var task = method.Invoke(serviceInstance, [audioFilePath, language, settings, CancellationToken.None]);
+        var task = method.Invoke(serviceInstance, [audioFilePath, language, settings, cancellationToken]);
         task.Should().BeAssignableTo<Task>();
         await (Task)task!;
 
@@ -311,11 +468,13 @@ public sealed class TranscriptionServiceTests : IDisposable
 
         public List<string> Languages { get; } = [];
 
+        public Func<CancellationToken, Task<string>>? AsyncTranscribe { get; init; }
+
         public Task<string> TranscribeAsync(string audioFilePath, string language, CancellationToken cancellationToken)
         {
             Languages.Add(language);
             CallCount++;
-            return Task.FromResult(_onTranscribe(CallCount));
+            return AsyncTranscribe?.Invoke(cancellationToken) ?? Task.FromResult(_onTranscribe(CallCount));
         }
     }
 

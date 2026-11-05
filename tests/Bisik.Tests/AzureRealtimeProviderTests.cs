@@ -26,7 +26,7 @@ public sealed class AzureRealtimeProviderTests : IDisposable
             Type = ProviderType.AzureOpenAi,
             Endpoint = "https://example.openai.azure.com/",
             ApiKey = "azure-key",
-            DeploymentName = "gpt-realtime-whisper",
+            DeploymentName = "custom-transcription-deployment",
             ApiVersion = "2024-06-01",
         };
 
@@ -49,6 +49,47 @@ public sealed class AzureRealtimeProviderTests : IDisposable
         result.Should().Be("realtime ok");
         handler.RequestCount.Should().Be(1);
         proxyState.InvokeCount.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("gpt-realtime-whisper", false)]
+    [InlineData("custom-transcription-deployment", true)]
+    public async Task Realtime_deployment_should_skip_the_unsupported_multipart_endpoint(string deployment, bool forceRealtime)
+    {
+        using var handler = new StaticResponseHttpMessageHandler(HttpStatusCode.BadRequest, "unused");
+        using var client = new HttpClient(handler);
+        var provider = new AzureOpenAIProvider(client, new ProviderSettings
+        {
+            Endpoint = "https://example.openai.azure.com", ApiKey = "test-key",
+            DeploymentName = deployment, AzureRealtime = forceRealtime,
+        }, new StubRealtimeTranscriber());
+
+        (await provider.TranscribeAsync(CreateAudioFile(), "auto", CancellationToken.None)).Should().Be("direct realtime");
+        handler.RequestCount.Should().Be(0);
+    }
+
+    private sealed class StubRealtimeTranscriber : IAzureRealtimeTranscriber
+    {
+        public Task<string> TranscribeAsync(string audioFilePath, string language, ProviderSettings settings, CancellationToken cancellationToken) =>
+            Task.FromResult("direct realtime");
+    }
+
+    [Theory]
+    [InlineData("{\"error\":{\"code\":\"Unauthorized\",\"message\":\"secret-echo https://private-endpoint.example\"}}")]
+    [InlineData("<html>secret-echo https://private-endpoint.example</html>")]
+    [InlineData("null")]
+    public async Task Provider_errors_should_keep_http_status_without_exposing_raw_gateway_content(string response)
+    {
+        using var handler = new StaticResponseHttpMessageHandler(HttpStatusCode.Unauthorized, response);
+        using var client = new HttpClient(handler);
+        var provider = new AzureOpenAIProvider(client, new ProviderSettings
+        {
+            Endpoint = "https://example.openai.azure.com", ApiKey = "test-key", DeploymentName = "standard-transcription",
+        });
+        var action = () => provider.TranscribeAsync(CreateAudioFile(), "auto", CancellationToken.None);
+        var exception = await action.Should().ThrowAsync<HttpRequestException>();
+        exception.Which.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        exception.Which.ToString().Should().Contain("HTTP 401").And.NotContain("secret-echo").And.NotContain("private-endpoint");
     }
 
     public void Dispose()

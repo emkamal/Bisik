@@ -57,6 +57,7 @@ public sealed class Win32HotkeyRegistrar : IHotkeyRegistrar
 
 public sealed class HotkeyManager(IHotkeyRegistrar registrar, IntPtr windowHandle)
 {
+    private const uint NoRepeat = 0x4000;
     private static readonly Dictionary<string, HotkeyModifiers> ModifierTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Ctrl"] = HotkeyModifiers.Ctrl,
@@ -92,7 +93,7 @@ public sealed class HotkeyManager(IHotkeyRegistrar registrar, IntPtr windowHandl
         var registered = _registrar.RegisterHotKey(
             _windowHandle,
             id,
-            (uint)hotkey.Modifiers,
+            (uint)hotkey.Modifiers | NoRepeat,
             (uint)hotkey.Key);
 
         if (registered)
@@ -122,6 +123,17 @@ public sealed class HotkeyManager(IHotkeyRegistrar registrar, IntPtr windowHandl
         }
 
         _registeredIds.Clear();
+        ResetState();
+    }
+
+    public void ResetState(bool preserveVadListening = false)
+    {
+        _pushToTalkActive = false;
+        _toggleRecordingActive = false;
+        if (!preserveVadListening)
+        {
+            _vadListeningActive = false;
+        }
     }
 
     public HotkeyAction HandleKeyDown(TriggerMode triggerMode)
@@ -260,7 +272,12 @@ public sealed class HotkeyManager(IHotkeyRegistrar registrar, IntPtr windowHandl
             return Keys.Space;
         }
 
-        if (token.Length == 1 && char.IsLetterOrDigit(token[0]))
+        if (token.Length == 1 && token[0] is >= '0' and <= '9')
+        {
+            return Keys.D0 + (token[0] - '0');
+        }
+
+        if (token.Length == 1 && char.IsLetter(token[0]))
         {
             return Enum.Parse<Keys>(token.ToUpperInvariant(), ignoreCase: false);
         }
@@ -279,6 +296,7 @@ public sealed class HotkeyManager(IHotkeyRegistrar registrar, IntPtr windowHandl
         {
             Keys.Space => "Space",
             Keys.LWin or Keys.RWin => "Win",
+            >= Keys.D0 and <= Keys.D9 => ((int)key - (int)Keys.D0).ToString(),
             _ => key.ToString(),
         };
     }

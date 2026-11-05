@@ -2,47 +2,39 @@ using Bisik.Models;
 
 namespace Bisik.Core;
 
-public sealed class OutputHandler(
-    Action<string> autoTypeSink,
-    Action<string> clipboardSink,
-    Action<string> popupSink)
+public sealed class OutputHandler(WindowsTextOutput textOutput, Action<string> popupSink)
 {
-    private readonly Action<string> _autoTypeSink = autoTypeSink ??
-        throw new ArgumentNullException(nameof(autoTypeSink));
-    private readonly Action<string> _clipboardSink = clipboardSink ??
-        throw new ArgumentNullException(nameof(clipboardSink));
-    private readonly Action<string> _popupSink = popupSink ??
-        throw new ArgumentNullException(nameof(popupSink));
-
-    public Task DispatchAsync(
-        TranscriptionResult result,
-        OutputMode outputMode,
-        CancellationToken cancellationToken)
+    public async Task<OutputDispatchResult> DispatchAsync(TranscriptionResult result, OutputMode outputMode,
+        bool alwaysCopyToClipboard, DictationTarget? target, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(result);
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!result.Succeeded || string.IsNullOrWhiteSpace(result.OutputText))
         {
-            return Task.CompletedTask;
+            return new(OutputDisposition.Skipped);
         }
 
+        OutputDispatchResult outcome;
         switch (outputMode)
         {
             case OutputMode.AutoType:
             case OutputMode.RealtimeAutoType:
-                _autoTypeSink(result.OutputText);
+                outcome = await textOutput.InsertAsync(result.OutputText, target, alwaysCopyToClipboard, cancellationToken);
                 break;
-
             case OutputMode.Clipboard:
-                _clipboardSink(result.OutputText);
+                outcome = textOutput.Copy(result.OutputText);
                 break;
-
             case OutputMode.Popup:
-                _popupSink(result.OutputText);
-                break;
+                outcome = alwaysCopyToClipboard ? textOutput.Copy(result.OutputText) : new(OutputDisposition.NeedsReview);
+                popupSink(result.OutputText);
+                return outcome;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(outputMode));
         }
 
-        return Task.CompletedTask;
+        if (outcome.Disposition == OutputDisposition.NeedsReview)
+            popupSink(result.OutputText);
+        return outcome;
     }
 }

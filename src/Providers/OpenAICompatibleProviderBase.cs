@@ -47,13 +47,22 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
         request.Content = content;
         ApplyHeaders(request, headers);
 
-        using var response = await HttpClient.SendAsync(
-            request,
-            HttpCompletionOption.ResponseHeadersRead,
-            cancellationToken);
+        using var response = await SendRequestAsync(request, cancellationToken);
 
         await EnsureSuccessAsync(response, cancellationToken);
         return await ParseTextResponseAsync(response, cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendRequestAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await HttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw new HttpRequestException("Provider connection failed. Check the network and provider endpoint.", null, exception.StatusCode);
+        }
     }
 
     protected MultipartFormDataContent CreateMultipartContent(string audioFilePath, string? model, string language)
@@ -289,14 +298,23 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
         var body = response.Content is null
             ? string.Empty
             : await response.Content.ReadAsStringAsync(cancellationToken);
-        var detail = string.IsNullOrWhiteSpace(body)
-            ? response.ReasonPhrase ?? response.StatusCode.ToString()
-            : body;
+        var unsupportedAudioTranscriptions = false;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object &&
+                error.TryGetProperty("code", out var code) && code.ValueKind == JsonValueKind.String &&
+                code.GetString()?.Equals("OperationNotSupported", StringComparison.OrdinalIgnoreCase) == true &&
+                error.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.String)
+                unsupportedAudioTranscriptions = message.GetString()?.Contains("audioTranscriptions", StringComparison.OrdinalIgnoreCase) == true;
+        }
+        catch (JsonException)
+        {
+            // Gateways may return HTML/plain text. Never expose arbitrary response bodies to logs or tray UI.
+        }
 
-        throw new HttpRequestException(
-            $"Provider request failed with status {(int)response.StatusCode} ({response.StatusCode}): {detail}",
-            null,
-            response.StatusCode);
+        throw new ProviderRequestException(response.StatusCode, unsupportedAudioTranscriptions);
     }
 
     private static async Task<string> ParseTextResponseAsync(HttpResponseMessage response, CancellationToken cancellationToken)
@@ -317,4 +335,11 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
 
         throw new InvalidOperationException("Provider response did not contain a string 'text' field.");
     }
+}
+
+internal sealed class ProviderRequestException(HttpStatusCode statusCode, bool unsupportedAudioTranscriptions)
+    : HttpRequestException($"Provider request failed (HTTP {(int)statusCode}). Check provider settings and retry.", null, statusCode)
+{
+    // Preserve the Azure fallback signal without retaining potentially sensitive response text.
+    public bool UnsupportedAudioTranscriptions { get; } = unsupportedAudioTranscriptions;
 }

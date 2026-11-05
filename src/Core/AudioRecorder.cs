@@ -34,16 +34,24 @@ public sealed record RecordedAudio(
     AudioFormat Format,
     int SampleRate);
 
-public sealed class AudioLevelChangedEventArgs(double level) : EventArgs
+public sealed class AudioLevelChangedEventArgs(double level, int elapsedMilliseconds = 0) : EventArgs
 {
     public double Level { get; } = level;
+    public int ElapsedMilliseconds { get; } = elapsedMilliseconds;
+}
+
+public sealed class AudioRecordingFailedEventArgs(Exception exception) : EventArgs
+{
+    public Exception Exception { get; } = exception;
 }
 
 public sealed class AudioRecorder : IDisposable
 {
     private readonly string _defaultOutputDirectory;
-    private WaveInEvent? _waveIn;
-    private WaveInEvent? _monitorWaveIn;
+    private readonly Func<WaveFormat, int, IWaveIn> _captureFactory;
+    private readonly object _captureLock = new();
+    private IWaveIn? _waveIn;
+    private IWaveIn? _monitorWaveIn;
     private MemoryStream? _bufferStream;
     private WaveFileWriter? _waveWriter;
     private TaskCompletionSource<Exception?>? _recordingStopped;
@@ -51,15 +59,23 @@ public sealed class AudioRecorder : IDisposable
     private string? _pendingOutputPath;
     private WaveFormat? _captureFormat;
     private Action<double, int>? _monitorLevelCallback;
+    private readonly Queue<byte[]> _monitoredAudio = new();
+    private int _monitoredAudioBytes;
+    private byte[]? _pendingPreRoll;
+    private int _preRollSampleRate;
 
     public AudioRecorder()
         : this(settings: null, outputDirectory: null)
     {
     }
 
-    public AudioRecorder(AudioSettings? settings = null, string? outputDirectory = null)
+    public AudioRecorder(
+        AudioSettings? settings = null,
+        string? outputDirectory = null,
+        Func<WaveFormat, int, IWaveIn>? captureFactory = null)
     {
         _settings = settings ?? new AudioSettings();
+        _captureFactory = captureFactory ?? CreateCapture;
         _defaultOutputDirectory = string.IsNullOrWhiteSpace(outputDirectory)
             ? Path.Combine(Path.GetTempPath(), "Bisik", "recordings")
             : outputDirectory;
@@ -70,6 +86,9 @@ public sealed class AudioRecorder : IDisposable
     public AudioSettings Settings => _settings;
 
     public event EventHandler<AudioLevelChangedEventArgs>? AudioLevelChanged;
+
+    // Like the level/chunk events, this is raised on the capture thread; UI subscribers must marshal it.
+    public event EventHandler<AudioRecordingFailedEventArgs>? RecordingFailed;
 
     /// <summary>
     /// Fires on each <see cref="WaveInEvent.DataAvailable"/> callback with the raw PCM buffer,
@@ -103,6 +122,11 @@ public sealed class AudioRecorder : IDisposable
 
     public void StartRecording()
     {
+        if (_monitorWaveIn is not null)
+        {
+            throw new InvalidOperationException("Stop voice activity monitoring before recording.");
+        }
+
         if (!TryTransition(AudioRecorderSignal.Start))
         {
             throw new InvalidOperationException("Audio recorder is already active.");
@@ -114,27 +138,41 @@ public sealed class AudioRecorder : IDisposable
             _captureFormat = new WaveFormat(sampleRate, 16, 1);
             _bufferStream = new MemoryStream();
             _waveWriter = new WaveFileWriter(new NonClosingStream(_bufferStream), _captureFormat);
-            _pendingOutputPath = AudioRecorderLogic.BuildOutputFilePath(
+            byte[]? preRoll;
+            lock (_captureLock)
+            {
+                preRoll = _preRollSampleRate == sampleRate ? _pendingPreRoll : null;
+                _pendingPreRoll = null;
+            }
+            if (preRoll is not null)
+            {
+                _waveWriter.Write(preRoll, 0, preRoll.Length);
+                AudioChunkAvailable?.Invoke(this, new AudioChunkEventArgs(preRoll, preRoll.Length, sampleRate));
+            }
+            var timestampedPath = AudioRecorderLogic.BuildOutputFilePath(
                 _defaultOutputDirectory,
                 _settings.Format,
                 DateTimeOffset.UtcNow);
+            // Rapid retries must not overwrite a previous recording used by history playback.
+            _pendingOutputPath = Path.Combine(_defaultOutputDirectory,
+                $"{Path.GetFileNameWithoutExtension(timestampedPath)}-{Guid.NewGuid():N}{Path.GetExtension(timestampedPath)}");
             _recordingStopped = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-            _waveIn = new WaveInEvent
-            {
-                DeviceNumber = ResolveDeviceNumber(_settings.DeviceId),
-                WaveFormat = _captureFormat,
-                BufferMilliseconds = 100,
-                NumberOfBuffers = 3,
-            };
+            _waveIn = _captureFactory(_captureFormat, ResolveDeviceNumber(_settings.DeviceId));
             _waveIn.DataAvailable += HandleDataAvailable;
             _waveIn.RecordingStopped += HandleRecordingStopped;
             _waveIn.StartRecording();
         }
         catch
         {
-            CleanupCaptureResources();
-            State = AudioRecorderLogic.Transition(State, AudioRecorderSignal.Reset);
+            try
+            {
+                CleanupCaptureResources();
+            }
+            finally
+            {
+                State = RecordingState.Idle;
+            }
             throw;
         }
     }
@@ -153,31 +191,57 @@ public sealed class AudioRecorder : IDisposable
             throw new InvalidOperationException("Voice activity monitoring cannot start while recording is active.");
         }
 
-        var sampleRate = _settings.SampleRate > 0 ? _settings.SampleRate : 16000;
-        _monitorLevelCallback = onLevelSample;
-        _monitorWaveIn = new WaveInEvent
+        try
         {
-            DeviceNumber = ResolveDeviceNumber(_settings.DeviceId),
-            WaveFormat = new WaveFormat(sampleRate, 16, 1),
-            BufferMilliseconds = 100,
-            NumberOfBuffers = 3,
-        };
-        _monitorWaveIn.DataAvailable += HandleMonitorDataAvailable;
-        _monitorWaveIn.StartRecording();
+            var sampleRate = _settings.SampleRate > 0 ? _settings.SampleRate : 16000;
+            lock (_captureLock)
+            {
+                _monitoredAudio.Clear();
+                _monitoredAudioBytes = 0;
+                _pendingPreRoll = null;
+            }
+            _monitorLevelCallback = onLevelSample;
+            _monitorWaveIn = _captureFactory(new WaveFormat(sampleRate, 16, 1), ResolveDeviceNumber(_settings.DeviceId));
+            _monitorWaveIn.DataAvailable += HandleMonitorDataAvailable;
+            _monitorWaveIn.RecordingStopped += HandleMonitorRecordingStopped;
+            _monitorWaveIn.StartRecording();
+        }
+        catch
+        {
+            StopVoiceActivityMonitoring();
+            throw;
+        }
     }
 
-    public void StopVoiceActivityMonitoring()
+    public void StopVoiceActivityMonitoring(bool preserveAudio = false)
     {
-        if (_monitorWaveIn is null)
+        IWaveIn? monitor;
+        lock (_captureLock)
+        {
+            monitor = _monitorWaveIn;
+            // Preserve the speech that triggered VAD instead of dropping its first syllables.
+            _pendingPreRoll = preserveAudio ? _monitoredAudio.SelectMany(chunk => chunk).ToArray() : null;
+            _preRollSampleRate = monitor?.WaveFormat.SampleRate ?? 0;
+            _monitoredAudio.Clear();
+            _monitoredAudioBytes = 0;
+            _monitorWaveIn = null;
+        }
+        if (monitor is null)
         {
             return;
         }
 
-        _monitorWaveIn.DataAvailable -= HandleMonitorDataAvailable;
-        _monitorWaveIn.StopRecording();
-        _monitorWaveIn.Dispose();
-        _monitorWaveIn = null;
         _monitorLevelCallback = null;
+        monitor.DataAvailable -= HandleMonitorDataAvailable;
+        monitor.RecordingStopped -= HandleMonitorRecordingStopped;
+        try
+        {
+            monitor.StopRecording();
+        }
+        finally
+        {
+            monitor.Dispose();
+        }
     }
 
     public async Task<RecordedAudio> StopRecordingAsync(CancellationToken cancellationToken)
@@ -187,28 +251,32 @@ public sealed class AudioRecorder : IDisposable
             throw new InvalidOperationException("Audio recorder is not currently recording.");
         }
 
-        var waveIn = _waveIn ?? throw new InvalidOperationException("Audio recorder was not initialized.");
-        var stopped = _recordingStopped ?? throw new InvalidOperationException("Audio recorder stop state was not initialized.");
-
-        using var cancellationRegistration = cancellationToken.Register(() => stopped.TrySetCanceled(cancellationToken));
-        waveIn.StopRecording();
-
-        var error = await stopped.Task;
-        if (error is not null)
-        {
-            CleanupCaptureResources();
-            State = AudioRecorderLogic.Transition(State, AudioRecorderSignal.Reset);
-            throw error;
-        }
-
         try
         {
+            var waveIn = _waveIn ?? throw new InvalidOperationException("Audio recorder was not initialized.");
+            var stopped = _recordingStopped ?? throw new InvalidOperationException("Audio recorder stop state was not initialized.");
+            waveIn.StopRecording();
+
+            // NAudio emits its last DataAvailable buffers before RecordingStopped. Never finalize early.
+            var error = await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            if (error is not null)
+            {
+                throw new InvalidOperationException("Microphone capture failed.", error);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             return await FinalizeRecordingAsync(cancellationToken);
         }
         finally
         {
-            CleanupCaptureResources();
-            State = AudioRecorderLogic.Transition(State, AudioRecorderSignal.FinalizeStop);
+            try
+            {
+                CleanupCaptureResources();
+            }
+            finally
+            {
+                State = RecordingState.Idle;
+            }
         }
     }
 
@@ -220,11 +288,32 @@ public sealed class AudioRecorder : IDisposable
         return changed;
     }
 
+    public void AbortRecording()
+    {
+        _pendingPreRoll = null;
+        _recordingStopped?.TrySetCanceled();
+        try
+        {
+            CleanupCaptureResources();
+        }
+        finally
+        {
+            State = RecordingState.Idle;
+        }
+    }
+
     public void Dispose()
     {
-        StopVoiceActivityMonitoring();
-        CleanupCaptureResources();
-        GC.SuppressFinalize(this);
+        try
+        {
+            StopVoiceActivityMonitoring();
+        }
+        finally
+        {
+            CleanupCaptureResources();
+            State = RecordingState.Idle;
+            GC.SuppressFinalize(this);
+        }
     }
 
     private async Task<RecordedAudio> FinalizeRecordingAsync(CancellationToken cancellationToken)
@@ -241,13 +330,21 @@ public sealed class AudioRecorder : IDisposable
         var wavBytes = buffer.ToArray();
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
 
-        return _settings.Format switch
+        try
         {
-            AudioFormat.Wav => await WriteWavOutputAsync(outputPath, wavBytes, format.SampleRate, cancellationToken),
-            AudioFormat.Mp3 => await WriteMp3OutputAsync(outputPath, wavBytes, format.SampleRate, cancellationToken),
-            AudioFormat.Ogg => throw new NotSupportedException("Ogg recording is not supported with the current dependency set."),
-            _ => throw new InvalidOperationException($"Unsupported audio format '{_settings.Format}'."),
-        };
+            return _settings.Format switch
+            {
+                AudioFormat.Wav => await WriteWavOutputAsync(outputPath, wavBytes, format.SampleRate, cancellationToken),
+                AudioFormat.Mp3 => await WriteMp3OutputAsync(outputPath, wavBytes, format.SampleRate, cancellationToken),
+                AudioFormat.Ogg => throw new NotSupportedException("Ogg recording is not supported with the current dependency set."),
+                _ => throw new InvalidOperationException($"Unsupported audio format '{_settings.Format}'."),
+            };
+        }
+        catch
+        {
+            File.Delete(outputPath);
+            throw;
+        }
     }
 
     private async Task<RecordedAudio> WriteWavOutputAsync(
@@ -266,57 +363,94 @@ public sealed class AudioRecorder : IDisposable
         int sampleRate,
         CancellationToken cancellationToken)
     {
-        var tempWavPath = Path.ChangeExtension(outputPath, ".wav");
-        await File.WriteAllBytesAsync(tempWavPath, wavBytes, cancellationToken);
-
-        try
+        await Task.Run(() =>
         {
             MediaFoundationApi.Startup();
-            using var reader = new WaveFileReader(tempWavPath);
+            using var reader = new WaveFileReader(new MemoryStream(wavBytes));
             MediaFoundationEncoder.EncodeToMp3(reader, outputPath);
-            var mp3Bytes = await File.ReadAllBytesAsync(outputPath, cancellationToken);
-            return new RecordedAudio(outputPath, mp3Bytes, AudioFormat.Mp3, sampleRate);
-        }
-        finally
-        {
-            if (File.Exists(tempWavPath))
-            {
-                File.Delete(tempWavPath);
-            }
-        }
+        }, cancellationToken);
+        var mp3Bytes = await File.ReadAllBytesAsync(outputPath, cancellationToken);
+        return new RecordedAudio(outputPath, mp3Bytes, AudioFormat.Mp3, sampleRate);
     }
 
     private void HandleDataAvailable(object? sender, WaveInEventArgs args)
     {
-        _waveWriter?.Write(args.Buffer, 0, args.BytesRecorded);
-        _waveWriter?.Flush();
+        lock (_captureLock)
+        {
+            if (!ReferenceEquals(sender, _waveIn))
+            {
+                return;
+            }
+
+            _waveWriter?.Write(args.Buffer, 0, args.BytesRecorded);
+        }
         PublishAudioLevel(args.Buffer, args.BytesRecorded);
 
-        // Fire the chunk event for downstream consumers (e.g. realtime transcription)
+        // NAudio reuses its buffer after the callback; async consumers need owned bytes.
         var sampleRate = _captureFormat?.SampleRate ?? _settings.SampleRate;
-        AudioChunkAvailable?.Invoke(this, new AudioChunkEventArgs(args.Buffer, args.BytesRecorded, sampleRate));
+        if (AudioChunkAvailable is { } chunkHandler)
+        {
+            var chunk = args.Buffer.AsSpan(0, args.BytesRecorded).ToArray();
+            chunkHandler(this, new AudioChunkEventArgs(chunk, chunk.Length, sampleRate));
+        }
     }
 
     private void HandleRecordingStopped(object? sender, StoppedEventArgs args)
     {
+        if (!ReferenceEquals(sender, _waveIn))
+        {
+            return;
+        }
+
         _recordingStopped?.TrySetResult(args.Exception);
+        if (args.Exception is not null)
+        {
+            RecordingFailed?.Invoke(this, new AudioRecordingFailedEventArgs(args.Exception));
+        }
     }
 
     private void HandleMonitorDataAvailable(object? sender, WaveInEventArgs args)
     {
+        int bytesPerSecond;
+        lock (_captureLock)
+        {
+            if (!ReferenceEquals(sender, _monitorWaveIn)) return;
+            bytesPerSecond = _monitorWaveIn!.WaveFormat.AverageBytesPerSecond;
+            var limit = bytesPerSecond * Math.Clamp(_settings.VadMinSpeechMs + 200, 300, 2000) / 1000;
+            var count = Math.Min(args.BytesRecorded, limit);
+            _monitoredAudio.Enqueue(args.Buffer.AsSpan(args.BytesRecorded - count, count).ToArray());
+            _monitoredAudioBytes += count;
+            while (_monitoredAudioBytes > limit && _monitoredAudio.Count > 1)
+                _monitoredAudioBytes -= _monitoredAudio.Dequeue().Length;
+        }
+
         var samples = AudioRecorderLogic.ReadPcm16Samples(args.Buffer, args.BytesRecorded);
         var level = AudioRecorderLogic.CalculateLevel(samples);
-        _monitorLevelCallback?.Invoke(level, (_monitorWaveIn?.BufferMilliseconds).GetValueOrDefault(100));
+        _monitorLevelCallback?.Invoke(level, args.BytesRecorded * 1000 / bytesPerSecond);
+    }
+
+    private void HandleMonitorRecordingStopped(object? sender, StoppedEventArgs args)
+    {
+        if (ReferenceEquals(sender, _monitorWaveIn) && args.Exception is not null)
+        {
+            RecordingFailed?.Invoke(this, new AudioRecordingFailedEventArgs(args.Exception));
+        }
     }
 
     private void CleanupCaptureResources()
     {
-        if (_waveIn is not null)
+        IWaveIn? capture;
+        lock (_captureLock)
         {
-            _waveIn.DataAvailable -= HandleDataAvailable;
-            _waveIn.RecordingStopped -= HandleRecordingStopped;
-            _waveIn.Dispose();
+            capture = _waveIn;
             _waveIn = null;
+        }
+
+        if (capture is not null)
+        {
+            capture.DataAvailable -= HandleDataAvailable;
+            capture.RecordingStopped -= HandleRecordingStopped;
+            capture.Dispose();
         }
 
         _waveWriter?.Dispose();
@@ -329,6 +463,14 @@ public sealed class AudioRecorder : IDisposable
         _pendingOutputPath = null;
         _captureFormat = null;
     }
+
+    private static IWaveIn CreateCapture(WaveFormat format, int deviceNumber) => new WaveInEvent
+    {
+        DeviceNumber = deviceNumber,
+        WaveFormat = format,
+        BufferMilliseconds = 100,
+        NumberOfBuffers = 3,
+    };
 
     private static int ResolveDeviceNumber(string? deviceId)
     {
@@ -350,7 +492,8 @@ public sealed class AudioRecorder : IDisposable
 
         var samples = AudioRecorderLogic.ReadPcm16Samples(buffer, bytesRecorded);
         var level = AudioRecorderLogic.CalculateLevel(samples);
-        AudioLevelChanged?.Invoke(this, new AudioLevelChangedEventArgs(level));
+        var bytesPerSecond = _captureFormat?.AverageBytesPerSecond ?? Math.Max(1, _settings.SampleRate) * 2;
+        AudioLevelChanged?.Invoke(this, new AudioLevelChangedEventArgs(level, bytesRecorded * 1000 / bytesPerSecond));
     }
 
     private sealed class NonClosingStream(Stream innerStream) : Stream

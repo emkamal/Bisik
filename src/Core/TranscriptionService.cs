@@ -75,6 +75,9 @@ public sealed class TranscriptionService(
             var transcriptionStopwatch = Stopwatch.StartNew();
             var rawText = await TranscribeWithRetryAsync(provider, audioFilePath, language, cancellationToken);
             transcriptionStopwatch.Stop();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(rawText))
+                return new TranscriptionResult(true, string.Empty, string.Empty);
 
             // Phase 2: Post-processing
             long postProcessingDurationMs = 0;
@@ -105,7 +108,8 @@ public sealed class TranscriptionService(
                 AudioFilePath: audioFilePath,
                 TranscriptionDurationMs: transcriptionStopwatch.ElapsedMilliseconds,
                 PostProcessingDurationMs: postProcessingDurationMs);
-            await _historyLogger.AppendAsync(entry, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (settings.HistoryEnabled) await _historyLogger.AppendAsync(entry, cancellationToken);
             _playSuccess();
 
             return new TranscriptionResult(
@@ -114,6 +118,10 @@ public sealed class TranscriptionService(
                 RawText: rawText,
                 TranscriptionDurationMs: transcriptionStopwatch.ElapsedMilliseconds,
                 PostProcessingDurationMs: postProcessingDurationMs);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception exception)
         {
@@ -142,15 +150,17 @@ public sealed class TranscriptionService(
         {
             return await provider.TranscribeAsync(audioFilePath, language, cancellationToken);
         }
-        catch (Exception exception) when (IsRetryable(exception))
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested && IsRetryable(exception))
         {
+            await Task.Delay(300, cancellationToken);
             return await provider.TranscribeAsync(audioFilePath, language, cancellationToken);
         }
     }
 
     private static bool IsRetryable(Exception exception)
     {
-        return exception is TimeoutException or HttpRequestException;
+        return exception is TimeoutException || exception is HttpRequestException request &&
+            (request.StatusCode is null || (int)request.StatusCode >= 500 || (int)request.StatusCode is 408 or 429);
     }
 }
 

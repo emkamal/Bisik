@@ -14,6 +14,10 @@ public sealed class SettingsForm : Form
     private readonly SettingsManager _settingsManager;
     private readonly AudioRecorder? _audioRecorder;
     private readonly TranscriptionService? _transcriptionService;
+    private readonly Func<AppSettings, TranscriptionService>? _serviceFactory;
+    private AppSettings _loadedSettings = new();
+    private CancellationTokenSource? _connectionTestCancellation;
+    private CheckBox? _azureRealtimeCheckBox;
     private CheckBox? _launchAtStartupCheckBox;
     private ComboBox? _triggerModeComboBox;
     private TextBox? _hotkeyTextBox;
@@ -27,6 +31,7 @@ public sealed class SettingsForm : Form
     private NumericUpDown? _minSpeechInput;
     private ComboBox? _defaultLanguageComboBox;
     private TextBox? _quickLanguagesTextBox;
+    private CheckBox? _alwaysCopyToClipboardCheckBox;
     private CheckBox? _historyEnabledCheckBox;
     private ComboBox? _postProcessorProviderComboBox;
     private CheckBox? _postProcessorEnabledCheckBox;
@@ -47,11 +52,13 @@ public sealed class SettingsForm : Form
     {
     }
 
-    public SettingsForm(AudioRecorder? audioRecorder, TranscriptionService? transcriptionService, SettingsManager? settingsManager = null)
+    public SettingsForm(AudioRecorder? audioRecorder, TranscriptionService? transcriptionService, SettingsManager? settingsManager = null, Func<AppSettings, TranscriptionService>? serviceFactory = null)
     {
         _settingsManager = settingsManager ?? new SettingsManager();
         _audioRecorder = audioRecorder;
         _transcriptionService = transcriptionService;
+        _serviceFactory = serviceFactory;
+        FormClosed += (_, _) => _connectionTestCancellation?.Cancel();
         Text = "Bisik Settings";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(760, 560);
@@ -93,7 +100,7 @@ public sealed class SettingsForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 2,
-            RowCount = 6,
+            RowCount = 7,
             Padding = new Padding(0),
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
@@ -153,27 +160,12 @@ public sealed class SettingsForm : Form
         _outputModeComboBox = CreateEnumComboBox<OutputMode>(
             new Dictionary<OutputMode, string>
             {
-                [OutputMode.AutoType] = "Auto-type",
-                [OutputMode.RealtimeAutoType] = "Realtime Auto-Type",
+                [OutputMode.AutoType] = "Insert final text",
+                [OutputMode.RealtimeAutoType] = "Insert final text (legacy realtime setting)",
                 [OutputMode.Clipboard] = "Clipboard",
                 [OutputMode.Popup] = "Popup",
             },
             new AppSettings().OutputMode);
-        _outputModeComboBox.SelectedIndexChanged += (_, _) =>
-        {
-            var isRealtime = GetSelectedComboValue(_outputModeComboBox, new AppSettings().OutputMode) == OutputMode.RealtimeAutoType;
-            if (_postProcessorEnabledCheckBox is not null)
-            {
-                _postProcessorEnabledCheckBox.Enabled = !isRealtime;
-                if (isRealtime)
-                {
-                    _postProcessorEnabledCheckBox.Checked = false;
-                }
-            }
-
-            var hintLabel = (isRealtime ? "Post-processing is automatically disabled in realtime mode." : "");
-            // Find and update the recording indicator row hint
-        };
         layout.Controls.Add(CreateFieldLabel("Output mode"), 0, 3);
         layout.Controls.Add(_outputModeComboBox, 1, 3);
 
@@ -187,6 +179,33 @@ public sealed class SettingsForm : Form
             new AppSettings().IndicatorStyle);
         layout.Controls.Add(CreateFieldLabel("Recording indicator"), 0, 4);
         layout.Controls.Add(_indicatorStyleComboBox, 1, 4);
+
+        _alwaysCopyToClipboardCheckBox = new CheckBox
+        {
+            Text = "Always copy transcription result to clipboard",
+            AutoSize = true,
+            Checked = new AppSettings().AlwaysCopyToClipboard,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(3, 8, 3, 8),
+        };
+        var alwaysCopyHintLabel = new Label
+        {
+            Text = "Keep the result on the clipboard after insertion. When off, restore the previous clipboard if safe.",
+            AutoSize = true,
+            ForeColor = SystemColors.GrayText,
+            Margin = new Padding(12, 8, 3, 3),
+        };
+        var alwaysCopyPanel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+        };
+        alwaysCopyPanel.Controls.Add(_alwaysCopyToClipboardCheckBox);
+        alwaysCopyPanel.Controls.Add(alwaysCopyHintLabel);
+        layout.Controls.Add(CreateFieldLabel("Clipboard"), 0, 5);
+        layout.Controls.Add(alwaysCopyPanel, 1, 5);
 
         page.Controls.Add(layout);
         return page;
@@ -261,7 +280,7 @@ public sealed class SettingsForm : Form
             ("Base URL", string.Empty),
             ("API Key (optional)", string.Empty),
             ("Model (optional)", string.Empty),
-            ("Extra Headers", "key:value"));
+            ("Extra Headers", string.Empty));
 
         _providerPanels[ProviderType.AzureOpenAi] = azurePanel;
         _providerPanels[ProviderType.OpenAi] = openAiPanel;
@@ -278,15 +297,14 @@ public sealed class SettingsForm : Form
         root.Controls.Add(CreateFieldLabel("Provider fields"), 0, 1);
         root.Controls.Add(fieldsHost, 1, 1);
 
-        var providerHint = new Label
+        _azureRealtimeCheckBox = new CheckBox
         {
-            Text = "Provider-specific validation and live field binding are added in later steps.",
+            Text = "Use Azure realtime transcription (also detected from realtime deployment names)",
             AutoSize = true,
-            ForeColor = SystemColors.GrayText,
             Margin = new Padding(3, 8, 3, 3),
         };
-        root.Controls.Add(CreateFieldLabel("Status"), 0, 2);
-        root.Controls.Add(providerHint, 1, 2);
+        root.Controls.Add(CreateFieldLabel("Azure protocol"), 0, 2);
+        root.Controls.Add(_azureRealtimeCheckBox, 1, 2);
 
         _testConnectionButton = new Button
         {
@@ -687,7 +705,7 @@ public sealed class SettingsForm : Form
         providerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
         _postProcessorEndpointTextBox = new TextBox { Dock = DockStyle.Left, Width = 280, Text = settings.Provider.Endpoint };
-        _postProcessorApiKeyTextBox = new TextBox { Dock = DockStyle.Left, Width = 280, Text = settings.Provider.ApiKey };
+        _postProcessorApiKeyTextBox = new TextBox { Dock = DockStyle.Left, Width = 280, Text = settings.Provider.ApiKey, UseSystemPasswordChar = true };
         _postProcessorDeploymentNameTextBox = new TextBox { Dock = DockStyle.Left, Width = 280, Text = settings.Provider.DeploymentName };
         _postProcessorModelTextBox = new TextBox { Dock = DockStyle.Left, Width = 280, Text = settings.Model };
 
@@ -787,6 +805,9 @@ public sealed class SettingsForm : Form
                 Text = field.Value,
                 Dock = DockStyle.Left,
                 Width = 280,
+                UseSystemPasswordChar = field.Label.Contains("API Key", StringComparison.OrdinalIgnoreCase),
+                Multiline = field.Label == "Extra Headers",
+                Height = field.Label == "Extra Headers" ? 70 : 23,
             };
             fieldInputs[field.Label] = textBox;
 
@@ -902,85 +923,63 @@ public sealed class SettingsForm : Form
 
     private async void HandleTestConnectionClickAsync(object? sender, EventArgs eventArgs)
     {
-        if (_audioRecorder is null || _transcriptionService is null || _testConnectionButton is null)
-        {
-            return;
-        }
-
+        if (_transcriptionService is null || _testConnectionButton is null) return;
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        _connectionTestCancellation = cancellation;
         _testConnectionButton.Enabled = false;
-
+        _applyButton!.Enabled = _okButton!.Enabled = false;
+        RecordedAudio? audio = null;
         try
         {
-            _audioRecorder.UpdateSettings(new AudioSettings());
-            _audioRecorder.StartRecording();
-            await Task.Delay(TimeSpan.FromSeconds(3));
-            var recordedAudio = await _audioRecorder.StopRecordingAsync(CancellationToken.None);
             var settings = BuildProviderTestSettings();
-            var result = await _transcriptionService.TranscribeAsync(
-                recordedAudio.FilePath,
-                settings.DefaultLanguage,
-                settings,
-                CancellationToken.None);
-
-            ShowModelessStatus(
-                title: result.Succeeded ? "Test Connection Succeeded" : "Test Connection Failed",
-                message: result.Succeeded ? result.OutputText : result.ErrorMessage);
+            // A separate recorder and fresh provider use the fields being tested, even before Apply.
+            using var recorder = new AudioRecorder(settings.Audio);
+            recorder.StartRecording();
+            _testConnectionButton.Text = "Recording: speak for 3 seconds...";
+            await Task.Delay(TimeSpan.FromSeconds(3), cancellation.Token);
+            audio = await recorder.StopRecordingAsync(cancellation.Token);
+            _testConnectionButton.Text = "Transcribing...";
+            var service = _serviceFactory?.Invoke(settings) ?? _transcriptionService;
+            var result = await service.TranscribeAsync(audio.FilePath, settings.DefaultLanguage, settings, cancellation.Token);
+            if (!IsDisposed) ShowModelessStatus(result.Succeeded ? "Test Connection Succeeded" : "Test Connection Failed",
+                result.Succeeded ? (string.IsNullOrWhiteSpace(result.OutputText) ? "No speech recognized." : result.OutputText) : result.ErrorMessage);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!IsDisposed) ShowModelessStatus("Test Connection", "Cancelled or timed out.");
         }
         catch (Exception exception)
         {
-            ShowModelessStatus("Test Connection Failed", exception.Message);
+            new ErrorLogger().Log(exception);
+            if (!IsDisposed) ShowModelessStatus("Test Connection Failed", exception.Message);
         }
         finally
         {
-            _testConnectionButton.Enabled = true;
+            _connectionTestCancellation = null;
+            if (audio is not null)
+            {
+                try { File.Delete(audio.FilePath); }
+                catch (Exception exception) { new ErrorLogger().Log(exception); }
+            }
+            if (!IsDisposed)
+            {
+                _testConnectionButton.Text = "Test Connection";
+                _testConnectionButton.Enabled = true;
+                _applyButton!.Enabled = _okButton!.Enabled = true;
+            }
         }
     }
 
     private AppSettings BuildProviderTestSettings()
     {
-        var selectedProvider = (_providerSelectorComboBox?.SelectedItem as ComboBoxItem<ProviderType>)?.Value
-            ?? ProviderType.AzureOpenAi;
-
-        var provider = new ProviderSettings
-        {
-            Type = selectedProvider,
-        };
-
-        if (_providerFieldInputs.TryGetValue(selectedProvider, out var fields))
-        {
-            fields.TryGetValue("Endpoint URL", out var endpointTextBox);
-            fields.TryGetValue("Base URL", out var baseUrlTextBox);
-            fields.TryGetValue("API Key", out var apiKeyTextBox);
-            fields.TryGetValue("API Key (optional)", out var optionalApiKeyTextBox);
-            fields.TryGetValue("Deployment Name", out var deploymentTextBox);
-            fields.TryGetValue("API Version", out var apiVersionTextBox);
-            fields.TryGetValue("Model", out var modelTextBox);
-            fields.TryGetValue("Model (optional)", out var optionalModelTextBox);
-
-            provider = provider with
-            {
-                Endpoint = endpointTextBox?.Text ?? baseUrlTextBox?.Text ?? string.Empty,
-                ApiKey = apiKeyTextBox?.Text ?? optionalApiKeyTextBox?.Text ?? string.Empty,
-                DeploymentName = deploymentTextBox?.Text ?? string.Empty,
-                ApiVersion = apiVersionTextBox?.Text ?? "2024-06-01",
-                Model = modelTextBox?.Text ?? optionalModelTextBox?.Text,
-                ExtraHeaders = BuildAzureProviderExtraHeaders(fields),
-            };
-        }
-
-        return new AppSettings
-        {
-            DefaultLanguage = "auto",
-            Provider = provider,
-            PostProcessor = new PostProcessorSettings
-            {
-                Enabled = false,
-            },
-        };
+        var settings = BuildSettingsFromForm();
+        return settings with { HistoryEnabled = false, PostProcessor = settings.PostProcessor with { Enabled = false } };
     }
 
     private void LoadSettingsIntoForm(AppSettings settings)
     {
+        _loadedSettings = settings;
+        if (_azureRealtimeCheckBox is not null) _azureRealtimeCheckBox.Checked = settings.Provider.AzureRealtime;
         if (_launchAtStartupCheckBox is not null)
         {
             _launchAtStartupCheckBox.Checked = settings.LaunchAtStartup;
@@ -1028,6 +1027,11 @@ public sealed class SettingsForm : Form
             _quickLanguagesTextBox.Text = string.Join(Environment.NewLine, settings.QuickLanguages);
         }
 
+        if (_alwaysCopyToClipboardCheckBox is not null)
+        {
+            _alwaysCopyToClipboardCheckBox.Checked = settings.AlwaysCopyToClipboard;
+        }
+
         if (_historyEnabledCheckBox is not null)
         {
             _historyEnabledCheckBox.Checked = settings.HistoryEnabled;
@@ -1056,20 +1060,19 @@ public sealed class SettingsForm : Form
         var providerType = GetSelectedComboValue(_providerSelectorComboBox, defaults.Provider.Type);
         var provider = BuildProviderSettings(providerType);
         var postProcessorProviderType = GetSelectedComboValue(_postProcessorProviderComboBox, defaults.PostProcessor.Provider.Type);
-        var postProcessorProvider = new ProviderSettings
+        var postProcessorProvider = _loadedSettings.PostProcessor.Provider with
         {
             Type = postProcessorProviderType,
             Endpoint = _postProcessorEndpointTextBox?.Text ?? string.Empty,
             ApiKey = _postProcessorApiKeyTextBox?.Text ?? string.Empty,
             DeploymentName = _postProcessorDeploymentNameTextBox?.Text ?? string.Empty,
-            ApiVersion = "2024-06-01",
             Model = _postProcessorModelTextBox?.Text ?? string.Empty,
         };
 
         var quickLanguages = (_quickLanguagesTextBox?.Text ?? string.Empty)
             .Split([Environment.NewLine, "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-        return new AppSettings
+        return _loadedSettings with
         {
             LaunchAtStartup = _launchAtStartupCheckBox?.Checked ?? defaults.LaunchAtStartup,
             TriggerMode = GetSelectedComboValue(_triggerModeComboBox, defaults.TriggerMode),
@@ -1078,6 +1081,7 @@ public sealed class SettingsForm : Form
             IndicatorStyle = GetSelectedComboValue(_indicatorStyleComboBox, defaults.IndicatorStyle),
             DefaultLanguage = GetSelectedComboValue(_defaultLanguageComboBox, defaults.DefaultLanguage),
             QuickLanguages = quickLanguages.Length > 0 ? quickLanguages : defaults.QuickLanguages,
+            AlwaysCopyToClipboard = _alwaysCopyToClipboardCheckBox?.Checked ?? defaults.AlwaysCopyToClipboard,
             HistoryEnabled = _historyEnabledCheckBox?.Checked ?? defaults.HistoryEnabled,
             Provider = provider,
             Audio = new AudioSettings
@@ -1088,7 +1092,7 @@ public sealed class SettingsForm : Form
                 VadSilenceThreshold = (double?)_silenceThresholdInput?.Value ?? defaults.Audio.VadSilenceThreshold,
                 VadMinSpeechMs = (int?)_minSpeechInput?.Value ?? defaults.Audio.VadMinSpeechMs,
             },
-            PostProcessor = new PostProcessorSettings
+            PostProcessor = _loadedSettings.PostProcessor with
             {
                 Enabled = _postProcessorEnabledCheckBox?.Checked ?? defaults.PostProcessor.Enabled,
                 Provider = postProcessorProvider,
@@ -1100,22 +1104,30 @@ public sealed class SettingsForm : Form
         };
     }
 
-    private void SaveWithoutClosing()
-    {
-        var settings = BuildSettingsFromForm();
-        _settingsManager.Save(settings);
-        LoadSettingsIntoForm(_settingsManager.Load());
-        SettingsApplied?.Invoke(settings);
-    }
+    private void SaveWithoutClosing() => SaveSettings(close: false);
 
-    private void SaveAndClose()
+    private void SaveAndClose() => SaveSettings(close: true);
+
+    private void SaveSettings(bool close)
     {
-        var settings = BuildSettingsFromForm();
-        _settingsManager.Save(settings);
-        LoadSettingsIntoForm(_settingsManager.Load());
-        SettingsApplied?.Invoke(settings);
-        DialogResult = DialogResult.OK;
-        Close();
+        try
+        {
+            var settings = BuildSettingsFromForm();
+            _ = HotkeyManager.ParseHotkey(settings.Hotkey);
+            SettingsApplied?.Invoke(settings);
+            _settingsManager.Save(settings);
+            LoadSettingsIntoForm(_settingsManager.Load());
+            if (close)
+            {
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+        }
+        catch (Exception exception)
+        {
+            new ErrorLogger().Log(exception);
+            ShowModelessStatus("Settings not applied", exception.Message);
+        }
     }
 
     private void ApplyProviderFields(ProviderSettings provider, ProviderType providerType)
@@ -1133,6 +1145,8 @@ public sealed class SettingsForm : Form
         SetTextBox(fields, "API Version", provider.ApiVersion);
         SetTextBox(fields, "Model", provider.Model ?? string.Empty);
         SetTextBox(fields, "Model (optional)", provider.Model ?? string.Empty);
+        SetTextBox(fields, "Extra Headers", string.Join(Environment.NewLine,
+            (provider.ExtraHeaders ?? []).Select(header => $"{header.Key}:{header.Value}")));
         SetTextBox(fields, "Realtime Calls Endpoint (optional)", GetExtraHeaderValue(provider, "Bisik-Realtime-Calls-Endpoint"));
     }
 
@@ -1146,10 +1160,9 @@ public sealed class SettingsForm : Form
 
     private ProviderSettings BuildProviderSettings(ProviderType providerType, string endpointLabel = "Endpoint URL")
     {
-        var provider = new ProviderSettings
-        {
-            Type = providerType,
-        };
+        var provider = _loadedSettings.Provider.Type == providerType
+            ? _loadedSettings.Provider
+            : new ProviderSettings { Type = providerType };
 
         if (_providerFieldInputs.TryGetValue(providerType, out var fields))
         {
@@ -1160,7 +1173,8 @@ public sealed class SettingsForm : Form
                 DeploymentName = GetFieldText(fields, "Deployment Name"),
                 ApiVersion = GetFieldText(fields, "API Version", "2024-06-01"),
                 Model = GetFieldText(fields, "Model", GetFieldText(fields, "Model (optional)")),
-                ExtraHeaders = BuildAzureProviderExtraHeaders(fields),
+                AzureRealtime = providerType == ProviderType.AzureOpenAi && (_azureRealtimeCheckBox?.Checked ?? false),
+                ExtraHeaders = BuildProviderExtraHeaders(provider, fields),
             };
         }
 
@@ -1199,18 +1213,27 @@ public sealed class SettingsForm : Form
             : fallback ?? string.Empty;
     }
 
-    private static Dictionary<string, string>? BuildAzureProviderExtraHeaders(Dictionary<string, TextBox> fields)
+    private static Dictionary<string, string>? BuildProviderExtraHeaders(ProviderSettings provider, Dictionary<string, TextBox> fields)
     {
-        var realtimeCallsEndpoint = GetFieldText(fields, "Realtime Calls Endpoint (optional)");
-        if (string.IsNullOrWhiteSpace(realtimeCallsEndpoint))
+        var headers = new Dictionary<string, string>(provider.ExtraHeaders ?? [], StringComparer.OrdinalIgnoreCase);
+        if (provider.Type == ProviderType.CustomEndpoint)
         {
-            return null;
+            headers.Clear();
+            foreach (var line in GetFieldText(fields, "Extra Headers").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+            {
+                var separator = line.IndexOf(':');
+                if (separator <= 0) throw new InvalidOperationException("Extra headers must use one Name:Value per line.");
+                headers[line[..separator].Trim()] = line[(separator + 1)..].Trim();
+            }
         }
-
-        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        if (provider.Type == ProviderType.AzureOpenAi)
         {
-            ["Bisik-Realtime-Calls-Endpoint"] = realtimeCallsEndpoint,
-        };
+            var endpoint = GetFieldText(fields, "Realtime Calls Endpoint (optional)");
+            if (provider.PersistedUndecryptableHeaderCiphertexts?.ContainsKey("bisikrealtimecallsendpoint") != true)
+                headers.Remove("Bisik-Realtime-Calls-Endpoint");
+            if (!string.IsNullOrWhiteSpace(endpoint)) headers["Bisik-Realtime-Calls-Endpoint"] = endpoint.Trim();
+        }
+        return headers.Count > 0 ? headers : null;
     }
 
     private static string GetExtraHeaderValue(ProviderSettings provider, string headerName)

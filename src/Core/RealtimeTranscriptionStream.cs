@@ -2,42 +2,63 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using Bisik.Models;
-using NAudio.MediaFoundation;
-using NAudio.Wave;
+using Bisik.Providers;
 
 namespace Bisik.Core;
 
-/// <summary>
-/// Realtime streaming transcription using the OpenAI/Azure Realtime API WebSocket protocol.
-/// Runs a continuous background receive loop so partial (delta) results are dispatched
-/// as they arrive, even before CommitAndFinalizeAsync is called.
-/// </summary>
+/// <summary>A single transcription session. Sends are serialized; final results include every committed item.</summary>
 public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
 {
-    private const int MaxChunkBytes = 32 * 1024;
-    private const string RealtimeCallsEndpointHeaderName = "Bisik-Realtime-Calls-Endpoint";
-    private const int CommitTimeoutSeconds = 30;
-
+    private const int MinimumCommitBytes = 4800; // 100 ms of PCM16 mono at 24 kHz.
     private readonly HttpClient _httpClient;
-    private readonly Func<ClientWebSocket> _webSocketFactory;
-    private ClientWebSocket? _socket;
-    private readonly StringBuilder _accumulatedDelta = new();
-    private string _deploymentName = string.Empty;
-    private string _targetLanguage = string.Empty;
+    private readonly Func<Uri, string, CancellationToken, Task<WebSocket>> _connect;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly object _stateLock = new();
+    private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<string> _final = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Dictionary<string, TranscriptItem> _items = new(StringComparer.Ordinal);
+    private readonly List<string> _committedItems = [];
+    private readonly HashSet<string> _eventIds = new(StringComparer.Ordinal);
+    private readonly Pcm16Upsampler _upsampler = new();
+    private CancellationTokenSource? _lifetime;
+    private WebSocket? _socket;
+    private Task? _receiveTask;
+    private int _pendingCommits;
+    private int _bufferedBytes;
     private bool _started;
+    private bool _finalizing;
     private bool _disposed;
-    private bool _finalCommitted;
-    private readonly object _eventLock = new();
-
-    // Background receive infrastructure
-    private Task? _receiveLoopTask;
-    private CancellationTokenSource? _receiveLoopCts;
-    private readonly TaskCompletionSource<string?> _finalTranscriptTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _completionRaised;
+    private Exception? _failure;
 
     public RealtimeTranscriptionStream(HttpClient httpClient, Func<ClientWebSocket>? webSocketFactory = null)
+        : this(httpClient, async (uri, token, ct) =>
+        {
+            var socket = webSocketFactory?.Invoke() ?? new ClientWebSocket();
+            socket.Options.SetRequestHeader("Authorization", $"Bearer {token}");
+            try
+            {
+                await socket.ConnectAsync(uri, ct).ConfigureAwait(false);
+                return socket;
+            }
+            catch (WebSocketException)
+            {
+                socket.Dispose();
+                throw new WebSocketException("Azure realtime WebSocket connection failed. Check the network and realtime endpoint.");
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        }) { }
+
+    // A transport seam lets protocol tests exercise the real receive/send state machine.
+    public RealtimeTranscriptionStream(HttpClient httpClient,
+        Func<Uri, string, CancellationToken, Task<WebSocket>> connect)
     {
         _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
-        _webSocketFactory = webSocketFactory ?? (() => new ClientWebSocket());
+        _connect = connect ?? throw new ArgumentNullException(nameof(connect));
     }
 
     public event EventHandler<PartialTranscriptEventArgs>? PartialTranscriptAvailable;
@@ -47,595 +68,312 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
     public async Task StartAsync(AppSettings settings, string language, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(settings);
-        ThrowIfDisposed();
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_lifetime is not null)
+            throw new InvalidOperationException("Create a new realtime stream for each recording.");
 
-        if (_started)
+        _lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        try
         {
-            throw new InvalidOperationException("Realtime transcription stream is already started.");
+            var token = await AzureRealtimeProtocol.CreateClientSecretAsync(_httpClient, settings.Provider, timeout.Token).ConfigureAwait(false);
+            _socket = await _connect(AzureRealtimeProtocol.BuildRealtimeUri(settings.Provider), token, timeout.Token).ConfigureAwait(false);
+            _receiveTask = ReceiveLoopAsync(_lifetime.Token);
+            await SendAsync(AzureRealtimeProtocol.SessionUpdate(settings.Provider.DeploymentName, language), timeout.Token).ConfigureAwait(false);
+            await _ready.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+            _started = true;
         }
-
-        _deploymentName = settings.Provider.DeploymentName;
-        _targetLanguage = language;
-
-        if (string.IsNullOrWhiteSpace(settings.Provider.Endpoint))
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new InvalidOperationException("Realtime transcription requires an endpoint URL.");
+            _lifetime.Cancel();
+            throw new TimeoutException("Azure realtime connection or session setup timed out after 30 seconds.");
         }
-
-        if (string.IsNullOrWhiteSpace(settings.Provider.ApiKey))
+        catch
         {
-            throw new InvalidOperationException("Realtime transcription requires an API key.");
+            _lifetime.Cancel();
+            throw;
         }
-
-        if (string.IsNullOrWhiteSpace(_deploymentName))
-        {
-            throw new InvalidOperationException("Realtime transcription requires a deployment name.");
-        }
-
-        var token = await CreateClientSecretAsync(settings, ct);
-        _socket = _webSocketFactory();
-        _socket.Options.SetRequestHeader("Authorization", $"Bearer {token}");
-
-        var requestUri = BuildRealtimeUri(settings);
-        await _socket.ConnectAsync(requestUri, ct);
-
-        await SendEventAsync(_socket, BuildSessionUpdatePayload(_deploymentName, _targetLanguage), ct);
-
-        // Start the background receive loop to process incoming events
-        _receiveLoopCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _receiveLoopTask = ReceiveLoopAsync(_socket, _receiveLoopCts.Token);
-
-        _started = true;
-        _finalCommitted = false;
     }
 
-    public async Task PushAudioChunkAsync(byte[] pcmData, int bytesRecorded, CancellationToken ct)
+    public Task PushAudioChunkAsync(byte[] pcmData, int bytesRecorded, CancellationToken ct) =>
+        PushAudioAsync(pcmData, bytesRecorded, resample: true, ct);
+
+    internal Task PushPcm24KhzAsync(byte[] pcmData, int bytesRecorded, CancellationToken ct) =>
+        PushAudioAsync(pcmData, bytesRecorded, resample: false, ct);
+
+    private async Task PushAudioAsync(byte[] pcmData, int bytesRecorded, bool resample, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(pcmData);
-        ThrowIfDisposed();
-        EnsureStarted();
-
-        var actualLength = Math.Min(bytesRecorded, pcmData.Length);
-        if (actualLength <= 0)
+        if (bytesRecorded < 0 || bytesRecorded > pcmData.Length || bytesRecorded % 2 != 0)
+            throw new ArgumentOutOfRangeException(nameof(bytesRecorded), "PCM16 chunks must contain complete samples.");
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            return;
+            EnsureAvailable();
+            if (_finalizing)
+                throw new InvalidOperationException("Audio cannot be appended after finalization starts.");
+            var bytes = resample ? _upsampler.Convert(pcmData.AsSpan(0, bytesRecorded)) : pcmData[..bytesRecorded];
+            await AppendAsync(bytes, ct).ConfigureAwait(false);
         }
+        finally { _sendLock.Release(); }
+    }
 
-        // Resample to 24 kHz (Azure Realtime expects 24 kHz PCM 16-bit mono)
-        var resampled = ResampleTo24Khz(pcmData, actualLength);
-        foreach (var chunk in ChunkAudio(resampled, MaxChunkBytes))
+    public async Task CommitIntermediateSegmentAsync(CancellationToken ct)
+    {
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            await SendEventAsync(_socket!, new
-            {
-                type = "input_audio_buffer.append",
-                audio = Convert.ToBase64String(chunk),
-            }, ct);
+            EnsureAvailable();
+            if (!_finalizing && _bufferedBytes >= MinimumCommitBytes)
+                await CommitAsync(ct).ConfigureAwait(false);
         }
+        finally { _sendLock.Release(); }
     }
 
     public async Task<string> CommitAndFinalizeAsync(CancellationToken ct)
     {
-        ThrowIfDisposed();
-        EnsureStarted();
-
-        if (!_finalCommitted)
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            await SendEventAsync(_socket!, new
+            EnsureAvailable();
+            if (!_finalizing)
             {
-                type = "input_audio_buffer.commit",
-            }, ct);
-            _finalCommitted = true;
+                // Flush the last resampling fraction instead of dropping the last input sample.
+                await AppendAsync(_upsampler.Flush(), ct).ConfigureAwait(false);
+                if (_bufferedBytes > 0)
+                {
+                    if (_bufferedBytes < MinimumCommitBytes)
+                        await AppendAsync(new byte[MinimumCommitBytes - _bufferedBytes], ct).ConfigureAwait(false);
+                    await CommitAsync(ct).ConfigureAwait(false);
+                }
+                lock (_stateLock)
+                {
+                    _finalizing = true;
+                    TryFinish();
+                }
+            }
         }
-
-        // Wait for the final transcript from the receive loop, or timeout
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(CommitTimeoutSeconds));
+        finally { _sendLock.Release(); }
 
         try
         {
-            var transcript = await _finalTranscriptTcs.Task.WaitAsync(cts.Token);
-            return transcript ?? string.Empty;
+            var text = await _final.Task.WaitAsync(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+            _lifetime!.Cancel();
+            if (_receiveTask is not null)
+                await _receiveTask.ConfigureAwait(false);
+            if (Interlocked.Exchange(ref _completionRaised, 1) == 0)
+                TranscriptionCompleted?.Invoke(this, new RealtimeCompletedEventArgs(text));
+            return text;
         }
         catch (TimeoutException)
         {
-            // If no completed event arrived, return whatever we have
-            return _accumulatedDelta.ToString();
+            _lifetime!.Cancel();
+            throw new TimeoutException("Azure realtime transcription did not finalize every audio segment within 30 seconds. No partial text was inserted.");
+        }
+        catch (OperationCanceledException)
+        {
+            _lifetime!.Cancel();
+            throw;
         }
     }
 
-    /// <summary>
-    /// Periodically commits the current audio buffer to get partial transcription results
-    /// while recording is still active. Call this from the owning context's timer.
-    /// </summary>
-    public async Task CommitIntermediateSegmentAsync(CancellationToken ct)
+    private async Task AppendAsync(byte[] bytes, CancellationToken ct)
     {
-        ThrowIfDisposed();
-        EnsureStarted();
-
-        if (_finalCommitted)
+        for (var offset = 0; offset < bytes.Length; offset += 32 * 1024)
         {
-            return;
+            var count = Math.Min(32 * 1024, bytes.Length - offset);
+            await SendAsync(new { type = "input_audio_buffer.append", audio = Convert.ToBase64String(bytes, offset, count) }, ct).ConfigureAwait(false);
+            _bufferedBytes += count;
         }
+    }
 
-        await SendEventAsync(_socket!, new
+    private async Task CommitAsync(CancellationToken ct)
+    {
+        lock (_stateLock) _pendingCommits++;
+        await SendAsync(new { type = "input_audio_buffer.commit" }, ct).ConfigureAwait(false);
+        _bufferedBytes = 0;
+    }
+
+    private async Task SendAsync(object payload, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime!.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
+        try
         {
-            type = "input_audio_buffer.commit",
-        }, ct);
+            await _socket!.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && !_lifetime.IsCancellationRequested)
+        {
+            _lifetime.Cancel();
+            throw new TimeoutException("Azure realtime audio upload timed out.");
+        }
+    }
+
+    private async Task ReceiveLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            var buffer = new byte[8192];
+            while (!ct.IsCancellationRequested)
+            {
+                using var message = new MemoryStream();
+                WebSocketReceiveResult result;
+                do
+                {
+                    result = await _socket!.ReceiveAsync(new ArraySegment<byte>(buffer), ct).ConfigureAwait(false);
+                    if (result.MessageType == WebSocketMessageType.Close)
+                        throw new IOException("Azure realtime connection closed before transcription finished.");
+                    if (result.MessageType != WebSocketMessageType.Text || message.Length + result.Count > 1024 * 1024)
+                        throw new InvalidDataException("Azure realtime returned an invalid or oversized message.");
+                    message.Write(buffer, 0, result.Count);
+                } while (!result.EndOfMessage);
+
+                using var document = JsonDocument.Parse(message.ToArray());
+                HandleEvent(document.RootElement);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _ready.TrySetCanceled(ct);
+            _final.TrySetCanceled(ct);
+        }
+        catch (Exception) when (ct.IsCancellationRequested)
+        {
+            // Aborting a Windows WebSocket during disposal may surface as a socket error instead of cancellation.
+            _ready.TrySetCanceled(ct);
+            _final.TrySetCanceled(ct);
+        }
+        catch (Exception exception)
+        {
+            lock (_stateLock) _failure = exception;
+            _ready.TrySetException(exception);
+            _final.TrySetException(exception);
+            TranscriptionFailed?.Invoke(this, new RealtimeFailedEventArgs(exception.Message));
+        }
+    }
+
+    private void HandleEvent(JsonElement root)
+    {
+        lock (_stateLock)
+        {
+            var eventId = Text(root, "event_id");
+            if (eventId.Length > 0 && !_eventIds.Add(eventId)) return;
+            var type = Text(root, "type");
+            if (type == "session.updated") { _ready.TrySetResult(); return; }
+            if (type is "error" or "conversation.item.input_audio_transcription.failed")
+                throw new InvalidOperationException(AzureRealtimeProtocol.DescribeError(root));
+            if (type is not ("input_audio_buffer.committed" or "conversation.item.input_audio_transcription.delta" or
+                "conversation.item.input_audio_transcription.completed")) return;
+
+            var id = Text(root, "item_id");
+            if (id.Length == 0) throw new InvalidDataException("Azure realtime transcript event omitted its item identifier.");
+            if (!_items.TryGetValue(id, out var item)) _items[id] = item = new TranscriptItem();
+            switch (type)
+            {
+                case "input_audio_buffer.committed":
+                    if (!_committedItems.Contains(id))
+                    {
+                        _committedItems.Add(id);
+                        if (_pendingCommits > 0) _pendingCommits--;
+                    }
+                    break;
+                case "conversation.item.input_audio_transcription.delta":
+                    if (!item.Completed)
+                    {
+                        var delta = Text(root, "delta");
+                        item.Partial.Append(delta);
+                        PartialTranscriptAvailable?.Invoke(this, new PartialTranscriptEventArgs(delta, JoinTranscript()));
+                    }
+                    break;
+                case "conversation.item.input_audio_transcription.completed":
+                    // Completed text is authoritative, including an empty transcript for silence.
+                    item.Text = Text(root, "transcript");
+                    item.Completed = true;
+                    break;
+            }
+            TryFinish();
+        }
+    }
+
+    private void TryFinish()
+    {
+        if (_finalizing && _pendingCommits == 0 && _committedItems.All(id => _items[id].Completed))
+            _final.TrySetResult(JoinTranscript());
+    }
+
+    private string JoinTranscript() => string.Join(" ", _committedItems
+        .Select(id => _items[id].Completed ? _items[id].Text : _items[id].Partial.ToString())
+        .Where(text => !string.IsNullOrWhiteSpace(text)).Select(text => text.Trim()));
+
+    private static string Text(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString()! : string.Empty;
+
+    private void EnsureAvailable()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_started) throw new InvalidOperationException("Realtime transcription has not started.");
+        lock (_stateLock)
+            if (_failure is not null) throw new InvalidOperationException("Azure realtime session failed.", _failure);
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
+        if (_disposed) return;
         _disposed = true;
-        _started = false;
+        _lifetime?.Cancel();
+        _socket?.Abort();
+        if (_receiveTask is not null) await _receiveTask.ConfigureAwait(false);
+        _socket?.Dispose();
+        _lifetime?.Dispose();
+        _final.TrySetCanceled();
+    }
 
-        // Stop the receive loop
-        _receiveLoopCts?.Cancel();
-        _receiveLoopCts?.Dispose();
+    private sealed class TranscriptItem
+    {
+        public StringBuilder Partial { get; } = new();
+        public string Text { get; set; } = string.Empty;
+        public bool Completed { get; set; }
+    }
+}
 
-        if (_socket is not null)
+// Keep fractional position between chunks: restarting a resampler at every mic callback adds seams.
+internal sealed class Pcm16Upsampler
+{
+    private long _samples;
+    private long _nextPosition;
+    private short _previous;
+
+    public byte[] Convert(ReadOnlySpan<byte> input)
+    {
+        using var output = new MemoryStream();
+        using var writer = new BinaryWriter(output);
+        for (var offset = 0; offset < input.Length; offset += 2)
         {
-            try
+            var sample = System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(input[offset..]);
+            var position = _samples * 3;
+            while (_nextPosition <= position)
             {
-                if (_socket.State == WebSocketState.Open)
-                {
-                    await _socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Session ended", CancellationToken.None);
-                }
+                var value = _samples == 0 ? sample : _previous + (sample - _previous) * (_nextPosition - position + 3) / 3;
+                writer.Write((short)value);
+                _nextPosition += 2;
             }
-            catch
-            {
-                // Best-effort close.
-            }
-            finally
-            {
-                _socket.Dispose();
-                _socket = null;
-            }
+            _previous = sample;
+            _samples++;
         }
-
-        // Try to set the TCS if it wasn't already set (avoids hanging waiters)
-        _finalTranscriptTcs.TrySetResult(_accumulatedDelta.ToString());
+        return output.ToArray();
     }
 
-    /// <summary>
-    /// Background loop that continuously reads WebSocket messages and dispatches
-    /// delta/completed/failed events. Runs from StartAsync until DisposeAsync or error.
-    /// </summary>
-    private async Task ReceiveLoopAsync(ClientWebSocket socket, CancellationToken ct)
+    public byte[] Flush()
     {
-        try
+        using var output = new MemoryStream();
+        using var writer = new BinaryWriter(output);
+        while (_nextPosition < _samples * 3)
         {
-            while (!ct.IsCancellationRequested && socket.State == WebSocketState.Open)
-            {
-                var message = await ReceiveTextMessageAsync(socket, ct);
-                using var document = JsonDocument.Parse(message);
-
-                if (!document.RootElement.TryGetProperty("type", out var typeElement) ||
-                    typeElement.ValueKind != JsonValueKind.String)
-                {
-                    continue;
-                }
-
-                var eventType = typeElement.GetString();
-                switch (eventType)
-                {
-                    case "conversation.item.input_audio_transcription.delta":
-                        if (document.RootElement.TryGetProperty("delta", out var deltaElement) &&
-                            deltaElement.ValueKind == JsonValueKind.String)
-                        {
-                            var delta = deltaElement.GetString() ?? string.Empty;
-                            _accumulatedDelta.Append(delta);
-                            var accumulated = _accumulatedDelta.ToString();
-                            lock (_eventLock)
-                            {
-                                PartialTranscriptAvailable?.Invoke(this, new PartialTranscriptEventArgs(delta, accumulated));
-                            }
-                        }
-                        break;
-
-                    case "conversation.item.input_audio_transcription.completed":
-                        var transcript = string.Empty;
-                        if (document.RootElement.TryGetProperty("transcript", out var transcriptElement) &&
-                            transcriptElement.ValueKind == JsonValueKind.String &&
-                            !string.IsNullOrWhiteSpace(transcriptElement.GetString()))
-                        {
-                            transcript = transcriptElement.GetString() ?? string.Empty;
-                        }
-                        else
-                        {
-                            transcript = _accumulatedDelta.ToString();
-                        }
-
-                        lock (_eventLock)
-                        {
-                            TranscriptionCompleted?.Invoke(this, new RealtimeCompletedEventArgs(transcript));
-                        }
-
-                        // If this is the final commit (committed flag set), signal the waiting task.
-                        // For intermediate commits, we don't set the TCS — just fire the event.
-                        if (_finalCommitted)
-                        {
-                            _finalTranscriptTcs.TrySetResult(transcript);
-                            return; // Exit the receive loop
-                        }
-
-                        // Clear accumulated delta for the next segment after an intermediate commit
-                        _accumulatedDelta.Clear();
-                        break;
-
-                    case "conversation.item.input_audio_transcription.failed":
-                        var errorMsg = ExtractErrorMessage(document.RootElement) ?? "Realtime transcription failed.";
-                        lock (_eventLock)
-                        {
-                            TranscriptionFailed?.Invoke(this, new RealtimeFailedEventArgs(errorMsg));
-                        }
-                        if (_finalCommitted)
-                        {
-                            _finalTranscriptTcs.TrySetException(new InvalidOperationException(errorMsg));
-                            return;
-                        }
-                        break;
-
-                    case "error":
-                        var errMsg = ExtractErrorMessage(document.RootElement) ?? "Realtime session returned an error.";
-                        lock (_eventLock)
-                        {
-                            TranscriptionFailed?.Invoke(this, new RealtimeFailedEventArgs(errMsg));
-                        }
-                        if (_finalCommitted)
-                        {
-                            _finalTranscriptTcs.TrySetException(new InvalidOperationException(errMsg));
-                            return;
-                        }
-                        break;
-                }
-            }
+            writer.Write(_previous);
+            _nextPosition += 2;
         }
-        catch (OperationCanceledException)
-        {
-            // Normal cancellation during shutdown
-        }
-        catch (WebSocketException exception)
-        {
-            lock (_eventLock)
-            {
-                TranscriptionFailed?.Invoke(this, new RealtimeFailedEventArgs(exception.Message));
-            }
-            _finalTranscriptTcs.TrySetException(exception);
-        }
-        catch (Exception exception)
-        {
-            lock (_eventLock)
-            {
-                TranscriptionFailed?.Invoke(this, new RealtimeFailedEventArgs(exception.Message));
-            }
-            _finalTranscriptTcs.TrySetException(exception);
-        }
-    }
-
-    private async Task<string> CreateClientSecretAsync(AppSettings settings, CancellationToken ct)
-    {
-        var requestUri = AppendPath(
-            RequireAbsoluteUri(settings.Provider.Endpoint, nameof(settings.Provider.Endpoint)),
-            "openai/v1/realtime/client_secrets");
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
-        {
-            Content = new StringContent(
-                JsonSerializer.Serialize(new
-                {
-                    session = new
-                    {
-                        type = "transcription",
-                        audio = new
-                        {
-                            input = new
-                            {
-                                transcription = new
-                                {
-                                    model = _deploymentName,
-                                },
-                            },
-                        },
-                    },
-                }),
-                Encoding.UTF8,
-                "application/json"),
-        };
-
-        request.Headers.TryAddWithoutValidation("api-key", settings.Provider.ApiKey);
-        ApplySecretRequestHeaders(request, settings.Provider.ExtraHeaders);
-
-        using var response = await _httpClient.SendAsync(request, ct);
-        var responseBody = await response.Content.ReadAsStringAsync(ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException(
-                $"Realtime session request failed with status {(int)response.StatusCode} ({response.StatusCode}): {responseBody}",
-                null,
-                response.StatusCode);
-        }
-
-        using var document = JsonDocument.Parse(responseBody);
-        if (document.RootElement.TryGetProperty("value", out var tokenElement) &&
-            tokenElement.ValueKind == JsonValueKind.String &&
-            !string.IsNullOrWhiteSpace(tokenElement.GetString()))
-        {
-            return tokenElement.GetString()!;
-        }
-
-        if (document.RootElement.TryGetProperty("client_secret", out var clientSecretElement) &&
-            clientSecretElement.ValueKind == JsonValueKind.Object &&
-            clientSecretElement.TryGetProperty("value", out var nestedTokenElement) &&
-            nestedTokenElement.ValueKind == JsonValueKind.String &&
-            !string.IsNullOrWhiteSpace(nestedTokenElement.GetString()))
-        {
-            return nestedTokenElement.GetString()!;
-        }
-
-        throw new InvalidOperationException("Realtime session response did not include an ephemeral client secret.");
-    }
-
-    private static object BuildSessionUpdatePayload(string deploymentName, string language)
-    {
-        var transcription = new Dictionary<string, object?>
-        {
-            ["model"] = deploymentName,
-            ["language"] = string.IsNullOrWhiteSpace(language) || string.Equals(language, "auto", StringComparison.OrdinalIgnoreCase)
-                ? "en"
-                : language,
-            ["delay"] = "low",
-        };
-
-        return new
-        {
-            type = "session.update",
-            session = new
-            {
-                type = "transcription",
-                audio = new
-                {
-                    input = new
-                    {
-                        transcription,
-                    },
-                },
-            },
-        };
-    }
-
-    private static byte[] ResampleTo24Khz(byte[] pcm16Buffer, int validBytes)
-    {
-        var actualBuffer = new byte[validBytes];
-        Buffer.BlockCopy(pcm16Buffer, 0, actualBuffer, 0, validBytes);
-
-        try
-        {
-            using var rawStream = new MemoryStream();
-            WriteWavHeader(rawStream, 16000, 16, 1, validBytes);
-            rawStream.Write(actualBuffer, 0, validBytes);
-            rawStream.Position = 0;
-
-            MediaFoundationApi.Startup();
-            using var reader = new WaveFileReader(rawStream);
-            var targetFormat = new WaveFormat(24000, 16, 1);
-
-            if (reader.WaveFormat.SampleRate == 24000 &&
-                reader.WaveFormat.BitsPerSample == 16 &&
-                reader.WaveFormat.Channels == 1)
-            {
-                return actualBuffer;
-            }
-
-            using var resampler = new MediaFoundationResampler(reader, targetFormat)
-            {
-                ResamplerQuality = 60,
-            };
-
-            using var outputStream = new MemoryStream();
-            var buffer = new byte[8192];
-            while (true)
-            {
-                var bytesRead = resampler.Read(buffer, 0, buffer.Length);
-                if (bytesRead <= 0)
-                {
-                    break;
-                }
-
-                outputStream.Write(buffer, 0, bytesRead);
-            }
-
-            return outputStream.ToArray();
-        }
-        catch
-        {
-            return actualBuffer;
-        }
-    }
-
-    private static void WriteWavHeader(Stream stream, int sampleRate, short bitsPerSample, short channels, int dataSize)
-    {
-        var writer = new BinaryWriter(stream);
-        var blockAlign = (short)(channels * (bitsPerSample / 8));
-        var byteRate = sampleRate * blockAlign;
-
-        writer.Write(Encoding.ASCII.GetBytes("RIFF"));
-        writer.Write(36 + dataSize);
-        writer.Write(Encoding.ASCII.GetBytes("WAVE"));
-        writer.Write(Encoding.ASCII.GetBytes("fmt "));
-        writer.Write(16);
-        writer.Write((short)1);
-        writer.Write(channels);
-        writer.Write(sampleRate);
-        writer.Write(byteRate);
-        writer.Write(blockAlign);
-        writer.Write(bitsPerSample);
-        writer.Write(Encoding.ASCII.GetBytes("data"));
-        writer.Write(dataSize);
-        writer.Flush();
-    }
-
-    private static IEnumerable<byte[]> ChunkAudio(byte[] bytes, int chunkSize)
-    {
-        for (var offset = 0; offset < bytes.Length; offset += chunkSize)
-        {
-            var length = Math.Min(chunkSize, bytes.Length - offset);
-            var chunk = new byte[length];
-            Buffer.BlockCopy(bytes, offset, chunk, 0, length);
-            yield return chunk;
-        }
-    }
-
-    private static async Task SendEventAsync(ClientWebSocket socket, object payload, CancellationToken ct)
-    {
-        var json = JsonSerializer.Serialize(payload);
-        var bytes = Encoding.UTF8.GetBytes(json);
-        await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, ct);
-    }
-
-    private static async Task<string> ReceiveTextMessageAsync(ClientWebSocket socket, CancellationToken ct)
-    {
-        var buffer = new byte[8192];
-        using var stream = new MemoryStream();
-
-        while (true)
-        {
-            var result = await socket.ReceiveAsync(buffer, ct);
-            if (result.MessageType == WebSocketMessageType.Close)
-            {
-                throw new InvalidOperationException(
-                    $"Realtime connection closed: {socket.CloseStatus} {socket.CloseStatusDescription}".Trim());
-            }
-
-            stream.Write(buffer, 0, result.Count);
-            if (result.EndOfMessage)
-            {
-                break;
-            }
-        }
-
-        return Encoding.UTF8.GetString(stream.ToArray());
-    }
-
-    private static string? ExtractErrorMessage(JsonElement root)
-    {
-        if (root.TryGetProperty("error", out var errorElement))
-        {
-            if (errorElement.ValueKind == JsonValueKind.String)
-                return errorElement.GetString();
-            if (errorElement.ValueKind == JsonValueKind.Object &&
-                errorElement.TryGetProperty("message", out var messageElement) &&
-                messageElement.ValueKind == JsonValueKind.String)
-                return messageElement.GetString();
-        }
-        if (root.TryGetProperty("message", out var directMessageElement) &&
-            directMessageElement.ValueKind == JsonValueKind.String)
-            return directMessageElement.GetString();
-        return null;
-    }
-
-    private static void ApplySecretRequestHeaders(HttpRequestMessage request, Dictionary<string, string>? headers)
-    {
-        if (headers is null) return;
-        foreach (var header in headers)
-        {
-            if (string.Equals(header.Key, "api-key", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(header.Key, "Content-Type", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(header.Key, RealtimeCallsEndpointHeaderName, StringComparison.OrdinalIgnoreCase))
-                continue;
-            request.Headers.TryAddWithoutValidation(header.Key, header.Value);
-        }
-    }
-
-    private static Uri BuildRealtimeUri(AppSettings settings)
-    {
-        var endpoint = ResolveRealtimeEndpoint(settings);
-        var baseUri = RequireAbsoluteUri(endpoint, nameof(endpoint));
-        var realtimeUri = AppendPath(baseUri, "openai/v1/realtime");
-        var builder = new UriBuilder(realtimeUri)
-        {
-            Scheme = realtimeUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) ? "wss" : "ws",
-            Port = realtimeUri.IsDefaultPort ? -1 : realtimeUri.Port,
-            Query = "intent=transcription",
-        };
-        return builder.Uri;
-    }
-
-    private static string ResolveRealtimeEndpoint(AppSettings settings)
-    {
-        if (settings.Provider.ExtraHeaders is not null &&
-            settings.Provider.ExtraHeaders.TryGetValue(RealtimeCallsEndpointHeaderName, out var explicitEndpoint) &&
-            !string.IsNullOrWhiteSpace(explicitEndpoint))
-            return explicitEndpoint;
-        return TryDeriveDirectAzureOpenAiEndpoint(settings.Provider.Endpoint, out var derivedEndpoint)
-            ? derivedEndpoint
-            : settings.Provider.Endpoint;
-    }
-
-    private static bool TryDeriveDirectAzureOpenAiEndpoint(string endpoint, out string derivedEndpoint)
-    {
-        derivedEndpoint = string.Empty;
-        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)) return false;
-        if (!uri.Host.EndsWith(".azure-api.net", StringComparison.OrdinalIgnoreCase)) return false;
-        var gatewayIndex = uri.Host.IndexOf("-gateway.", StringComparison.OrdinalIgnoreCase);
-        if (gatewayIndex <= 0) return false;
-        var resourceName = uri.Host[..gatewayIndex];
-        if (string.IsNullOrWhiteSpace(resourceName)) return false;
-        derivedEndpoint = $"https://{resourceName}.openai.azure.com";
-        return true;
-    }
-
-    private static Uri RequireAbsoluteUri(string endpoint, string parameterName)
-    {
-        if (!Uri.TryCreate(endpoint?.Trim(), UriKind.Absolute, out var uri))
-            throw new InvalidOperationException($"{parameterName} must be an absolute URL.");
-        return uri;
-    }
-
-    private static Uri AppendPath(Uri baseUri, string path)
-    {
-        var normalizedPath = path.Trim('/');
-        if (string.IsNullOrWhiteSpace(normalizedPath)) return baseUri;
-        var builder = new UriBuilder(baseUri);
-        var existingPath = builder.Path ?? "/";
-        if (!PathEndsWith(existingPath, normalizedPath))
-            builder.Path = CombinePath(existingPath, normalizedPath);
-        return builder.Uri;
-    }
-
-    private static string CombinePath(string existingPath, string pathToAppend)
-    {
-        var trimmedBase = string.IsNullOrWhiteSpace(existingPath) ? string.Empty : existingPath.TrimEnd('/');
-        if (trimmedBase.Length == 0 || trimmedBase == "/") return $"/{pathToAppend}";
-        return $"{trimmedBase}/{pathToAppend}";
-    }
-
-    private static bool PathEndsWith(string existingPath, string appendedPath)
-    {
-        var existingSegments = existingPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var appendedSegments = appendedPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (appendedSegments.Length == 0) return true;
-        if (existingSegments.Length < appendedSegments.Length) return false;
-        for (var index = 1; index <= appendedSegments.Length; index++)
-            if (!string.Equals(existingSegments[^index], appendedSegments[^index], StringComparison.OrdinalIgnoreCase))
-                return false;
-        return true;
-    }
-
-    private void EnsureStarted()
-    {
-        if (!_started)
-            throw new InvalidOperationException("Realtime transcription stream has not been started. Call StartAsync first.");
-    }
-
-    private void ThrowIfDisposed()
-    {
-        if (_disposed)
-            throw new ObjectDisposedException(nameof(RealtimeTranscriptionStream));
+        return output.ToArray();
     }
 }

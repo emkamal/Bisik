@@ -20,6 +20,7 @@ public sealed class SettingsManager
         "secret",
         "password",
         "credential",
+        "endpoint",
     };
     private static readonly HashSet<string> PublicHeaderNames = new(StringComparer.Ordinal)
     {
@@ -121,7 +122,8 @@ public sealed class SettingsManager
         }
 
         var backupPath = Path.Combine(Path.GetDirectoryName(_settingsPath)!, CorruptSettingsBackupFileName);
-        File.Copy(_settingsPath, backupPath, overwrite: true);
+        // Malformed legacy JSON can still contain readable credentials; keep the recovery copy private too.
+        File.WriteAllText(backupPath, ProtectSecretValue(File.ReadAllText(_settingsPath)), Encoding.UTF8);
     }
 
     private static AppSettings NormalizeSettings(AppSettings? settings)
@@ -230,53 +232,55 @@ public sealed class SettingsManager
 
     private static ProviderRecoveryResult UnprotectProvider(ProviderSettings provider)
     {
-        var apiKeyRecovery = UnprotectApiKey(provider.ApiKey);
+        var apiKeyRecovery = UnprotectSecretValue(provider.ApiKey);
+        var endpointRecovery = UnprotectSecretValue(provider.Endpoint);
         var headersRecovery = UnprotectExtraHeaders(provider.ExtraHeaders);
 
         return new ProviderRecoveryResult(
             InMemoryProvider: provider with
             {
                 ApiKey = apiKeyRecovery.InMemoryValue,
+                Endpoint = endpointRecovery.InMemoryValue,
                 ExtraHeaders = headersRecovery.InMemoryHeaders,
                 PersistedUndecryptableApiKeyCiphertext = apiKeyRecovery.PersistedUndecryptableCiphertext,
+                PersistedUndecryptableEndpointCiphertext = endpointRecovery.PersistedUndecryptableCiphertext,
                 PersistedUndecryptableHeaderCiphertexts = headersRecovery.PersistedUndecryptableHeaderCiphertexts,
             },
             PersistedProvider: provider with
             {
                 ApiKey = apiKeyRecovery.PersistedValue,
+                Endpoint = endpointRecovery.PersistedValue,
                 ExtraHeaders = headersRecovery.PersistedHeaders,
                 PersistedUndecryptableApiKeyCiphertext = null,
+                PersistedUndecryptableEndpointCiphertext = null,
                 PersistedUndecryptableHeaderCiphertexts = null,
             },
-            HadHealedSecrets: apiKeyRecovery.ShouldHealPersistedValue || headersRecovery.HadHealedSecrets);
-    }
-
-    private static SecretValueRecoveryResult UnprotectApiKey(string apiKey)
-    {
-        return UnprotectSecretValue(apiKey);
+            HadHealedSecrets: apiKeyRecovery.ShouldHealPersistedValue || endpointRecovery.ShouldHealPersistedValue || headersRecovery.HadHealedSecrets);
     }
 
     private static ProviderSettings ProtectProvider(ProviderSettings provider)
     {
         return provider with
         {
-            ApiKey = ProtectApiKey(provider.ApiKey, provider.PersistedUndecryptableApiKeyCiphertext),
+            ApiKey = ProtectSecretValue(provider.ApiKey, provider.PersistedUndecryptableApiKeyCiphertext),
+            Endpoint = ProtectSecretValue(provider.Endpoint, provider.PersistedUndecryptableEndpointCiphertext),
             ExtraHeaders = ProtectExtraHeaders(provider.ExtraHeaders, provider.PersistedUndecryptableHeaderCiphertexts),
             PersistedUndecryptableApiKeyCiphertext = null,
+            PersistedUndecryptableEndpointCiphertext = null,
             PersistedUndecryptableHeaderCiphertexts = null,
         };
     }
 
-    private static string ProtectApiKey(string apiKey, string? preservedUndecryptableCiphertext = null)
+    private static string ProtectSecretValue(string value, string? preservedUndecryptableCiphertext = null)
     {
-        if (string.IsNullOrEmpty(apiKey) || apiKey.StartsWith(DpapiPrefix, StringComparison.Ordinal))
+        if (string.IsNullOrEmpty(value) || value.StartsWith(DpapiPrefix, StringComparison.Ordinal))
         {
-            return string.IsNullOrEmpty(apiKey)
-                ? preservedUndecryptableCiphertext ?? apiKey
-                : apiKey;
+            return string.IsNullOrEmpty(value)
+                ? preservedUndecryptableCiphertext ?? value
+                : value;
         }
 
-        var secretBytes = Encoding.UTF8.GetBytes(apiKey);
+        var secretBytes = Encoding.UTF8.GetBytes(value);
         var protectedBytes = ProtectedData.Protect(secretBytes, optionalEntropy: null, DataProtectionScope.CurrentUser);
         return $"{DpapiPrefix}{Convert.ToBase64String(protectedBytes)}";
     }
@@ -285,7 +289,8 @@ public sealed class SettingsManager
     {
         if (string.IsNullOrEmpty(value) || !value.StartsWith(DpapiPrefix, StringComparison.Ordinal))
         {
-            return new SecretValueRecoveryResult(InMemoryValue: value, PersistedValue: value, ShouldHealPersistedValue: false);
+            // Older settings stored endpoints (and sometimes credentials) in plaintext. Migrate on load.
+            return new SecretValueRecoveryResult(InMemoryValue: value, PersistedValue: value, ShouldHealPersistedValue: !string.IsNullOrEmpty(value));
         }
 
         try
@@ -323,7 +328,7 @@ public sealed class SettingsManager
         foreach (var header in headers)
         {
             protectedHeaders[header.Key] = IsSensitiveHeaderName(header.Key)
-                ? ProtectApiKey(
+                ? ProtectSecretValue(
                     header.Value,
                     TryGetPreservedUndecryptableCiphertext(preservedUndecryptableCiphertexts, header.Key, out var ciphertext)
                         ? ciphertext
@@ -395,8 +400,13 @@ public sealed class SettingsManager
         out string ciphertext)
     {
         ciphertext = string.Empty;
-        return persistedUndecryptableCiphertexts is not null
-            && persistedUndecryptableCiphertexts.TryGetValue(CanonicalizeHeaderName(headerName), out ciphertext);
+        if (persistedUndecryptableCiphertexts?.TryGetValue(CanonicalizeHeaderName(headerName), out var preserved) == true)
+        {
+            ciphertext = preserved;
+            return true;
+        }
+
+        return false;
     }
 
     private static string CanonicalizeHeaderName(string headerName)

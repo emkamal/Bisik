@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Security.Cryptography;
+using System.Text;
 using Bisik.Core;
 using Bisik.Models;
 using FluentAssertions;
@@ -9,6 +11,103 @@ namespace Bisik.Tests;
 public sealed class SettingsManagerTests : IDisposable
 {
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.SettingsManagerTests", Guid.NewGuid().ToString("N"));
+
+    [Fact]
+    public void Save_should_encrypt_both_provider_endpoints_and_keep_runtime_values_usable()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        var settings = new AppSettings
+        {
+            Provider = new ProviderSettings { Endpoint = "https://dictation.example.test/private" },
+            PostProcessor = new PostProcessorSettings
+            {
+                Provider = new ProviderSettings { Endpoint = "https://cleanup.example.test/private" },
+            },
+        };
+
+        manager.Save(settings);
+
+        var json = File.ReadAllText(Path.Combine(_baseDirectory, "settings.json"));
+        json.Should().NotContain(settings.Provider.Endpoint).And.NotContain(settings.PostProcessor.Provider.Endpoint);
+        var persisted = ReadPersistedSettingsJson();
+        persisted["provider"]!["endpoint"]!.GetValue<string>().Should().StartWith("dpapi:v1:");
+        persisted["postProcessor"]!["provider"]!["endpoint"]!.GetValue<string>().Should().StartWith("dpapi:v1:");
+        manager.Load().Should().BeEquivalentTo(settings);
+    }
+
+    [Fact]
+    public void Load_should_migrate_legacy_plaintext_secrets_without_changing_the_runtime_configuration()
+    {
+        Directory.CreateDirectory(_baseDirectory);
+        File.WriteAllText(Path.Combine(_baseDirectory, "settings.json"), """
+            {"provider":{"endpoint":"https://legacy.example.test","apiKey":"legacy-key",
+            "extraHeaders":{"Ocp-Apim-Subscription-Key":"legacy-header"}}}
+            """);
+        var manager = new SettingsManager(_baseDirectory);
+
+        var loaded = manager.Load();
+
+        loaded.Provider.Endpoint.Should().Be("https://legacy.example.test");
+        loaded.Provider.ApiKey.Should().Be("legacy-key");
+        loaded.Provider.ExtraHeaders!["Ocp-Apim-Subscription-Key"].Should().Be("legacy-header");
+        var json = File.ReadAllText(Path.Combine(_baseDirectory, "settings.json"));
+        json.Should().NotContain("https://legacy.example.test").And.NotContain("legacy-key").And.NotContain("legacy-header");
+        manager.Load().Should().BeEquivalentTo(loaded);
+    }
+
+    [Fact]
+    public void Undecryptable_endpoint_should_survive_an_unrelated_save_until_explicitly_cleared()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        manager.Save(new AppSettings());
+        var ciphertext = $"dpapi:v1:{Convert.ToBase64String([2, 3, 5, 7])}";
+        CorruptPersistedValue(ciphertext, "provider", "endpoint");
+
+        var loaded = manager.Load();
+        loaded.Provider.Endpoint.Should().BeEmpty();
+        manager.Save(loaded with { DefaultLanguage = "id" });
+        ReadPersistedSettingsJson()["provider"]!["endpoint"]!.GetValue<string>().Should().Be(ciphertext);
+
+        manager.Save(loaded with { Provider = loaded.Provider.ClearEndpoint() });
+        ReadPersistedSettingsJson()["provider"]!["endpoint"]!.GetValue<string>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Malformed_endpoint_ciphertext_should_be_cleared_without_losing_other_settings()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        manager.Save(new AppSettings { DefaultLanguage = "id", Provider = new ProviderSettings { ApiKey = "valid-key" } });
+        CorruptPersistedValue("dpapi:v1:invalid-base64", "provider", "endpoint");
+
+        var loaded = manager.Load();
+
+        loaded.Provider.Endpoint.Should().BeEmpty();
+        loaded.Provider.ApiKey.Should().Be("valid-key");
+        loaded.DefaultLanguage.Should().Be("id");
+        ReadPersistedSettingsJson()["provider"]!["endpoint"]!.GetValue<string>().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Azure_realtime_calls_endpoint_header_should_be_encrypted()
+    {
+        var manager = new SettingsManager(_baseDirectory);
+        var settings = new AppSettings
+        {
+            Provider = new ProviderSettings
+            {
+                ExtraHeaders = new Dictionary<string, string>
+                {
+                    ["Bisik-Realtime-Calls-Endpoint"] = "https://private.example.test/openai/v1/realtime/calls",
+                },
+            },
+        };
+
+        manager.Save(settings);
+
+        ReadPersistedSettingsJson()["provider"]!["extraHeaders"]!["Bisik-Realtime-Calls-Endpoint"]!
+            .GetValue<string>().Should().StartWith("dpapi:v1:");
+        manager.Load().Should().BeEquivalentTo(settings);
+    }
 
     [Fact]
     public void Load_should_create_default_settings_file_on_first_run()
@@ -23,7 +122,7 @@ public sealed class SettingsManagerTests : IDisposable
         File.Exists(settingsPath).Should().BeTrue();
 
         var json = File.ReadAllText(settingsPath);
-        json.Should().Contain(Environment.NewLine + "  \"triggerMode\": \"push-to-talk\"");
+        json.Should().Contain(Environment.NewLine + "  \"triggerMode\": \"toggle\"");
         json.Should().Contain("\"type\": \"azure-openai\"");
         json.Should().NotContain("\"targetLanguage\"");
     }
@@ -104,11 +203,15 @@ public sealed class SettingsManagerTests : IDisposable
         settings.Should().BeEquivalentTo(new AppSettings());
 
         var persisted = File.ReadAllText(settingsPath);
-        persisted.Should().Contain("\"triggerMode\": \"push-to-talk\"");
+        persisted.Should().Contain("\"triggerMode\": \"toggle\"");
 
         var backupPath = Path.Combine(_baseDirectory, "settings.json.bad");
         File.Exists(backupPath).Should().BeTrue();
-        File.ReadAllText(backupPath).Should().Be(malformedJson);
+        var backup = File.ReadAllText(backupPath);
+        backup.Should().StartWith("dpapi:v1:").And.NotContain(malformedJson);
+        var recovered = ProtectedData.Unprotect(Convert.FromBase64String(backup["dpapi:v1:".Length..]),
+            optionalEntropy: null, DataProtectionScope.CurrentUser);
+        Encoding.UTF8.GetString(recovered).Should().Be(malformedJson);
     }
 
     [Fact]

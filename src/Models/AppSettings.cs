@@ -98,6 +98,9 @@ public sealed record ProviderSettings
     [JsonPropertyName("apiVersion")]
     public string ApiVersion { get; init; } = "2024-06-01";
 
+    [JsonPropertyName("azureRealtime")]
+    public bool AzureRealtime { get; init; }
+
     [JsonPropertyName("model")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Model { get; init; }
@@ -110,6 +113,9 @@ public sealed record ProviderSettings
     internal string? PersistedUndecryptableApiKeyCiphertext { get; init; }
 
     [JsonIgnore]
+    internal string? PersistedUndecryptableEndpointCiphertext { get; init; }
+
+    [JsonIgnore]
     internal Dictionary<string, string>? PersistedUndecryptableHeaderCiphertexts { get; init; }
 
     public ProviderSettings ClearApiKey()
@@ -120,6 +126,12 @@ public sealed record ProviderSettings
             PersistedUndecryptableApiKeyCiphertext = null,
         };
     }
+
+    public ProviderSettings ClearEndpoint() => this with
+    {
+        Endpoint = string.Empty,
+        PersistedUndecryptableEndpointCiphertext = null,
+    };
 
     public ProviderSettings ClearHeader(string headerName)
     {
@@ -206,10 +218,10 @@ public sealed record PostProcessorSettings
 public sealed record AppSettings
 {
     [JsonPropertyName("triggerMode")]
-    public TriggerMode TriggerMode { get; init; } = TriggerMode.PushToTalk;
+    public TriggerMode TriggerMode { get; init; } = TriggerMode.Toggle;
 
     [JsonPropertyName("hotkey")]
-    public string Hotkey { get; init; } = "Ctrl+Win";
+    public string Hotkey { get; init; } = "Ctrl+Shift+Space";
 
     [JsonPropertyName("outputMode")]
     public OutputMode OutputMode { get; init; } = OutputMode.AutoType;
@@ -237,6 +249,9 @@ public sealed record AppSettings
 
     [JsonPropertyName("audio")]
     public AudioSettings Audio { get; init; } = new();
+
+    [JsonPropertyName("alwaysCopyToClipboard")]
+    public bool AlwaysCopyToClipboard { get; init; }
 
     [JsonPropertyName("postProcessor")]
     public PostProcessorSettings PostProcessor { get; init; } = new();

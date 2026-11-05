@@ -11,8 +11,8 @@ public sealed class AppSettingsTests
     {
         var settings = new AppSettings();
 
-        settings.TriggerMode.Should().Be(TriggerMode.PushToTalk);
-        settings.Hotkey.Should().Be("Ctrl+Win");
+        settings.TriggerMode.Should().Be(TriggerMode.Toggle);
+        settings.Hotkey.Should().Be("Ctrl+Shift+Space");
         settings.OutputMode.Should().Be(OutputMode.AutoType);
         settings.IndicatorStyle.Should().Be(IndicatorStyle.BarOverlay);
         settings.DefaultLanguage.Should().Be("auto");
@@ -47,7 +47,7 @@ public sealed class AppSettingsTests
     {
         var json = JsonSerializer.Serialize(new AppSettings());
 
-        json.Should().Contain("\"triggerMode\":\"push-to-talk\"");
+        json.Should().Contain("\"triggerMode\":\"toggle\"");
         json.Should().Contain("\"outputMode\":\"auto-type\"");
         json.Should().Contain("\"indicatorStyle\":\"bar-overlay\"");
         json.Should().Contain("\"type\":\"azure-openai\"");

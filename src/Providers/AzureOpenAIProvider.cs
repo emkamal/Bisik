@@ -18,6 +18,12 @@ public sealed class AzureOpenAIProvider(HttpClient httpClient, ProviderSettings 
             throw new InvalidOperationException("Azure OpenAI requires a deployment name.");
         }
 
+        if (Settings.AzureRealtime || Settings.DeploymentName.Contains("realtime", StringComparison.OrdinalIgnoreCase) ||
+            (Settings.Model?.Contains("realtime", StringComparison.OrdinalIgnoreCase) ?? false))
+        {
+            return await _realtimeTranscriber.TranscribeAsync(audioFilePath, language, Settings, cancellationToken);
+        }
+
         var baseUri = RequireAbsoluteUri(Settings.Endpoint, nameof(Settings.Endpoint));
         var deployment = Uri.EscapeDataString(Settings.DeploymentName);
         var apiVersion = string.IsNullOrWhiteSpace(Settings.ApiVersion) ? "2024-06-01" : Settings.ApiVersion;
@@ -45,7 +51,6 @@ public sealed class AzureOpenAIProvider(HttpClient httpClient, ProviderSettings 
     private static bool ShouldUseRealtimeFallback(HttpRequestException exception)
     {
         return exception.StatusCode == System.Net.HttpStatusCode.BadRequest &&
-            exception.Message.Contains("OperationNotSupported", StringComparison.OrdinalIgnoreCase) &&
-            exception.Message.Contains("audioTranscriptions", StringComparison.OrdinalIgnoreCase);
+            exception is ProviderRequestException { UnsupportedAudioTranscriptions: true };
     }
 }
