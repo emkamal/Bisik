@@ -69,4 +69,8 @@ public class ExperimentModelTests
         ExperimentCandidate.Baseline.IsBaseline.Should().BeTrue();
         ExperimentIdentity.Hash("v1", "a\nb", "c").Should().NotBe(ExperimentIdentity.Hash("v1", "a", "b\nc"));
     }
+    [Theory]
+    [InlineData(0.0001)] [InlineData(1_000_001)]
+    public void ViewSpeedScaleMustFitItsValidatedEditorBounds(double value) =>
+        FluentActions.Invoking(() => new ExperimentWeights(SpeedReferenceSeconds: value).Validate()).Should().Throw<ArgumentException>();
 }

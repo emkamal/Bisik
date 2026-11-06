@@ -37,7 +37,7 @@ public sealed record ExperimentWeights(int Wording = 5, int Identifiers = 25, in
     public void Validate()
     {
         if (new[] { Wording, Identifiers, Meaning, Readability, Speed }.Any(w => w is < 0 or > 100)
-            || !double.IsFinite(SpeedReferenceSeconds) || SpeedReferenceSeconds <= 0)
+            || !double.IsFinite(SpeedReferenceSeconds) || SpeedReferenceSeconds is < 0.001 or > 1_000_000)
             throw new ArgumentOutOfRangeException(nameof(ExperimentWeights));
     }
 }

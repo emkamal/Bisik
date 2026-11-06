@@ -370,3 +370,5 @@ Final audit, item 9: saved draft setups now reopen with native limit/retry contr
 Final audit, item 11: closed Settings tests now retain an owned drain task, gate normal/experiment starts, and drain before HTTP disposal. Experiment cleanup errors release the operation lease; capture disposal is idempotent. Seven STA/settings/ownership tests passed.
 
 Final audit, item 19: replay now signals the actual Stop instant before shared recognition finalization; after-Stop segment work is excluded from recording-overlap time. All 8 segment cases passed.
+
+Final audit, item 10: speed-view validation matches its native B editor bounds (0.001–1,000,000 seconds), so an imported out-of-range scale cannot crash popup construction. Twelve model/weights cases passed. Setup limit captions use readable units.

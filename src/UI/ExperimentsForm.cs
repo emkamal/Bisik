@@ -103,7 +103,10 @@ public sealed class ExperimentsForm : Form
             (nameof(ExperimentLimits.TrialSeconds), 120, 120), (nameof(ExperimentLimits.QuietHintSeconds), 5, 60) })
         {
             var input = new NumericUpDown { Minimum = 1, Maximum = maximum, Value = value, Width = 60, AccessibleName = name };
-            _limits[name] = input; options.Controls.Add(new Label { Text = name, AutoSize = true }); options.Controls.Add(input);
+            var label = name switch { nameof(ExperimentLimits.MaximumTrials) => "Max trials", nameof(ExperimentLimits.RecordingSeconds) => "Recording limit (s)",
+                nameof(ExperimentLimits.RecognitionSeconds) => "Recognition limit (s)", nameof(ExperimentLimits.TrialSeconds) => "Trial limit (s)", _ => "Quiet hint (s)" };
+            _limits[name] = input; options.Controls.Add(new Label { Text = label, AutoSize = true }); options.Controls.Add(input);
+            _help.SetToolTip(input, $"{label}: 1–{maximum}; default {value}.");
             input.ValueChanged += (_, _) => Preview();
         }
         options.Controls.Add(_retry);
