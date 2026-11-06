@@ -290,15 +290,16 @@ These are additive followups from the original research, not requirements to var
     - [x] 18.3. Add request/identity/complete-output tests and compatibility documentation.
     - Validation: 24 prediction/matrix/completion/judge cases passed. Explicit advanced UI/definition variants deduplicate separately, unsupported/stale/legacy claims block requests, disabled payload remains unchanged. Live prediction use/benefit postponed.
 
-- [ ] 19. Implement a bounded stable-segment cleanup diagnostic
+- [x] 19. Implement a bounded stable-segment cleanup diagnostic
     - **Objective:** Test overlapping cleanup with recording beyond existing exact whole-text speculation.
     - **Location:** **new** `src/Core/SegmentedCleanup.cs`; `LiveAudioQueue`, `RealtimeTranscriptionStream` completed-prefix events, `TranscriptionSession`, `SpeculativeCleanup`; fixture diagnostics.
     - **Implementation:** Diagnostic-only opt-in coordinator receives acknowledged ordered stable completed prefixes, identifies each immutable raw segment once, uses bounded recent raw context and request budget, and cleans the final tail after Stop. Do not blindly append cumulative snapshots. Verify final raw-prefix identity/coverage; corrections, configuration changes, unsupported prompts or failed/incomplete segments force full-text fallback inside the same remaining deadline. Preserve output order, later self-correction/translation/glossary caveats, owned cancellation and final-only selection. Existing whole-text speculation stays unchanged/off by default. The first-version after-Stop matrix is unchanged; evaluate this mode on paced saved-audio replay with the same reference/judge. No production promotion based only on mocks.
     - **Dependencies:** 2, 12, 15, 17; empirical quality/latency requires E1/E2.
     - **Validation:** No repeated/omitted prefix, reordered completions, late correction, stale settings, segment error, cancellation and bounded budgets; complete fallback only once within deadline; whole-text baseline remains available.
-    - [ ] 19.1. Add stable-prefix segment coordinator and explicit fallback/cancellation rules.
-    - [ ] 19.2. Add diagnostic live-replay mode and comparable overlap/tail/request receipts.
-    - [ ] 19.3. Add race/coverage/fallback tests and document why live promotion remains deferred.
+    - [x] 19.1. Add stable-prefix segment coordinator and explicit fallback/cancellation rules.
+    - [x] 19.2. Add diagnostic live-replay mode and comparable overlap/tail/request receipts.
+    - [x] 19.3. Add race/coverage/fallback tests and document why live promotion remains deferred.
+    - Validation: 32 segment/prompt/fixture regressions passed; 7 focused coverage/budget/settings/cancellation/prompt cases rerun. Paced replay includes full-text comparison and fixed judge; actual live replay/quality/promotion postponed.
 
 - [ ] 20. Extend existing instructed-audio diagnostics for matched fixtures
     - **Objective:** Evaluate the earlier one-stage alternative without replacing production routing.
