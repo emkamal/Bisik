@@ -92,7 +92,7 @@ public static class ExperimentMatrix
     {
         Enabled = true, Model = string.IsNullOrWhiteSpace(model.Model) ? model.Deployment : model.Model,
         Provider = connection.Provider with { DeploymentName = model.Deployment, Model = null },
-        PresetName = PostProcessorPreset.Custom, SystemPrompt = prompt.SystemPrompt, ReasoningEffort = effort,
+        PresetName = PostProcessorPreset.Custom, SystemPrompt = prompt.SystemPrompt, ReasoningEffort = effort, Vocabulary = null,
     };
 
     public static PostProcessorSettings Settings(PostProcessorSettings connection, ExperimentCandidate candidate)

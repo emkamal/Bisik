@@ -246,15 +246,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
 
 These are additive followups from the original research, not requirements to vary transcription in the first-version matrix. Keep optional modes off and preserve the completed-file/full-text rollback. Each has its own validation and external dependencies; no performance gain is presumed.
 
-- [ ] 15. Add reusable project vocabulary to cleanup settings
+- [x] 15. Add reusable project vocabulary to cleanup settings
     - **Objective:** Improve technical identifiers and allow controlled prompt/glossary comparisons.
     - **Location:** `PostProcessorSettings`, `AppSettings.Snapshot`, `SettingsManager.NormalizePostProcessor`; `PostProcessorPresets.ResolveSystemPrompt`; `SettingsForm` Post-Processor tab; `HistoryConfigurationSnapshot`; `SpeculativeCleanup.FinishAsync`.
     - **Implementation:** Optional small named vocabulary profile, default empty. Compose canonical spellings/context-dependent variants after resolving the chosen preset; custom prompt remains verbatim when no profile is selected. Include exact HAPPI/VtrinLib/cMiaServer/API-versus-tool examples as an optional editable template, not universal replacements. Never inject full reference scripts. Preserve stable glossary ordering, deep snapshots and effective prompt/history/cache identity; vocabulary edits invalidate cleanup caches, not verified reasoning support. Evaluation checklist and runtime vocabulary are distinct settings. No regex global replacement of normal happy/unrelated libraries.
     - **Dependencies:** 1, 3, 4, 9.
     - **Validation:** Old settings/default prompts unchanged; every preset handles optional profile; ordinary happy preserved; exact identifiers/paths and ambiguity tests; snapshot/cache invalidation and safe history exports.
-    - [ ] 15.1. Add profile data/defaults/normalization and post-preset prompt composition.
-    - [ ] 15.2. Add native profile controls/template and identity/history propagation.
-    - [ ] 15.3. Extend settings/prompt/history/speculation tests and documentation.
+    - [x] 15.1. Add profile data/defaults/normalization and post-preset prompt composition.
+    - [x] 15.2. Add native profile controls/template and identity/history propagation.
+    - [x] 15.3. Extend settings/prompt/history/speculation tests and documentation.
+    - Validation: 63 vocabulary/prompt/settings/history regressions passed. Immutable vocabulary round trips and every preset preserve old behavior when empty; live glossary quality remains postponed.
 
 - [ ] 16. Add capability-gated recognition context for compatible models
     - **Objective:** Repair domain terms before cleanup without breaking current Whisper.

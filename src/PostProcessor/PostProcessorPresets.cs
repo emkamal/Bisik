@@ -8,7 +8,7 @@ public static class PostProcessorPresets
     {
         ArgumentNullException.ThrowIfNull(settings);
 
-        return settings.PresetName switch
+        var prompt = settings.PresetName switch
         {
             PostProcessorPreset.CleanUp =>
                 "You are a transcription editor. Fix grammar, punctuation, and remove filler words. Return only the cleaned text, nothing else.",
@@ -23,6 +23,7 @@ public static class PostProcessorPresets
             _ =>
                 settings.SystemPrompt,
         };
+        return prompt + (settings.Vocabulary?.Instructions ?? "");
     }
 
     private static string CreateTranslatePrompt(string? targetLanguage)

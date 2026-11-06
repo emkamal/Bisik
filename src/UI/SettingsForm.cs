@@ -62,6 +62,8 @@ public sealed class SettingsForm : Form
     private TextBox? _postProcessorModelTextBox;
     private TextBox? _postProcessorTargetLanguageTextBox;
     private TextBox? _postProcessorSystemPromptTextBox;
+    private TextBox? _vocabularyName;
+    private TextBox? _vocabularyLines;
     private Button? _testConnectionButton;
     private Button? _applyButton;
     private Button? _okButton;
@@ -766,6 +768,15 @@ public sealed class SettingsForm : Form
         root.Controls.Add(CreateFieldLabel("System prompt",
             "Instructions sent to the cleanup model when Preset is Custom. Describe how to edit the transcript and ask it to return only the final text. Your custom prompt is used verbatim.\n\nBuilt-in presets generate their own instructions and ignore this field. The prompt is sent with the transcript to the cleanup provider when post-processing is enabled; avoid putting credentials in it."), 0, 5);
         root.Controls.Add(_postProcessorSystemPromptTextBox, 1, 5);
+        _vocabularyName = new TextBox { Width = 360, AccessibleName = "Vocabulary profile name" };
+        _vocabularyLines = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Width = 360, Height = 150, AccessibleName = "Vocabulary entries" };
+        root.Controls.Add(CreateFieldLabel("Vocabulary profile", "Optional project name. Leave both fields empty to preserve the existing prompt exactly."), 0, 6);
+        root.Controls.Add(_vocabularyName, 1, 6);
+        root.Controls.Add(CreateFieldLabel("Canonical vocabulary", "One canonical | context | comma-separated variants per line. Context distinguishes API/tool names and ordinary words. This is guidance, never global replacement or a full reference script."), 0, 7);
+        root.Controls.Add(_vocabularyLines, 1, 7);
+        var template = new Button { Text = "Load editable ABB template", AutoSize = true };
+        template.Click += (_, _) => { _vocabularyName.Text = CleanupVocabulary.AbbTemplate.Name; _vocabularyLines.Text = CleanupVocabulary.AbbTemplate.Lines; };
+        root.Controls.Add(template, 1, 8);
 
         page.Controls.Add(root);
         return page;
@@ -1161,6 +1172,8 @@ public sealed class SettingsForm : Form
         if (_postProcessorSystemPromptTextBox is not null)
         {
             _postProcessorSystemPromptTextBox.Text = settings.PostProcessor.SystemPrompt;
+            _vocabularyName!.Text = settings.PostProcessor.Vocabulary?.Name ?? "";
+            _vocabularyLines!.Text = settings.PostProcessor.Vocabulary?.Lines ?? "";
         }
     }
 
@@ -1190,6 +1203,7 @@ public sealed class SettingsForm : Form
             TargetLanguage = _postProcessorTargetLanguageTextBox?.Text ?? defaults.PostProcessor.TargetLanguage,
             PresetName = GetSelectedComboValue(_postProcessorPresetComboBox, defaults.PostProcessor.PresetName),
             SystemPrompt = _postProcessorSystemPromptTextBox?.Text ?? defaults.PostProcessor.SystemPrompt,
+            Vocabulary = CleanupVocabulary.ParseLines(_vocabularyName?.Text ?? "", _vocabularyLines?.Text ?? ""),
             ReasoningEffort = _reasoningEffortComboBox?.SelectedIndex > 0 ? _reasoningEffortComboBox.SelectedItem?.ToString() : null,
             ReasoningCapability = null,
         };

@@ -199,6 +199,7 @@ public sealed class SettingsManager
             Model = postProcessor.Model ?? defaults.Model,
             TargetLanguage = postProcessor.TargetLanguage ?? defaults.TargetLanguage,
             SystemPrompt = postProcessor.SystemPrompt ?? defaults.SystemPrompt,
+            Vocabulary = postProcessor.Vocabulary?.Snapshot(),
         };
     }
 

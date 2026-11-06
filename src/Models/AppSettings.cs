@@ -201,6 +201,7 @@ public sealed record AudioSettings
 [JsonConverter(typeof(PostProcessorSettingsJsonConverter))]
 public sealed record PostProcessorSettings
 {
+    public CleanupVocabulary? Vocabulary { get; init; }
     private const string DefaultSystemPrompt = "You are a transcription editor. Fix grammar, punctuation, and remove filler words. Return only the cleaned text, nothing else.";
 
     [JsonPropertyName("enabled")]
@@ -262,7 +263,7 @@ public sealed record AppSettings
     {
         QuickLanguages = (string[])QuickLanguages.Clone(),
         Provider = CopyProvider(Provider),
-        PostProcessor = PostProcessor with { Provider = CopyProvider(PostProcessor.Provider),
+        PostProcessor = PostProcessor with { Provider = CopyProvider(PostProcessor.Provider), Vocabulary = PostProcessor.Vocabulary?.Snapshot(),
             ReasoningCapability = PostProcessor.ReasoningCapability is { } capability
                 ? capability with { SupportedEfforts = capability.SupportedEfforts is null ? [] : (string[])capability.SupportedEfforts.Clone() } : null },
     };
@@ -423,6 +424,7 @@ internal sealed class PostProcessorSettingsJsonConverter : JsonConverter<PostPro
             TargetLanguage = targetLanguage,
             PresetName = presetName,
             SystemPrompt = systemPrompt,
+            Vocabulary = root.TryGetProperty("vocabulary", out var vocabulary) ? vocabulary.Deserialize<CleanupVocabulary>(options) : null,
         };
     }
 
@@ -430,6 +432,7 @@ internal sealed class PostProcessorSettingsJsonConverter : JsonConverter<PostPro
     {
         writer.WriteStartObject();
         writer.WriteBoolean("enabled", value.Enabled);
+        if (value.Vocabulary is not null) { writer.WritePropertyName("vocabulary"); JsonSerializer.Serialize(writer, value.Vocabulary, options); }
         writer.WritePropertyName("provider");
         JsonSerializer.Serialize(writer, value.Provider, options);
         writer.WriteString("model", value.Model);
