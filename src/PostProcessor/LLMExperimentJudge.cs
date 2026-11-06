@@ -41,14 +41,23 @@ public sealed class LLMExperimentJudge(TranscriptionService service)
 
     public void Seed(ExperimentEvaluation evaluation)
     {
-        ValidateScores(evaluation.ReportedMeaning, evaluation.Readability);
-        if (evaluation.EffectiveMeaning != ApplyCaps(evaluation.ReportedMeaning, evaluation.Warnings))
-            throw new InvalidDataException("Invalid effective judge score.");
+        ValidateEvaluation(evaluation);
         lock (_sync)
         {
             if (_cache.Count >= 1000) _cache.Remove(_cache.Keys.First());
             _cache[evaluation.CacheIdentity] = evaluation;
         }
+    }
+
+    public static void ValidateEvaluation(ExperimentEvaluation evaluation)
+    {
+        ValidateScores(evaluation.ReportedMeaning, evaluation.Readability);
+        if (evaluation.Warnings.IsDefault || evaluation.Warnings.Length > 20 || string.IsNullOrWhiteSpace(evaluation.CacheIdentity)
+            || evaluation.Warnings.Any(w => !Enum.IsDefined(w.Category) || !Enum.IsDefined(w.Severity)
+                || new[] { w.ReferenceEvidence, w.OutputEvidence, w.Explanation }.Any(t => string.IsNullOrEmpty(t) || t.Length > 500)))
+            throw new InvalidDataException("Invalid stored evaluation evidence.");
+        if (evaluation.EffectiveMeaning != ApplyCaps(evaluation.ReportedMeaning, evaluation.Warnings))
+            throw new InvalidDataException("Invalid effective judge score.");
     }
 
     public async Task<ExperimentJudgeReceipt> EvaluateAsync(ExperimentDefinition definition, string output,

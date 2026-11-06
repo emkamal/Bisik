@@ -161,15 +161,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 7.3. Add `ExperimentRunnerTests` proving no providers/judges are called by score changes.
     - Validation: scheduler tests passed for seeded rounds, identical input, generation-before-judge, distinct-output cache, selected evaluation rerun, isolated failure and partial cancellation.
 
-- [ ] 8. Persist/reopen experiments and export safe comparisons
+- [x] 8. Persist/reopen experiments and export safe comparisons
     - **Objective:** Reuse a take and its results across app sessions without saving plaintext connections.
     - **Location:** **new** `src/Core/ExperimentStore.cs`; `SettingsManager.Save/LoadEncryptedCopy`; `HistoryConfigurationSnapshot.Capture`; `HistoryExport` formatting helpers.
     - **Implementation:** Versioned setup/run/result files beneath `%APPDATA%\Bisik\experiments\<id>`. Use immutable IDs and content hashes; atomic writes/checkpoints per result; an interrupted run reopens as interrupted, not complete. Save reference, raw, prompts, weights, B, rubric/scoring versions, outputs/receipts/warnings. Keep the one connection in an isolated DPAPI settings snapshot; public DTOs/export only approved fields. Retain audio only when selected; delete owned temporary recording after completion/cancel otherwise. Saved raw allows cleanup reruns without WAV. Export JSON/CSV/Unicode Excel-compatible rows; extract small existing formatting routines only if reused. Imported results can be inspected without credentials; reexecution clearly identifies unavailable connection/audio.
     - **Dependencies:** 1, 7.
     - **Validation:** Restart/checkpoint round trips, corrupted/interrupted files, atomic failure, owned-path cleanup, opt-out audio deletion, no active settings/history changes, endpoint/key/header exclusion, Unicode multiline exports.
-    - [ ] 8.1. Implement store/recovery/checkpointing with separate encrypted connection snapshots.
-    - [ ] 8.2. Implement optional audio retention and focused experiment exports/copy data.
-    - [ ] 8.3. Add `ExperimentStoreTests`/`ExperimentExportTests`, including secret exclusion and disk-write failure.
+    - [x] 8.1. Implement store/recovery/checkpointing with separate encrypted connection snapshots.
+    - [x] 8.2. Implement optional audio retention and focused experiment exports/copy data.
+    - [x] 8.3. Add `ExperimentStoreTests`/`ExperimentExportTests`, including secret exclusion and disk-write failure.
+    - Validation: 20 store/export/history/judge tests passed; solution build passed with registration disabled. Connection reload leaves its encrypted source unchanged.
 
 ### Phase 3: Native window and app lifecycle
 

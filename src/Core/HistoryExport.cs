@@ -44,45 +44,9 @@ public static class HistoryExport
 
     private static string Number(long? value) => value?.ToString(CultureInfo.InvariantCulture) ?? string.Empty;
 
-    private static string Delimited(IReadOnlyList<TranscriptionEntry> entries, char separator)
-    {
-        static string Escape(string value, char separator) => value.IndexOfAny([separator, '"', '\r', '\n']) < 0
-            ? value : "\"" + value.Replace("\"", "\"\"") + "\"";
-        var result = new StringBuilder();
-        result.AppendLine(string.Join(separator, Columns.Select(c => c.Name)));
-        foreach (var entry in entries)
-            result.AppendLine(string.Join(separator, Columns.Select(c => Escape(c.Value(entry), separator))));
-        return result.ToString();
-    }
+    private static string Delimited(IReadOnlyList<TranscriptionEntry> entries, char separator) =>
+        TabularExport.Delimited(Columns.Select(c => c.Name).ToArray(), entries.Select(e => Columns.Select(c => c.Value(e)).ToArray()), separator);
 
-    public static string HtmlClipboard(IReadOnlyList<TranscriptionEntry> entries)
-    {
-        // Excel's HTML clipboard preserves embedded tabs/newlines within their original cell.
-        var table = new StringBuilder("<table><tr>");
-        foreach (var column in Columns) table.Append("<th>").Append(WebUtility.HtmlEncode(column.Name)).Append("</th>");
-        table.Append("</tr>");
-        foreach (var entry in entries)
-        {
-            table.Append("<tr>");
-            foreach (var column in Columns)
-            {
-                var text = WebUtility.HtmlEncode(column.Value(entry)).Replace("\r\n", "\n").Replace('\r', '\n')
-                    .Replace("\n", "<br style=\"mso-data-placement:same-cell\">\n");
-                // Timings remain numbers for Excel analysis; transcripts/prompts remain literal text.
-                var numberFormat = column.Name.EndsWith("_ms", StringComparison.Ordinal) ? "0" : "\\@";
-                table.Append("<td style=\"mso-number-format:'").Append(numberFormat)
-                    .Append("';white-space:pre-wrap\">").Append(text).Append("</td>");
-            }
-            table.Append("</tr>");
-        }
-        table.Append("</table>");
-        const string before = "<html><body><!--StartFragment-->";
-        const string after = "<!--EndFragment--></body></html>";
-        const string header = "Version:0.9\r\nStartHTML:{0:D10}\r\nEndHTML:{1:D10}\r\nStartFragment:{2:D10}\r\nEndFragment:{3:D10}\r\n";
-        var startHtml = Encoding.UTF8.GetByteCount(string.Format(CultureInfo.InvariantCulture, header, 0, 0, 0, 0));
-        var startFragment = startHtml + Encoding.UTF8.GetByteCount(before);
-        var endFragment = startFragment + Encoding.UTF8.GetByteCount(table.ToString());
-        var endHtml = endFragment + Encoding.UTF8.GetByteCount(after);
-        return string.Format(CultureInfo.InvariantCulture, header, startHtml, endHtml, startFragment, endFragment) + before + table + after;
-    }
+    public static string HtmlClipboard(IReadOnlyList<TranscriptionEntry> entries) =>
+        TabularExport.HtmlClipboard(Columns.Select(c => c.Name).ToArray(), entries.Select(e => Columns.Select(c => c.Value(e)).ToArray()));
 }

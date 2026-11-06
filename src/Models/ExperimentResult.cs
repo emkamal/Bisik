@@ -56,7 +56,7 @@ public sealed record ExperimentTrial
 }
 
 public sealed record ExperimentRun(ExperimentDefinition Definition, ExperimentTake Take,
-    ExperimentState State, int OrderSeed, ImmutableArray<ExperimentTrial> Trials, double BatchElapsedMs = 0);
+    ExperimentState State, int OrderSeed, ImmutableArray<ExperimentTrial> Trials, double BatchElapsedMs = 0, bool Interrupted = false);
 
 public sealed record TextProcessingReceipt(bool Succeeded, string? Output, double ElapsedMs, int Attempts,
     string? RequestedEffort, string? EffectiveEffort, string Model, string SystemPrompt, string ApiFingerprint,
