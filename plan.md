@@ -107,15 +107,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 3.3. Add `ExperimentMatrixTests`; verify requested low can never become a labelled default trial.
     - Validation: 5 matrix tests passed for bounds, deduplication, effort evidence and connection invalidation; diff check passed.
 
-- [ ] 4. Implement local factors, weighting and ranking
+- [x] 4. Implement local factors, weighting and ranking
     - **Objective:** Produce deterministic, explainable factors and instant weight changes.
     - **Location:** **new** `src/Core/ExperimentScoring.cs`; `SessionMetrics.cs` → `TimingAggregation`.
     - **Implementation:** Version Unicode/word normalization; require at least one reference token before Run. Wording score = `100*max(0,1-WER)`, WER=(substitutions+deletions+insertions)/reference tokens. Preserve numbers/negation; do not correct aliases before lexical comparison. Suggest terms from reviewed code-like tokens (backticks, paths, Pascal/camel case, snake_case, acronyms); never silently accept ambiguous suggestions. Identifier factor averages per-term `correct/(correct+configuredWrong)`; absent required terms score 0. Canonical matches use ordinal exact case; case variants and explicitly configured wrong aliases use case-insensitive detection excluding exact canonical matches. Match complete identifiers/paths and longest aliases first; flag ambiguous API/tool aliases instead of double-counting. Empty term lists make that factor unavailable. Speed=`100*B/(B+t)`, B>0, t=shared Stop→raw + candidate cleanup. For repeats: wording/identifier factors are arithmetic means across valid generation samples; meaning/readability are means across valid judged samples, applying severity caps per sample first; speed uses median cleanup across all valid generation samples. Preserve all sample warnings and show judged/successful/failed counts; partial evaluation is provisional and available aggregates may rank. Weights do not change sample cohorts. Normalize integer weights 0–100 by their sum. Missing positive-weight factors mean unranked; measured zero remains valid. Major semantic warnings never exclude a valid result. Round display to 0.1 point; equal displayed scores share rank with stable visual ordering.
     - **Dependencies:** 1.
     - **Validation:** WER>1 clamps similarity; HAPPI/Happy/mixed case tests; no alias double count; zero versus missing; all-zero weights; ties; repeat aggregation; speed unchanged when another row arrives.
-    - [ ] 4.1. Implement bounded local comparison and term evidence with explicit unavailable factors.
-    - [ ] 4.2. Implement fixed-cohort factor aggregation, smooth speed, normalized weights, ties and visible warning badges; warnings do not gate eligibility.
-    - [ ] 4.3. Add `ExperimentScoringTests`: B=5 and t=0/5/15 → 100/50/25; HAPPI Happy and HAPPI happi → 50 with the configured alias/case rules; empty-token reference rejection; repeat caps/means/coverage; speed-only winner with a major warning.
+    - [x] 4.1. Implement bounded local comparison and term evidence with explicit unavailable factors.
+    - [x] 4.2. Implement fixed-cohort factor aggregation, smooth speed, normalized weights, ties and visible warning badges; warnings do not gate eligibility.
+    - [x] 4.3. Add `ExperimentScoringTests`: B=5 and t=0/5/15 → 100/50/25; HAPPI Happy and HAPPI happi → 50 with the configured alias/case rules; empty-token reference rejection; repeat caps/means/coverage; speed-only winner with a major warning.
+    - Validation: 12 scoring cases passed; comparison is bounded to 4096 tokens and 100 reviewed terms. Diff check passed.
 
 ### Phase 2: Evaluation, recording, scheduling and persistence
 
