@@ -51,7 +51,13 @@ public sealed record ExperimentTrial
     public ExperimentEvaluation? Evaluation { get; init; }
     public ExperimentFactors? Factors { get; init; }
     public ImmutableArray<ExperimentTermEvidence> TermEvidence { get; init; } = [];
+    public ImmutableArray<string> LocalWarnings { get; init; } = [];
+    public TextProcessingReceipt? Completion { get; init; }
 }
 
 public sealed record ExperimentRun(ExperimentDefinition Definition, ExperimentTake Take,
     ExperimentState State, int OrderSeed, ImmutableArray<ExperimentTrial> Trials, double BatchElapsedMs = 0);
+
+public sealed record TextProcessingReceipt(bool Succeeded, string? Output, double ElapsedMs, int Attempts,
+    string? RequestedEffort, string? EffectiveEffort, string Model, string SystemPrompt, string ApiFingerprint,
+    ExperimentVerification Verification, string? FailureCode = null);

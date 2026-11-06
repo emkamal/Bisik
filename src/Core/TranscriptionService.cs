@@ -355,7 +355,3 @@ public sealed record TranscriptionResult(
     string ErrorMessage = "",
     long TranscriptionDurationMs = 0,
     long PostProcessingDurationMs = 0);
-
-public sealed record TextProcessingReceipt(bool Succeeded, string? Output, double ElapsedMs, int Attempts,
-    string? RequestedEffort, string? EffectiveEffort, string Model, string SystemPrompt, string ApiFingerprint,
-    ExperimentVerification Verification, string? FailureCode = null);

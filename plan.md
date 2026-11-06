@@ -150,15 +150,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 6.3. Add `ExperimentSessionTests` using existing fake IWaveIn/stream patterns.
     - Validation: 58 capture/session/service regressions passed, including 7 experiment capture cases. Existing stream setup/file-fallback regressions passed. Human microphone acceptance postponed.
 
-- [ ] 7. Run cleanup trials and evaluation as separate phases
+- [x] 7. Run cleanup trials and evaluation as separate phases
     - **Objective:** Execute the matrix predictably and preserve partial progress.
     - **Location:** **new** `src/Core/ExperimentRunner.cs`; tasks 2–6; `SessionMetrics`.
     - **Implementation:** Every trial receives the same raw string, frozen effective settings, its own linked deadline/metrics, and typed progress. Sequential scheduling; repeats run in recorded randomized rounds to reduce order bias. Capability probes/warmup receipts are separate from measured trials. Generate all candidate outputs first, then judge distinct outputs, avoiding evaluator traffic during generation. Count complete/failed/skipped/cached jobs explicitly; current request uses indeterminate progress. Batch cancel stops active/pending work, retains completed rows and allows selected cleanup/evaluation reruns using saved raw. A failure is isolated; unavailable models are failures, not poor quality. Settings/reference edits create a new setup/evaluation revision rather than relabeling results. Reweighting never schedules work.
     - **Dependencies:** 3, 4, 5, 6.
     - **Validation:** Identical inputs, isolated metrics/deadlines, failure continuation, repeat order seed, generation-before-judge, cancelled pending jobs, selected reruns and no new transcription.
-    - [ ] 7.1. Implement sequential scheduler and typed `IProgress<ExperimentProgress>` events.
-    - [ ] 7.2. Add separate judge phase, baseline evaluation, bounded reruns and partial-result events.
-    - [ ] 7.3. Add `ExperimentRunnerTests` proving no providers/judges are called by score changes.
+    - [x] 7.1. Implement sequential scheduler and typed `IProgress<ExperimentProgress>` events.
+    - [x] 7.2. Add separate judge phase, baseline evaluation, bounded reruns and partial-result events.
+    - [x] 7.3. Add `ExperimentRunnerTests` proving no providers/judges are called by score changes.
+    - Validation: scheduler tests passed for seeded rounds, identical input, generation-before-judge, distinct-output cache, selected evaluation rerun, isolated failure and partial cancellation.
 
 - [ ] 8. Persist/reopen experiments and export safe comparisons
     - **Objective:** Reuse a take and its results across app sessions without saving plaintext connections.
