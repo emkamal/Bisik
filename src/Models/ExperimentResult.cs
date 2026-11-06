@@ -9,7 +9,7 @@ public enum ExperimentWarningCategory { Meaning, Omission, Negation, Quantity, I
 
 public sealed record ExperimentCandidate(string Id, string Name, string Deployment, string Model,
     string SystemPrompt, string? RequestedEffort, string? EffectiveEffort,
-    ExperimentVerification Verification, string ApiFingerprint, bool IsBaseline = false, bool StreamCompletion = false)
+    ExperimentVerification Verification, string ApiFingerprint, bool IsBaseline = false, bool StreamCompletion = false, bool UsePrediction = false)
 {
     public static ExperimentCandidate Baseline { get; } = new("raw-baseline-v1", "Raw transcript", "", "",
         "", null, null, ExperimentVerification.ProviderDefault, "", true);

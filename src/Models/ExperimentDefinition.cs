@@ -51,7 +51,7 @@ public sealed record ExperimentTerm(string Canonical, ImmutableArray<string> Wro
 
 public sealed record ExperimentPrompt(string Name, string SystemPrompt);
 public sealed record ExperimentModel(string Name, string Deployment, string Model,
-    ImmutableArray<string?> Efforts, bool StreamCompletion = false);
+    ImmutableArray<string?> Efforts, bool StreamCompletion = false, bool UsePrediction = false);
 
 // Public setup/results deliberately contain no ProviderSettings. Connections live in a separate DPAPI file.
 public sealed record ExperimentDefinition

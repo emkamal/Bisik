@@ -75,6 +75,8 @@ public sealed class ExperimentsForm : Form
         foreach (var height in new[] { 23, 25, 20, 17, 15 }) fields.RowStyles.Add(new(SizeType.Percent, height));
         fields.RowStyles.Add(new(SizeType.AutoSize)); fields.RowStyles.Add(new(SizeType.AutoSize));
         AddColumns(_models, "Name", "Deployment", "Model", "Efforts (default,low,...)");
+        _models.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "Stream (verified)" });
+        _models.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "Prediction (verified)" });
         AddColumns(_prompts, "Name", "Prompt"); AddColumns(_terms, "Canonical", "Wrong aliases (comma separated)");
         _terms.Columns.Insert(0, new DataGridViewCheckBoxColumn { HeaderText = "Use", Name = "Use", Width = 45 });
         _models.Rows.Add("Candidate", settings.PostProcessor.Provider.DeploymentName, settings.PostProcessor.Model, "default");
@@ -146,7 +148,7 @@ public sealed class ExperimentsForm : Form
         return new ExperimentDefinition
         {
             Reference = _reference.Text, ConnectionFingerprint = ExperimentMatrix.ConnectionIdentity(_settings.PostProcessor),
-            Models = Rows(_models).Select(r => new ExperimentModel(Cell(r, 0), Cell(r, 1), Cell(r, 2), Efforts(Cell(r, 3)))).ToImmutableArray(),
+            Models = Rows(_models).Select(r => new ExperimentModel(Cell(r, 0), Cell(r, 1), Cell(r, 2), Efforts(Cell(r, 3)), r.Cells[4].Value is true, r.Cells[5].Value is true)).ToImmutableArray(),
             Prompts = Rows(_prompts).Select(r => new ExperimentPrompt(Cell(r, 0), Convert.ToString(r.Cells[1].Value) ?? "")).ToImmutableArray(),
             Terms = Rows(_terms).Where(r => r.Cells[0].Value is true).Select(r => new ExperimentTerm(Cell(r, 1),
                 Cell(r, 2).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))).ToImmutableArray(),
@@ -254,7 +256,7 @@ public sealed class ExperimentsForm : Form
         var settings = await _store.LoadConnectionAsync(id, CancellationToken.None);
         if (settings is not null) _settings = settings; else Log("Connection unavailable; inspection/export remains available.");
         var d = CurrentRun.Definition; _weights = d.Weights; _weightsForm?.SetWeights(_weights); _reference.Text = d.Reference; _models.Rows.Clear();
-        foreach (var m in d.Models) _models.Rows.Add(m.Name, m.Deployment, m.Model, string.Join(",", m.Efforts.Select(e => e ?? "default")));
+        foreach (var m in d.Models) _models.Rows.Add(m.Name, m.Deployment, m.Model, string.Join(",", m.Efforts.Select(e => e ?? "default")), m.StreamCompletion, m.UsePrediction);
         _promptIndex = -1; _prompts.Rows.Clear(); foreach (var p in d.Prompts) _prompts.Rows.Add(p.Name, p.SystemPrompt);
         _terms.Rows.Clear(); foreach (var t in d.Terms) _terms.Rows.Add(true, t.Canonical, string.Join(",", t.WrongAliases));
         _judgeModel.Text = d.Judge.Model; _judgeDeployment.Text = d.Judge.Deployment; _judgeEffort.SelectedItem = d.Judge.Efforts[0] ?? "default";
@@ -356,8 +358,8 @@ public sealed class ExperimentsForm : Form
         if (CurrentRun is null || _results.CurrentRow?.Tag is not string id) return;
         _detail.Text = $"Reference\r\n{CurrentRun.Definition.Reference}\r\n\r\nShared raw ({CurrentRun.Take.SharedStopToRawMs:0.0} ms Stop→raw)\r\n{CurrentRun.Take.RawText}\r\n\r\n" +
             string.Join("\r\n\r\n", CurrentRun.Trials.Where(t => t.Candidate.Id == id).Select(t =>
-                $"Repeat {t.RepeatIndex + 1}: {t.Generation}/{t.EvaluationStatus}; model {t.Candidate.Model}; deployment {t.Candidate.Deployment}; requested {t.Candidate.RequestedEffort ?? "default"}; effective {t.Candidate.EffectiveEffort ?? "omitted"} ({t.Candidate.Verification})\r\n"
-                + $"Cleanup {t.CleanupMs:0.0} ms; judge {t.JudgeMs:0.0} ms; failure {t.FailureCode}\r\n{t.Output}\r\nTerms: "
+                $"Repeat {t.RepeatIndex + 1}: {t.Generation}/{t.EvaluationStatus}; model {t.Candidate.Model}; deployment {t.Candidate.Deployment}; stream {t.Candidate.StreamCompletion}; prediction {t.Candidate.UsePrediction}; requested {t.Candidate.RequestedEffort ?? "default"}; effective {t.Candidate.EffectiveEffort ?? "omitted"} ({t.Candidate.Verification})\r\n"
+                + $"Cleanup {t.CleanupMs:0.0} ms; judge {t.JudgeMs:0.0} ms; prediction accepted/rejected {t.Completion?.Usage?.AcceptedPredictionTokens}/{t.Completion?.Usage?.RejectedPredictionTokens}; failure {t.FailureCode}\r\n{t.Output}\r\nTerms: "
                 + string.Join("; ", t.TermEvidence.Select(e => $"{e.Canonical}: {e.Correct} correct / {e.Wrong} wrong"))
                 + $"\r\nReported/effective meaning: {t.Evaluation?.ReportedMeaning}/{t.Evaluation?.EffectiveMeaning}\r\n"
                 + string.Join("\r\n", t.Evaluation?.Warnings.Select(w => $"{w.Severity} {w.Category}: {w.ReferenceEvidence} → {w.OutputEvidence}: {w.Explanation}") ?? [])));

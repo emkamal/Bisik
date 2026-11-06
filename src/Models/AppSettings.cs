@@ -206,6 +206,7 @@ public sealed record AudioSettings
 public sealed record PostProcessorSettings
 {
     public bool StreamCompletion { get; init; }
+    public bool UsePrediction { get; init; }
     public CompletionCapability? CompletionCapability { get; init; }
     public CleanupVocabulary? Vocabulary { get; init; }
     private const string DefaultSystemPrompt = "You are a transcription editor. Fix grammar, punctuation, and remove filler words. Return only the cleaned text, nothing else.";
@@ -433,6 +434,7 @@ internal sealed class PostProcessorSettingsJsonConverter : JsonConverter<PostPro
             SystemPrompt = systemPrompt,
             Vocabulary = root.TryGetProperty("vocabulary", out var vocabulary) ? vocabulary.Deserialize<CleanupVocabulary>(options) : null,
             StreamCompletion = root.TryGetProperty("streamCompletion", out var streaming) && streaming.GetBoolean(),
+            UsePrediction = root.TryGetProperty("usePrediction", out var prediction) && prediction.GetBoolean(),
             CompletionCapability = root.TryGetProperty("completionCapability", out var completionCapability) ? completionCapability.Deserialize<CompletionCapability>(options) : null,
         };
     }
@@ -442,6 +444,7 @@ internal sealed class PostProcessorSettingsJsonConverter : JsonConverter<PostPro
         writer.WriteStartObject();
         writer.WriteBoolean("enabled", value.Enabled);
         if (value.StreamCompletion) writer.WriteBoolean("streamCompletion", true);
+        if (value.UsePrediction) writer.WriteBoolean("usePrediction", true);
         if (value.CompletionCapability is not null) { writer.WritePropertyName("completionCapability"); JsonSerializer.Serialize(writer, value.CompletionCapability, options); }
         if (value.Vocabulary is not null) { writer.WritePropertyName("vocabulary"); JsonSerializer.Serialize(writer, value.Vocabulary, options); }
         writer.WritePropertyName("provider");

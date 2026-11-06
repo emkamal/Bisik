@@ -85,6 +85,11 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
                 throw new InvalidOperationException("Streaming is not verified for this model/API.");
             payload["stream"] = true; payload["stream_options"] = new { include_usage = true };
         }
+        if (settings.UsePrediction)
+        {
+            if (!PredictionSupported(settings)) throw new InvalidOperationException("Prediction is not verified for this model/API.");
+            payload["prediction"] = new { type = "content", content = rawText };
+        }
         if (EffectiveEffort(settings, probeEffort) is { } effort)
             payload["reasoning_effort"] = effort;
 
@@ -102,6 +107,9 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
             throw new InvalidOperationException("The selected reasoning effort has not been verified for this model/API.");
         return effort;
     }
+    public static bool PredictionSupported(PostProcessorSettings settings) =>
+        settings.CompletionCapability?.Supports(settings, CompletionFeature.Prediction) == true
+        && !(settings.Provider.Type == ProviderType.AzureOpenAi && !settings.Provider.AzureV1 && settings.Provider.ApiVersion == "2024-06-01");
 
     private static string ResolveModel(PostProcessorSettings settings)
     {

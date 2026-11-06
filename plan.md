@@ -279,15 +279,16 @@ These are additive followups from the original research, not requirements to var
     - [x] 17.3. Extend parser/metrics/runner tests and comparisons; document nullable/unverified fields.
     - Validation: 52 completion/service/metrics cases passed, then 7 focused SSE/usage/progress cases passed. Streaming is off by default and scoped in matrix/cache identity. Live streaming compatibility/performance postponed.
 
-- [ ] 18. Add an opt-in predicted-output cleanup comparison
+- [x] 18. Add an opt-in predicted-output cleanup comparison
     - **Objective:** Measure reduced regeneration for mostly unchanged transcripts where supported.
     - **Location:** `PostProcessorSettings`, `LLMPostProcessor.BuildRequestPayload/BuildAzureUri`; experiment variant identity/UI; task 17 receipts.
     - **Implementation:** Optional verified prediction capability bound to exact model/API; send raw transcript, never reference, as prediction content. Keep off by default; reject unknown/unsupported routes. Current exported 2024-06-01 route is not presumed compatible and GPT-6 support is not assumed. Expose as an explicit advanced comparison variant so prediction on/off has distinct identities. Record accepted/rejected token counts and complete latency, retaining the same final-output validation. Do not auto-enable or shorten output caps to manufacture speed.
     - **Dependencies:** 3, 12, 17; runnable compatible deployment/API requires E1/E2.
     - **Validation:** Supported payload uses raw; disabled legacy request unchanged; invalid capability/API blocked; prediction variants deduplicate correctly; unsupported/ignored evidence not labelled proven; quality/latency remain separately reported.
-    - [ ] 18.1. Add scoped option/capability and payload/identity propagation.
-    - [ ] 18.2. Add explicit diagnostic/advanced experiment variants and usage comparison.
-    - [ ] 18.3. Add request/identity/complete-output tests and compatibility documentation.
+    - [x] 18.1. Add scoped option/capability and payload/identity propagation.
+    - [x] 18.2. Add explicit diagnostic/advanced experiment variants and usage comparison.
+    - [x] 18.3. Add request/identity/complete-output tests and compatibility documentation.
+    - Validation: 24 prediction/matrix/completion/judge cases passed. Explicit advanced UI/definition variants deduplicate separately, unsupported/stale/legacy claims block requests, disabled payload remains unchanged. Live prediction use/benefit postponed.
 
 - [ ] 19. Implement a bounded stable-segment cleanup diagnostic
     - **Objective:** Test overlapping cleanup with recording beyond existing exact whole-text speculation.

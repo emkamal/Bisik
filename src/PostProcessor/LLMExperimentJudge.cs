@@ -63,6 +63,7 @@ public sealed class LLMExperimentJudge(TranscriptionService service)
     public async Task<ExperimentJudgeReceipt> EvaluateAsync(ExperimentDefinition definition, string output,
         PostProcessorSettings judge, CancellationToken ct)
     {
+        judge = judge with { UsePrediction = false }; // The reference is judge data, never a prediction or cleanup input.
         ct.ThrowIfCancellationRequested();
         if (definition.RubricVersion != RubricVersion || output.Length > 100_000)
             throw new ArgumentException("Unsupported rubric or oversized output.");
