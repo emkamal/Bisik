@@ -24,4 +24,5 @@
     <EmbeddedResource Include="Resources\error.wav" />
   </ItemGroup>
 
+  <Import Project="../tools/Bisik.LatestBuild.targets" />
 </Project>

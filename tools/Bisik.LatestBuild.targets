@@ -1,0 +1,25 @@
+<Project>
+  <PropertyGroup>
+    <BisikBuildStateDirectory Condition="'$(BisikBuildStateDirectory)' == ''">$(APPDATA)\Bisik</BisikBuildStateDirectory>
+    <!-- Opt in once by installing the launcher. Other developers/CI keep ordinary builds. -->
+    <BisikRegisterLatestBuild Condition="'$(BisikRegisterLatestBuild)' == '' and Exists('$(BisikBuildStateDirectory)\launcher-path.txt')">true</BisikRegisterLatestBuild>
+  </PropertyGroup>
+  <Target Name="RegisterBisikBuild" AfterTargets="Build"
+          Condition="'$(OS)' == 'Windows_NT' and '$(BisikRegisterLatestBuild)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'">
+    <Exec Command="powershell -NoProfile -NonInteractive -File &quot;$(MSBuildThisFileDirectory)Register-BisikBuild.ps1&quot; -BuildDirectory &quot;$(TargetDir).&quot; -AssemblyName &quot;$(AssemblyName)&quot; -Configuration &quot;$(Configuration)&quot; -Kind Build -StateDirectory &quot;$(BisikBuildStateDirectory)\.&quot;"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="BisikRegistrationExitCode" />
+    </Exec>
+    <Warning Condition="'$(BisikRegistrationExitCode)' != '0'" Text="Bisik built successfully, but its latest-build launch target was not updated." />
+  </Target>
+  <Target Name="RegisterBisikPublish" AfterTargets="Publish"
+          Condition="'$(OS)' == 'Windows_NT' and '$(BisikRegisterLatestBuild)' == 'true' and '$(DesignTimeBuild)' != 'true'">
+    <Exec Command="powershell -NoProfile -NonInteractive -File &quot;$(MSBuildThisFileDirectory)Register-BisikBuild.ps1&quot; -BuildDirectory &quot;$(PublishDir).&quot; -AssemblyName &quot;$(AssemblyName)&quot; -Configuration &quot;$(Configuration)&quot; -Kind Publish -StateDirectory &quot;$(BisikBuildStateDirectory)\.&quot;"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="BisikRegistrationExitCode" />
+    </Exec>
+    <Warning Condition="'$(BisikRegistrationExitCode)' != '0'" Text="Bisik published successfully, but its latest-build launch target was not updated." />
+  </Target>
+</Project>

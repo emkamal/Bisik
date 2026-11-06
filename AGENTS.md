@@ -76,6 +76,12 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
     SettingsForm.cs                 # Tabbed settings window
     HistoryForm.cs                  # History viewer
   Program.cs                        # Entry point, single-instance mutex, ApplicationContext
+/tools
+  /Bisik.Launcher                    # Stable native Start/startup launcher for workspace builds
+  Bisik.LatestBuild.targets          # Successful Build/Publish registration; imported by src/Bisik.csproj
+  Register-BisikBuild.ps1            # Immutable runtime copies and atomic latest-build pointer
+  Install-BisikLauncher.ps1          # One-time launcher/fallback install preserving the existing pin
+  Bisik.BuildSupport.ps1             # Shared file hashing for Windows PowerShell compatibility
 ```
 
 Stick to this structure. Do not reorganize folders or rename files unless you explain the reason in a comment and update this document.
@@ -202,6 +208,14 @@ dotnet publish src/Bisik.csproj -c Release -r win-x64 --self-contained true -p:P
 ```
 
 The output `Bisik.exe` in `./publish` requires no installer and no admin rights.
+
+### Latest workspace build launcher
+
+- On machines where `tools/Install-BisikLauncher.ps1` has registered the launcher, every successful Windows build/publish of `src/Bisik.csproj` automatically updates `%APPDATA%\Bisik\latest-build.json`.
+- The installed `Bisik.exe` is the stable launcher. Keep its filename and Start shortcut intact; do not manually copy an app build over it. Runtime copies live under `%APPDATA%\Bisik\builds\`, so a running app does not lock normal build outputs.
+- The latest Debug, Release, RID or custom-output build wins. Failed compilation does not update the pointer. Design-time builds skip registration; use `-p:BisikRegisterLatestBuild=false` to opt out for CI/portable packaging.
+- Exit Bisik and reopen the existing Start pin to load changed code; rebuilds do not interrupt recording or hot-swap a running process. Startup registration follows the same launcher.
+- Cleanup retains five recent copies and protects running copies with a lease. If build copies were cleaned, the launcher uses its packaged fallback. Framework-dependent development builds require the .NET Windows Desktop runtime; self-contained publish copies/fallback do not.
 
 ---
 

@@ -165,3 +165,31 @@ transcription-plus-cleanup meaning. Set `BISIK_LATENCY_TRACE=1` before launching
 `%APPDATA%\Bisik\latency.jsonl` (100 sessions/2 MiB maximum).
 
 See [VERIFICATION.md](VERIFICATION.md) for checks actually run, remaining manual checks, and opt-in diagnostic tools. Automated tests do not establish universal application compatibility or microphone quality.
+
+## Always launch the latest workspace build
+
+The Start pin can use the stable native launcher installed at `%LOCALAPPDATA%\Programs\Bisik\Bisik.exe`.
+After the one-time setup, ordinary `dotnet build`, solution builds and `dotnet publish` automatically
+register the newest successful app output. Debug, Release and custom output paths all work.
+The shortcut itself stays unchanged; no repeated installation or copying is needed.
+
+**Exit Bisik and reopen the Start pin after rebuilding** to load the new code. A rebuild leaves
+an active recording/session alone. The launcher runs a separate copy under `%APPDATA%\Bisik\builds`,
+so the app does not lock `bin` files during the next build. Five recent copies are retained;
+running copies are protected. A failed compilation keeps the previous target. If build copies
+are missing, the launcher uses its self-contained fallback. Development copies need the installed
+.NET Windows Desktop runtime; published self-contained copies do not.
+
+One-time setup for another machine, from the repository root:
+
+~~~powershell
+dotnet publish tools/Bisik.Launcher/Bisik.Launcher.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/launcher
+dotnet publish src/Bisik.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:BisikRegisterLatestBuild=true -o artifacts/fallback
+powershell -NoProfile -File tools/Install-BisikLauncher.ps1 -LauncherExecutable artifacts/launcher/Bisik.Launcher.exe -FallbackExecutable artifacts/fallback/Bisik.exe
+~~~
+
+The installer backs up the previous executable/settings and keeps the existing Start pin and
+startup enablement. It may require Bisik to exit if Windows locks the installed executable.
+Subsequent builds need no setup command. Use `-p:BisikRegisterLatestBuild=false` to opt out on
+an opted-in machine. The installed launcher also supports `--resolve-target <report.json>` for
+non-inserting verification. Test/build receipts for this setup are under `artifacts/launcher-verification/`.

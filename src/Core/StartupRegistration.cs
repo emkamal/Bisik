@@ -23,6 +23,10 @@ public sealed class StartupRegistration
 
         if (enabled)
         {
+            // A workspace build runs from an immutable copy. Startup must follow the same
+            // stable launcher as Start, rather than pinning that one copy forever.
+            var registration = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik", "launcher-path.txt");
+            executablePath = ResolveExecutablePath(executablePath, registration);
             key.SetValue(AppName, QuoteIfNeeded(executablePath), RegistryValueKind.String);
             return;
         }
@@ -31,6 +35,13 @@ public sealed class StartupRegistration
         {
             key.DeleteValue(AppName, throwOnMissingValue: false);
         }
+    }
+
+    internal static string ResolveExecutablePath(string executablePath, string registration)
+    {
+        if (!File.Exists(registration)) return executablePath;
+        var launcher = File.ReadAllText(registration).Trim();
+        return Path.IsPathFullyQualified(launcher) && File.Exists(launcher) ? launcher : executablePath;
     }
 
     private static string QuoteIfNeeded(string executablePath)
