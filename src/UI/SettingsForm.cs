@@ -26,6 +26,11 @@ public sealed class SettingsForm : Form
     private readonly Func<AppSettings, TranscriptionService>? _serviceFactory;
     private AppSettings _loadedSettings = new();
     private CancellationTokenSource? _connectionTestCancellation;
+    private Task _connectionTestTask = Task.CompletedTask;
+    private bool _suppressTestFeedback;
+    private readonly Func<AudioSettings, AudioRecorder> _testRecorderFactory;
+    public Task ConnectionTestTask => _connectionTestTask;
+    public Task CancelConnectionTestAsync() { _suppressTestFeedback = true; _connectionTestCancellation?.Cancel(); return _connectionTestTask; }
     private CheckBox? _azureRealtimeCheckBox;
     private CheckBox? _liveCaptureCheckBox;
     private ComboBox? _transcriptionDelayComboBox;
@@ -79,8 +84,10 @@ public sealed class SettingsForm : Form
     {
     }
 
-    public SettingsForm(AudioRecorder? audioRecorder, TranscriptionService? transcriptionService, SettingsManager? settingsManager = null, Func<AppSettings, TranscriptionService>? serviceFactory = null)
+    public SettingsForm(AudioRecorder? audioRecorder, TranscriptionService? transcriptionService, SettingsManager? settingsManager = null,
+        Func<AppSettings, TranscriptionService>? serviceFactory = null, Func<AudioSettings, AudioRecorder>? testRecorderFactory = null)
     {
+        _testRecorderFactory = testRecorderFactory ?? (settings => new AudioRecorder(settings));
         _settingsManager = settingsManager ?? new SettingsManager();
         _audioRecorder = audioRecorder;
         _transcriptionService = transcriptionService;
@@ -1039,7 +1046,14 @@ public sealed class SettingsForm : Form
         return panel;
     }
 
-    private async void HandleTestConnectionClickAsync(object? sender, EventArgs eventArgs)
+    private async void HandleTestConnectionClickAsync(object? sender, EventArgs eventArgs) => await BeginConnectionTestAsync();
+    internal Task BeginConnectionTestAsync()
+    {
+        if (!_connectionTestTask.IsCompleted) return _connectionTestTask;
+        _suppressTestFeedback = false;
+        return _connectionTestTask = TestConnectionCoreAsync();
+    }
+    private async Task TestConnectionCoreAsync()
     {
         if (_transcriptionService is null || _testConnectionButton is null) return;
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -1051,7 +1065,7 @@ public sealed class SettingsForm : Form
         {
             var settings = BuildProviderTestSettings();
             // A separate recorder and fresh provider use the fields being tested, even before Apply.
-            using var recorder = new AudioRecorder(settings.Audio);
+            using var recorder = _testRecorderFactory(settings.Audio);
             recorder.StartRecording();
             _testConnectionButton.Text = "Recording: speak for 3 seconds...";
             await Task.Delay(TimeSpan.FromSeconds(3), cancellation.Token);
@@ -1059,17 +1073,17 @@ public sealed class SettingsForm : Form
             _testConnectionButton.Text = "Transcribing...";
             var service = _serviceFactory?.Invoke(settings) ?? _transcriptionService;
             var result = await service.TranscribeAsync(audio.FilePath, settings.DefaultLanguage, settings, cancellation.Token);
-            if (!IsDisposed) ShowModelessStatus(result.Succeeded ? "Test Connection Succeeded" : "Test Connection Failed",
+            if (!IsDisposed && !_suppressTestFeedback) ShowModelessStatus(result.Succeeded ? "Test Connection Succeeded" : "Test Connection Failed",
                 result.Succeeded ? (string.IsNullOrWhiteSpace(result.OutputText) ? "No speech recognized." : result.OutputText) : result.ErrorMessage);
         }
         catch (OperationCanceledException)
         {
-            if (!IsDisposed) ShowModelessStatus("Test Connection", "Cancelled or timed out.");
+            if (!IsDisposed && !_suppressTestFeedback) ShowModelessStatus("Test Connection", "Cancelled or timed out.");
         }
         catch (Exception exception)
         {
             new ErrorLogger().Log(exception);
-            if (!IsDisposed) ShowModelessStatus("Test Connection Failed", exception.Message);
+            if (!IsDisposed && !_suppressTestFeedback) ShowModelessStatus("Test Connection Failed", exception.Message);
         }
         finally
         {

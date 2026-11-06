@@ -18,6 +18,7 @@ public sealed class ExperimentSession : IAsyncDisposable
     private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object _gate = new();
     private Task<ExperimentTake>? _run;
+    private Task? _disposal;
     private TranscriptionSession? _recognition;
     private Task<RecordedAudio>? _persistence;
     private double _level;
@@ -136,13 +137,14 @@ public sealed class ExperimentSession : IAsyncDisposable
         _progress?.Report(progress);
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() { lock (_gate) return new(_disposal ??= DisposeCoreAsync()); }
+    private async Task DisposeCoreAsync()
     {
-        Cancel();
+        _lifetime.Cancel();
         if (_run is not null) { try { await _run.ConfigureAwait(false); } catch { /* Run caller receives the outcome. */ } }
         else _recorder.Dispose();
         // Only this session's generated path is deleted. Retention copies are owned by ExperimentStore.
-        if (AudioPath is not null) File.Delete(AudioPath);
-        _lifetime.Dispose();
+        try { if (AudioPath is not null) File.Delete(AudioPath); }
+        finally { _lifetime.Dispose(); }
     }
 }

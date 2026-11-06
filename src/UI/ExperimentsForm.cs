@@ -255,7 +255,9 @@ public sealed class ExperimentsForm : Form
         finally
         {
             _acceptProgress = false;
-            if (_capture is not null) { await _capture.DisposeAsync(); _capture = null; }
+            try { if (_capture is not null) await _capture.DisposeAsync(); }
+            catch (Exception ex) { Log("Audio cleanup failed: " + ex.GetType().Name); }
+            finally { _capture = null; }
             lease.Dispose(); IsBusy = false; _setup.Enabled = true; _reference.ReadOnly = false;
             _start.Enabled = true; _done.Enabled = false; _cancel.Enabled = false; _request.Visible = false;
             _cancellation?.Dispose(); _cancellation = null; Preview();

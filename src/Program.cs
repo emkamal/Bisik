@@ -116,6 +116,7 @@ static class Program
         private bool _vadMonitoringEnabled;
         private bool _isShuttingDown;
         private SettingsForm? _settingsForm;
+        private Task _settingsTestDrain = Task.CompletedTask;
         private HistoryForm? _historyForm;
         private ExperimentsForm? _experimentsForm;
         private readonly OperationGate _experimentOperation = new();
@@ -227,7 +228,7 @@ static class Program
         {
             try
             {
-                if (_experimentOperation.IsActive || _sessionCancellation is not null || _vadMonitoringEnabled)
+                if (_experimentOperation.IsActive || !_settingsTestDrain.IsCompleted || _sessionCancellation is not null || _vadMonitoringEnabled)
                 {
                     _trayIcon.ShowBalloon("Bisik", "Stop or cancel dictation before opening Settings.");
                     return;
@@ -242,7 +243,8 @@ static class Program
                     // React immediately to both Apply and OK so changes like deployment name,
                     // hotkey, endpoint, etc. take effect without requiring the form to close.
                     _settingsForm.SettingsApplied += ApplySettingsAndRebuildProviders;
-                    _settingsForm.FormClosed += (_, _) => _settingsForm = null;
+                    var opened = _settingsForm;
+                    _settingsForm.FormClosed += (_, _) => { _settingsTestDrain = opened.CancelConnectionTestAsync(); _settingsForm = null; };
                     _settingsForm.Show();
                     return;
                 }
@@ -287,13 +289,14 @@ static class Program
                         (settings, definition, token, progress) => new ExperimentSession(new AudioRecorder(settings.Audio),
                             CreateSuiteService(settings), settings, definition, token, progress), new ExperimentStore(),
                         () => _isShuttingDown || _sessionCancellation is not null || _vadMonitoringEnabled || _processing
-                            || _settingsForm is { Visible: true } || !_recoveryTask.IsCompleted ? null : _experimentOperation.TryEnter());
+                            || _settingsForm is { Visible: true } || !_settingsTestDrain.IsCompleted || !_recoveryTask.IsCompleted ? null : _experimentOperation.TryEnter());
                     _experimentsForm.FormClosed += (_, _) => { _experimentsForm = null; client.Dispose(); if (_experimentHttpClient == client) _experimentHttpClient = null; };
                     _experimentsForm.Show();
                 }
+                _experimentsForm.RefreshIdleSettings(_settings);
                 _experimentsForm.WindowState = FormWindowState.Normal; _experimentsForm.Show(); _experimentsForm.Activate();
             }
-            catch (Exception ex) { HandleRuntimeException(ex, "Experiments"); }
+            catch (Exception ex) { if (_experimentsForm is null) { _experimentHttpClient?.Dispose(); _experimentHttpClient = null; } HandleRuntimeException(ex, "Experiments"); }
         }
 
         private void RegisterConfiguredHotkey()
@@ -443,6 +446,8 @@ static class Program
             _pipelineSession?.Cancel();
             _vadMonitoringEnabled = false;
             _audioRecorder.StopVoiceActivityMonitoring();
+            try { if (_settingsForm is not null) await _settingsForm.CancelConnectionTestAsync(); await _settingsTestDrain; }
+            catch (Exception ex) { _errorLogger.Log(ex); }
             try { if (_experimentsForm is not null) await _experimentsForm.DrainAsync(); }
             catch (Exception ex) { _errorLogger.Log(ex); }
             try
@@ -497,7 +502,7 @@ static class Program
 
         private async Task HandleRegisteredHotkeyAsync()
         {
-            if (_isShuttingDown || _experimentOperation.IsActive || _settingsForm is { Visible: true }) return;
+            if (_isShuttingDown || _experimentOperation.IsActive || !_settingsTestDrain.IsCompleted || _settingsForm is { Visible: true }) return;
             try
             {
                 if (_processing)
@@ -620,7 +625,7 @@ static class Program
 
         private Task InsertLatestAsync()
         {
-            if (_isShuttingDown || _experimentOperation.IsActive || _settingsForm is { Visible: true }) return Task.CompletedTask;
+            if (_isShuttingDown || _experimentOperation.IsActive || !_settingsTestDrain.IsCompleted || _settingsForm is { Visible: true }) return Task.CompletedTask;
             var claim = _latestResult.Claim(allowRecovery: true);
             if (claim is null) return Task.CompletedTask;
             return _recoveryTask = InsertLatestCoreAsync(claim);
@@ -640,7 +645,7 @@ static class Program
 
         private async Task UseFastOutputAsync()
         {
-            if (_isShuttingDown || _experimentOperation.IsActive || _settingsForm is { Visible: true }) return;
+            if (_isShuttingDown || _experimentOperation.IsActive || !_settingsTestDrain.IsCompleted || _settingsForm is { Visible: true }) return;
             if (_processing)
             {
                 if (_pipelineSession?.HasFinalTranscript == true) _pipelineSession.UseTranscriptNow();
