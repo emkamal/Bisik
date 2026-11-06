@@ -53,6 +53,14 @@ Settings records contain mutable arrays/dictionaries: deep-snapshot new fields. 
 
 New logical components: `Models/ExperimentDefinition.cs`, `Models/ExperimentResult.cs`; `Core/ExperimentMatrix.cs`, `ExperimentScoring.cs`, `ExperimentSession.cs`, `ExperimentRunner.cs`, `ExperimentStore.cs`; `PostProcessor/LLMExperimentJudge.cs`; `UI/ExperimentsForm.cs`, `ExperimentWeightsForm.cs`. Keep related small records together. A judge adapter reuses the service completion path; it does not duplicate HTTP transport. Avoid a new general workflow/form framework or new NuGet packages.
 
+### Autonomous execution boundary (6 November 2026)
+
+User direction: postpone work requiring human intervention. Execute local source, fake-based validation and documentation for items 1-20 and 22. Item 21 and all its subtasks remain unchecked and postponed until the user supplies E4. Completing local code does not complete its separate external acceptance.
+
+Postponed acceptance: E1 deployment/access selection; E2 live provider/model probes and paid quality/latency comparisons; E3 agent/secrets/private-artifact setup and actual pipeline execution; E4 Speech service/contract selection and training/deployment. Also postpone human spoken-script/microphone-quality acceptance. UI checks that can be automated locally remain in scope; record unsupported or unrun environment checks truthfully. No user intervention is needed for mocked contract tests, source-only pipeline templates or documenting these boundaries.
+
+When local implementation/testing for an item passes, check that item with its evidence and explicitly list any postponed external acceptance. Do not check item 21 or declare those external conditions verified. Continue past postponed work without waiting for the user.
+
 ### Conventions and execution guide
 
 Read `AGENTS.md`, this introduction and the selected task. Work one task at a time unless independent tasks are explicitly coordinated. Select an unchecked task with completed dependencies; inspect its named symbols for drift before editing. Preserve completed checkboxes and stable IDs. Mark each subtask checked only after its implementation/validation passes; mark its parent only when all subtasks and acceptance criteria pass. Leave blocked work unchecked and append `Blocker: ...` with the missing prerequisite. Update incorrect assumptions locally rather than repeating broad research. Record unrun live/manual checks separately. Do not commit until requested.
@@ -120,15 +128,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
 
 ### Phase 2: Evaluation, recording, scheduling and persistence
 
-- [ ] 5. Add the fixed meaning/readability judge
+- [x] 5. Add the fixed meaning/readability judge
     - **Objective:** Assess semantic fidelity separately from surface wording and fluency.
     - **Location:** **new** `src/PostProcessor/LLMExperimentJudge.cs`; task 2 service stage; experiment evaluation records.
     - **Implementation:** One separate judge model/effort selection on the same connection, fixed across candidates. Judge sees reference + candidate final text + reviewed terms/rubric, never candidate model/prompt/latency/scores; raw baseline uses the same rubric. Treat all embedded instructions as data. Request bounded JSON with separate meaning/readability 0–100, enumerated category/severity and short reference/output evidence. Meaning anchors: extreme 0–10, major 11–30, substantial omissions 31–60, minor loss 61–85, preserved 86–100. Preserve reported score; major/extreme evidence caps effective meaning at 30/10 with visible reason. Readability remains independent. Validate schema/completion/ranges/finite numbers/evidence bounds. Cache by reference/output/terms/rubric/judge API+model+effective settings; weight edits never invalidate it. Judge-only retry does not regenerate text. No hidden-reasoning requests or fabricated missing scores.
     - **Dependencies:** 1, 2, 4.
     - **Validation:** Malformed JSON/refusal/truncation/oversized evidence fails; major 80→30 remains eligible; extreme 80→10; readability unchanged; injected instructions stay data; correct cache invalidation and judge-only retry.
-    - [ ] 5.1. Add fixed rubric, blinded payload construction and validated judge adapter using shared transport.
-    - [ ] 5.2. Add evidence caps, evaluation cache and retry/invalidation contracts.
-    - [ ] 5.3. Add `ExperimentJudgeTests` with fake completion responses and no live grading.
+    - [x] 5.1. Add fixed rubric, blinded payload construction and validated judge adapter using shared transport.
+    - [x] 5.2. Add evidence caps, evaluation cache and retry/invalidation contracts.
+    - [x] 5.3. Add `ExperimentJudgeTests` with fake completion responses and no live grading.
+    - Validation: 10 judge tests passed for caps, schema bounds, blinding, cache and judge-only retry. Live grading postponed under E2.
 
 - [ ] 6. Own a single capture and shared raw transcription
     - **Objective:** Record once without touching normal dictation targets or output.
@@ -288,7 +297,8 @@ These are additive followups from the original research, not requirements to var
     - [ ] 20.2. Reuse fixed evaluator and safe comparison artifacts for one-stage outputs.
     - [ ] 20.3. Extend diagnostic request/bounds/label tests and retain explicit unsupported receipts.
 
-- [ ] 21. Prepare the conditional Azure Speech provider comparison
+- [ ] 21. Prepare the conditional Azure Speech provider comparison (POSTPONED by user)
+    - Blocker: E4 requires user-supplied existing service/access and exact API contract. All adapter work is postponed; continue to item 22.
     - **Objective:** Account for phrase-list/Custom Speech alternatives as a separate recognition service.
     - **Location:** **new** `src/Providers/AzureSpeechProvider.cs`; `ITranscriptionProvider`; `ProviderType/ProviderSettings`; `Program.BuildProviderMap`; `SettingsForm`; fixture diagnostics.
     - **Implementation:** This task is blocked until E4 identifies an existing authorized Speech endpoint and exact supported transcription/hint contract. Then implement a thin file-based provider using built-in HTTP or a justified SDK, existing service retry/deadline boundaries and DPAPI-protected connection settings. Add phrase hints only to the chosen documented supporting API; an existing Custom Speech deployment is configuration, not training/provisioning code. Handle supported audio/duration/locale limits and normalize the returned final text. Register provider/UI/docs and compare identical saved WAVs in diagnostics, not additional ASR permutations in first-version Experiments. Do not create resources or claim OpenAI Whisper supports Speech phrase lists.
