@@ -34,6 +34,12 @@ public sealed class ExperimentsForm : Form
     private readonly ProgressBar _request = new() { Dock = DockStyle.Fill, Visible = false, Style = ProgressBarStyle.Marquee };
     private readonly TabControl _tabs = new() { Dock = DockStyle.Fill };
     private readonly TabPage _resultsPage = new("Results");
+    private readonly Label _winner = new() { Dock = DockStyle.Fill, AutoSize = true, Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold) };
+    private readonly DataGridView _results = Grid("Ranked results");
+    private readonly TextBox _detail = Editor("Reference raw output and evidence");
+    private ExperimentWeights _weights = new();
+    private ExperimentWeightsForm? _weightsForm;
+    private bool _refreshing;
     private CancellationTokenSource? _cancellation;
     private ExperimentSession? _capture;
     private Task _work = Task.CompletedTask;
@@ -47,7 +53,7 @@ public sealed class ExperimentsForm : Form
     private ExperimentDefinition? _loadedDefinition;
     public bool IsBusy { get; private set; }
     public ExperimentRun? CurrentRun { get; private set; }
-    public Task DrainAsync() { _cancellation?.Cancel(); return _work; }
+    public async Task DrainAsync() { _cancellation?.Cancel(); try { await _work; } finally { await _checkpoint; } }
 
     public ExperimentsForm(AppSettings settings, Func<AppSettings, TranscriptionService> serviceFactory,
         Func<AppSettings, ExperimentDefinition, CancellationToken, IProgress<ExperimentCaptureProgress>, ExperimentSession> captureFactory,
@@ -86,7 +92,7 @@ public sealed class ExperimentsForm : Form
         var suggest = new Button { Text = "Suggest terms", AutoSize = true };
         suggest.Click += (_, _) => { foreach (var term in ExperimentScoring.SuggestTerms(_reference.Text)) _terms.Rows.Add(false, term, ""); };
         options.Controls.AddRange([new Label { Text = "Repeats", AutoSize = true }, _repeats, _retain, suggest]); fields.Controls.Add(options, 0, 6);
-        _setup.Controls.Add(fields); _tabs.TabPages.AddRange([setupPage, _resultsPage]); root.Controls.Add(_tabs, 0, 0);
+        _setup.Controls.Add(fields); BuildResults(); _tabs.TabPages.AddRange([setupPage, _resultsPage]); root.Controls.Add(_tabs, 0, 0);
         var commands = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
         var probe = Command("Verify unknown efforts", () => StartWorkAsync(true, false));
         var open = Command("Open saved…", OpenAsync); var save = Command("Save setup", SaveSetupAsync);
@@ -106,7 +112,7 @@ public sealed class ExperimentsForm : Form
             try { await DrainAsync(); } catch (Exception ex) { Log(ex.GetType().Name); }
             _allowClose = true; Close();
         };
-        FormClosed += (_, _) => { _help.Dispose(); _cancellation?.Dispose(); };
+        FormClosed += (_, _) => { _weightsForm?.Dispose(); _help.Dispose(); _cancellation?.Dispose(); };
         SelectPrompt(); Preview();
     }
 
@@ -146,7 +152,7 @@ public sealed class ExperimentsForm : Form
                 Cell(r, 2).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))).ToImmutableArray(),
             Judge = new("Judge", _judgeDeployment.Text.Trim(), _judgeModel.Text.Trim(), Efforts(Convert.ToString(_judgeEffort.SelectedItem) ?? "default")),
             Limits = (_loadedDefinition?.Limits ?? new()) with { Repetitions = (int)_repeats.Value }, RetainAudio = _retain.Checked,
-            Weights = CurrentRun?.Definition.Weights ?? _loadedDefinition?.Weights ?? new(),
+            Weights = _weights,
         }.Snapshot();
     }
     private void Preview()
@@ -218,7 +224,7 @@ public sealed class ExperimentsForm : Form
                     _progress.Maximum = Math.Max(1, p.Total); _progress.Value = Math.Min(p.Completed, _progress.Maximum); _request.Visible = p.RequestActive;
                     Log($"{p.State}: {p.Completed}/{p.Total}"); _checkpoint = SaveAfterAsync(_checkpoint, p.Snapshot); RefreshResults();
                 }), _evidence);
-            _acceptProgress = false;
+            _acceptProgress = false; CurrentRun = CurrentRun with { Definition = CurrentRun.Definition with { Weights = _weights } };
             await _checkpoint; await _store.SaveAsync(CurrentRun, CancellationToken.None, _capture?.AudioPath);
             RefreshResults(); _tabs.SelectedTab = _resultsPage; Log(CurrentRun.State.ToString());
         }
@@ -247,7 +253,7 @@ public sealed class ExperimentsForm : Form
         CurrentRun = await _store.LoadAsync(id, CancellationToken.None); _loadedDefinition = CurrentRun.Definition;
         var settings = await _store.LoadConnectionAsync(id, CancellationToken.None);
         if (settings is not null) _settings = settings; else Log("Connection unavailable; inspection/export remains available.");
-        var d = CurrentRun.Definition; _reference.Text = d.Reference; _models.Rows.Clear();
+        var d = CurrentRun.Definition; _weights = d.Weights; _weightsForm?.SetWeights(_weights); _reference.Text = d.Reference; _models.Rows.Clear();
         foreach (var m in d.Models) _models.Rows.Add(m.Name, m.Deployment, m.Model, string.Join(",", m.Efforts.Select(e => e ?? "default")));
         _promptIndex = -1; _prompts.Rows.Clear(); foreach (var p in d.Prompts) _prompts.Rows.Add(p.Name, p.SystemPrompt);
         _terms.Rows.Clear(); foreach (var t in d.Terms) _terms.Rows.Add(true, t.Canonical, string.Join(",", t.WrongAliases));
@@ -255,5 +261,105 @@ public sealed class ExperimentsForm : Form
         _repeats.Value = d.Limits.Repetitions; _retain.Checked = d.RetainAudio; SelectPrompt(); RefreshResults();
         _tabs.SelectedTab = _resultsPage; Log(CurrentRun.Interrupted ? "Interrupted run recovered." : "Saved run opened.");
     }
-    private void RefreshResults() { /* Task 10 adds the local weighted view. */ }
+    private void BuildResults()
+    {
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4 };
+        layout.RowStyles.Add(new(SizeType.AutoSize)); layout.RowStyles.Add(new(SizeType.Percent, 48));
+        layout.RowStyles.Add(new(SizeType.Percent, 52)); layout.RowStyles.Add(new(SizeType.AutoSize));
+        _results.ReadOnly = true; _results.AllowUserToAddRows = false; _results.AllowUserToDeleteRows = false;
+        AddColumns(_results, "Rank", "Candidate", "Score", "Wording", "Identifiers", "Meaning", "Readability", "Speed", "Samples / failed / judged", "Cleanup ms (median)", "Estimated Stop→final ms", "Warnings");
+        _detail.ReadOnly = true;
+        _results.SelectionChanged += (_, _) => { if (!_refreshing) ShowDetail(); };
+        var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
+        var weights = new Button { Text = "Weights…", AutoSize = true }; weights.Click += (_, _) => ShowWeights();
+        commands.Controls.Add(weights);
+        foreach (var format in Enum.GetValues<HistoryCopyFormat>())
+        {
+            var copy = new Button { Text = "Copy " + format, AutoSize = true };
+            copy.Click += (_, _) => { try { Copy(format); } catch (Exception ex) { Log(ex.GetType().Name); } }; commands.Controls.Add(copy);
+        }
+        commands.Controls.Add(Command("Export JSON…", async () =>
+        {
+            if (CurrentRun is null) return;
+            using var dialog = new SaveFileDialog { Filter = "Experiment JSON|*.json", FileName = "experiment.json" };
+            if (dialog.ShowDialog(this) == DialogResult.OK) await File.WriteAllTextAsync(dialog.FileName, ExperimentExport.Format(CurrentRun, _weights, HistoryCopyFormat.Json));
+        }));
+        commands.Controls.Add(Command("Import JSON…", async () =>
+        {
+            using var dialog = new OpenFileDialog { Filter = "Experiment JSON|*.json" };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            if (new FileInfo(dialog.FileName).Length > 32 * 1024 * 1024) throw new InvalidDataException("Oversized import.");
+            var run = System.Text.Json.JsonSerializer.Deserialize<ExperimentRun>(await File.ReadAllTextAsync(dialog.FileName)) ?? throw new InvalidDataException("Empty import.");
+            ExperimentStore.Validate(run); await _store.SaveAsync(run, CancellationToken.None); await LoadAsync(run.Definition.Id);
+        }));
+        layout.Controls.Add(_winner, 0, 0); layout.Controls.Add(_results, 0, 1); layout.Controls.Add(_detail, 0, 2); layout.Controls.Add(commands, 0, 3);
+        _resultsPage.Controls.Add(layout);
+    }
+    internal void SetViewWeights(ExperimentWeights weights)
+    {
+        weights.Validate(); _weights = weights;
+        if (CurrentRun is not null)
+        {
+            CurrentRun = CurrentRun with { Definition = CurrentRun.Definition with { Weights = weights } };
+            if (!IsBusy) _checkpoint = SaveAfterAsync(_checkpoint, CurrentRun);
+        }
+        RefreshResults();
+    }
+    private void ShowWeights()
+    {
+        if (_weightsForm is null || _weightsForm.IsDisposed)
+        {
+            _weightsForm = new(_weights); _weightsForm.WeightsChanged += SetViewWeights;
+            _weightsForm.Show(this);
+        }
+        else { _weightsForm.Show(); _weightsForm.BringToFront(); }
+    }
+    private void Copy(HistoryCopyFormat format)
+    {
+        if (CurrentRun is null) return;
+        var data = new DataObject(); data.SetData(DataFormats.UnicodeText, ExperimentExport.Format(CurrentRun, _weights, format));
+        if (format == HistoryCopyFormat.Table) data.SetData(DataFormats.Html, ExperimentExport.HtmlClipboard(CurrentRun, _weights));
+        Clipboard.SetDataObject(data, true, 5, 50);
+    }
+    private void RefreshResults()
+    {
+        if (CurrentRun is null || IsDisposed) return;
+        var selected = _results.CurrentRow?.Tag as string;
+        _refreshing = true;
+        try
+        {
+            _results.Rows.Clear(); var ranked = ExperimentScoring.Rank(CurrentRun, _weights);
+            var winners = ranked.Where(r => r.Rank == 1).ToArray();
+            _winner.Text = winners.Length == 0 ? "No winner: all weights are zero or a positively weighted factor is unavailable."
+                : $"Top for these weights: {string.Join(" / ", winners.Select(r => CurrentRun.Trials.First(t => t.Candidate.Id == r.CandidateId).Candidate.Name))} · {winners[0].Score:0.0}" + (winners.Length > 1 ? " · Tie" : "")
+                    + (winners.Any(r => r.Provisional) ? " · Provisional" : "");
+            static string Number(double? value) => value is { } n ? n.ToString("0.0") : "—";
+            foreach (var r in ranked)
+            {
+                var trials = CurrentRun.Trials.Where(t => t.Candidate.Id == r.CandidateId).ToArray();
+                var timings = trials.Where(t => t.Generation == ExperimentGenerationStatus.Succeeded && t.CleanupMs.HasValue).Select(t => t.CleanupMs!.Value).Order().ToArray();
+                double? cleanup = timings.Length == 0 ? null : timings.Length % 2 == 1 ? timings[timings.Length / 2]
+                    : (timings[timings.Length / 2 - 1] + timings[timings.Length / 2]) / 2;
+                var warning = string.Join(", ", r.Warnings.Select(w => w.Severity.ToString()).Distinct().Concat(trials.SelectMany(t => t.LocalWarnings)).Distinct());
+                var index = _results.Rows.Add(r.Rank?.ToString() ?? "—", trials[0].Candidate.Name, Number(r.Score), Number(r.Factors.Wording), Number(r.Factors.Identifiers),
+                    Number(r.Factors.Meaning), Number(r.Factors.Readability), Number(r.Factors.Speed), $"{r.Successful}/{r.Failed}/{r.Judged}" + (r.Provisional ? " provisional" : ""),
+                    Number(cleanup), Number(cleanup + CurrentRun.Take.SharedStopToRawMs), warning);
+                _results.Rows[index].Tag = r.CandidateId;
+                if (r.CandidateId == selected) _results.CurrentCell = _results.Rows[index].Cells[0];
+            }
+        }
+        finally { _refreshing = false; }
+        ShowDetail();
+    }
+    private void ShowDetail()
+    {
+        if (CurrentRun is null || _results.CurrentRow?.Tag is not string id) return;
+        _detail.Text = $"Reference\r\n{CurrentRun.Definition.Reference}\r\n\r\nShared raw ({CurrentRun.Take.SharedStopToRawMs:0.0} ms Stop→raw)\r\n{CurrentRun.Take.RawText}\r\n\r\n" +
+            string.Join("\r\n\r\n", CurrentRun.Trials.Where(t => t.Candidate.Id == id).Select(t =>
+                $"Repeat {t.RepeatIndex + 1}: {t.Generation}/{t.EvaluationStatus}; model {t.Candidate.Model}; deployment {t.Candidate.Deployment}; requested {t.Candidate.RequestedEffort ?? "default"}; effective {t.Candidate.EffectiveEffort ?? "omitted"} ({t.Candidate.Verification})\r\n"
+                + $"Cleanup {t.CleanupMs:0.0} ms; judge {t.JudgeMs:0.0} ms; failure {t.FailureCode}\r\n{t.Output}\r\nTerms: "
+                + string.Join("; ", t.TermEvidence.Select(e => $"{e.Canonical}: {e.Correct} correct / {e.Wrong} wrong"))
+                + $"\r\nReported/effective meaning: {t.Evaluation?.ReportedMeaning}/{t.Evaluation?.EffectiveMeaning}\r\n"
+                + string.Join("\r\n", t.Evaluation?.Warnings.Select(w => $"{w.Severity} {w.Category}: {w.ReferenceEvidence} → {w.OutputEvidence}: {w.Explanation}") ?? [])));
+    }
 }

@@ -185,15 +185,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 9.3. Add `ExperimentsFormTests`; share only the small existing STA host if needed.
     - Validation: 16 experiment/history STA tests passed; build passed. Long editors, input validation, exclusive repeated start and close/capture drain verified. Physical DPI/keyboard and human microphone acceptance remain unrun.
 
-- [ ] 10. Build live weighted results and detail inspection
+- [x] 10. Build live weighted results and detail inspection
     - **Objective:** Make the tradeoff and winner immediately understandable and adjustable.
     - **Location:** `ExperimentsForm.cs` (new); **new** `src/UI/ExperimentWeightsForm.cs`; task 4 scoring.
     - **Implementation:** Prominent Top for these weights, all factor values, warnings, samples/failures and measured cleanup/estimated total columns. Selecting a result shows reference/raw/edited text, missing terms and judge evidence/effective settings. Owned modeless weights popup: synchronized TrackBar+NumericUpDown 0–100, relative percentages, reset defaults and finite positive B input. Recompute locally on edits; maintain selected candidate ID during resort. All-zero/missing factors show explanation, no winner; zero-weight unavailable factors do not block other scores. Major-error rows remain eligible and clearly flagged even when speed-only weights make them win. Show ties/provisional results and explicit copy/export actions, never automatic output.
     - **Dependencies:** 4, 5, 8, 9.
     - **Validation:** Weight synchronization without recursion/API calls, all-zero/missing versus zero, warnings without exclusion, stable selection/ties, popup disposal, exports and same ranking after reopen.
-    - [ ] 10.1. Build grid/winner/detail views with honest timing and warning labels.
-    - [ ] 10.2. Build synchronized weights/B editor and immediate cached reranking.
-    - [ ] 10.3. Extend STA tests for zero weights, major-error winner, selection and no network work.
+    - [x] 10.1. Build grid/winner/detail views with honest timing and warning labels.
+    - [x] 10.2. Build synchronized weights/B editor and immediate cached reranking.
+    - [x] 10.3. Extend STA tests for zero weights, major-error winner, selection and no network work.
+    - Validation: 16 UI/scoring cases passed, then 2 popup/result tests passed after adding owned weight checkpoints. Build passed. No live calls or automatic output.
 
 - [ ] 11. Integrate tray access, operation ownership and shutdown
     - **Objective:** Ensure experiments cannot capture/insert concurrently with normal app work.
