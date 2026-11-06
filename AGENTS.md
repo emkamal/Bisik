@@ -232,3 +232,5 @@ The output `Bisik.exe` in `./publish` requires no installer and no admin rights.
 The same steps apply for adding a provider to the post-processor — it shares the same `ProviderSettings` model and factory pattern.
 
 Experiment contracts: Models/ExperimentDefinition.cs and ExperimentResult.cs hold versioned immutable setup/results without connection secrets.
+
+Experiments components: Core/ExperimentMatrix.cs, ExperimentScoring.cs, ExperimentSession.cs, ExperimentRunner.cs, ExperimentStore.cs, ExperimentExport.cs, ExperimentOptions.cs and OperationGate.cs; PostProcessor/LLMExperimentJudge.cs and ICompletionPostProcessor.cs; UI/ExperimentsForm.cs and ExperimentWeightsForm.cs. TabularExport.cs shares only explicit Unicode table formatting with HistoryExport. Models hold immutable versioned setup/take/trial/evaluation records. No public experiment DTO contains ProviderSettings. The composition root owns the suite HTTP client, operation lease, capture and shutdown drain. Keep generation/evaluation separate and all automatic dictation output success-only; recovery claims require explicit user commands.

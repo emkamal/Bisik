@@ -169,3 +169,9 @@ These tools do not enable startup registration, replace installed executables or
   the physical microphone, or the user's clipboard.
 - Final Release build passed with zero warnings/errors and registered as the latest workspace
   build. Changes remain uncommitted; exit Bisik and reopen its existing Start pin to load them.
+
+## Experiments first version (6 November 2026)
+
+Local validation uses fakes and isolated test data: immutable contracts, exact capability/matrix behavior, WER/identifier/speed/repeat/tie/missing factors, blinded judge caps/cache/schema, final-buffer capture, cancellation/deadlines, generation-before-judge, seeded repeats, selected evaluation reruns, DPAPI snapshots/source preservation, interrupted/corrupt/disk-failure recovery, Unicode exports, STA editors/weights/selection/close ownership, shared fixture scheduling and raw recovery claims. Solution tests passed: 335 before the final cross-component case; the final receipt is recorded in plan.md. Builds use BisikRegisterLatestBuild=false; installed runtime/launcher, active settings and cloud resources were not updated.
+
+Unrun/postponed: real silence/speech quality, microphone disconnection, physical 100/150/200% DPI, constrained monitor layout and keyboard-only acceptance; installed-app tray/global hotkey routing; live configured-provider quality/latency/judge comparisons. Fake requests prove client behavior only. E1/E2 access/probes and E3 paid CI/agent/secrets/private destinations require external setup. Item 21 and E4 Azure Speech service/contract/training selection are postponed by the user. No cloud compatibility/performance or universal insertion acceptance is claimed.

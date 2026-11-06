@@ -231,15 +231,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 13.3. Extend service/session/output/claim tests for failure, timeout and races.
     - Validation: 59 recovery/service/output regressions passed; 3 focused recovery cases rerun after excluding completed fast selection. Automatic claims reject recovery; explicit commands preserve failed provenance and newer publications.
 
-- [ ] 14. Validate and document the complete first version
+- [x] 14. Validate and document the complete first version
     - **Objective:** Make the core feature reviewable and verifiably compatible.
     - **Location:** `AGENTS.md`, `README.md`, `VERIFICATION.md`, `sample.settings.json` if applicable; `tests/Bisik.Tests`.
     - **Implementation:** Document new files, workflow, same-take limitations, scoring formula/versions, judge cost/request counts, warnings without exclusion, retention/export and diagnostic commands. State that one sample is provisional and small-sample p95 is not a reliable tail estimate. Add integration tests proving one capture/recognition, identical raw across matrix, no auto-apply/output, major-error eligibility, partial saves/reopen, invalid efforts, shutdown and zero/missing weights. Manual checklist: real silence/speech, mic disconnection, 100/150/200% DPI, constrained display, keyboard-only operation and configured provider comparisons. Keep manual/live items unrun until actually verified; do not require unavailable cloud access to claim unit tests passed.
     - **Dependencies:** 1–13.
     - **Validation:** Focused/full suite and build pass with registration disabled; diff check passes; documentation matches effective behavior; all unrun checks identified separately.
-    - [ ] 14.1. Update project structure, behavior/configuration/export/scoring documentation and placeholder-only samples.
-    - [ ] 14.2. Add/run cross-component regressions and full build/test/diff checks.
-    - [ ] 14.3. Record manual/live acceptance status explicitly without altering installation or cloud resources.
+    - [x] 14.1. Update project structure, behavior/configuration/export/scoring documentation and placeholder-only samples.
+    - [x] 14.2. Add/run cross-component regressions and full build/test/diff checks.
+    - [x] 14.3. Record manual/live acceptance status explicitly without altering installation or cloud resources.
+    - Validation: full solution build/test passed (336 tests, no skips), registration disabled; staged diff check passed. Manual/live acceptance is explicitly unrun/postponed in VERIFICATION.md; no installed/cloud changes.
 
 ### Phase 5: Earlier code-related quality and latency recommendations
 
