@@ -230,3 +230,5 @@ The output `Bisik.exe` in `./publish` requires no installer and no admin rights.
 5. Document the required fields (endpoint, key format, etc.) in `README.md`
 
 The same steps apply for adding a provider to the post-processor — it shares the same `ProviderSettings` model and factory pattern.
+
+Experiment contracts: Models/ExperimentDefinition.cs and ExperimentResult.cs hold versioned immutable setup/results without connection secrets.
