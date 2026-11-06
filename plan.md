@@ -139,15 +139,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 5.3. Add `ExperimentJudgeTests` with fake completion responses and no live grading.
     - Validation: 10 judge tests passed for caps, schema bounds, blinding, cache and judge-only retry. Live grading postponed under E2.
 
-- [ ] 6. Own a single capture and shared raw transcription
+- [x] 6. Own a single capture and shared raw transcription
     - **Objective:** Record once without touching normal dictation targets or output.
     - **Location:** **new** `src/Core/ExperimentSession.cs`; `AudioRecorder`, `CapturedRecording`, `TranscriptionSession`; `Program.StartRecording` ordering precedent.
     - **Implementation:** Dedicated recorder and raw-only service/session with history, cleanup, speculation and sounds disabled; use the current transcription settings/live path and complete-file fallback. Subscribe chunks before capture; listen immediately while network setup runs. Track actual audio levels with sustained threshold/activity duration, show a quiet hint after five seconds, never stop on a pause. Distinguish no buffers/device failure from quiet input. Done calls RequestStop, drains final buffers, persists/owns the WAV task and freezes one raw string. Measure shared Stop→raw monotonically. Limit capture to five minutes with a visible limit-stop notice. Empty raw stops paid cleanup/judging. Cancellation/disposal owns setup/sender/persistence/recorder and rejects late STT. Audio is temporary until the retention decision is honored.
     - **Dependencies:** 1, 2.
     - **Validation:** One capture/recognition; complete final buffer; setup failure fallback; silent/empty take; repeated Done; mic error; cancellation; no history/clipboard/output; real activity callbacks coalesced.
-    - [ ] 6.1. Implement session state, chunk/level subscriptions and raw-only recognition.
-    - [ ] 6.2. Implement Done/limit/abort/drain/persistence ownership and quiet hints.
-    - [ ] 6.3. Add `ExperimentSessionTests` using existing fake IWaveIn/stream patterns.
+    - [x] 6.1. Implement session state, chunk/level subscriptions and raw-only recognition.
+    - [x] 6.2. Implement Done/limit/abort/drain/persistence ownership and quiet hints.
+    - [x] 6.3. Add `ExperimentSessionTests` using existing fake IWaveIn/stream patterns.
+    - Validation: 58 capture/session/service regressions passed, including 7 experiment capture cases. Existing stream setup/file-fallback regressions passed. Human microphone acceptance postponed.
 
 - [ ] 7. Run cleanup trials and evaluation as separate phases
     - **Objective:** Execute the matrix predictably and preserve partial progress.
