@@ -220,15 +220,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 12.3. Add parser/CLI tests with fakes and a small held-out test corpus.
     - Validation: 8 CLI/runner cases passed; 6 fixture/parser cases rerun after adding raw identity and direct-run scheduling comparison. Saved WAV recognizes once; live model comparisons postponed.
 
-- [ ] 13. Preserve normal dictation raw text after cleanup failure or timeout
+- [x] 13. Preserve normal dictation raw text after cleanup failure or timeout
     - **Objective:** Prevent losing a long successful recognition when cleanup fails; recovery stays explicit.
     - **Location:** `FinalTextSelection.SelectAsync`, `TranscriptionSession.SelectFinalAsync/CompleteCoreAsync`; `TranscriptionService.TranscribeCoreAsync`; `LatestResultStore`; `Program.CompleteRecordingCoreAsync/InsertLatestAsync`; `TrayIcon.AddResultCommands`, `ReviewPopupForm`.
     - **Implementation:** Expose an immutable authoritative raw recovery snapshot before cleanup begins; do not recover partial/late STT. Distinguish cleanup failure/deadline from user cancellation/shutdown. General failure can return retained raw, but timeout uses the cancellation path and must read the session snapshot before ResetSession; merely changing catch:230 is insufficient. Add a labelled raw-recovery pending kind while retaining original failure status. Automatic claims/output remain success-only. An explicit recovery command opens review/copy or deliberately claims raw for insertion into a newly validated target. Never automatically copy/paste, fake successful cleanup/history, or relax OutputHandler focus/clipboard checks. Reuse atomic claims/dismissal so old recovery completion cannot clear a newer result.
     - **Dependencies:** 2.
     - **Validation:** HTTP/parse failure and cleanup deadline independently recover final raw; user/shutdown cancellation and late STT do not auto-recover; no automatic insertion/clipboard; explicit recovery exactly once, new target validation, newer publication survives.
-    - [ ] 13.1. Add authoritative raw snapshot and explicit cancellation/failure provenance.
-    - [ ] 13.2. Add labelled pending recovery and explicit review/insertion path without success fabrication.
-    - [ ] 13.3. Extend service/session/output/claim tests for failure, timeout and races.
+    - [x] 13.1. Add authoritative raw snapshot and explicit cancellation/failure provenance.
+    - [x] 13.2. Add labelled pending recovery and explicit review/insertion path without success fabrication.
+    - [x] 13.3. Extend service/session/output/claim tests for failure, timeout and races.
+    - Validation: 59 recovery/service/output regressions passed; 3 focused recovery cases rerun after excluding completed fast selection. Automatic claims reject recovery; explicit commands preserve failed provenance and newer publications.
 
 - [ ] 14. Validate and document the complete first version
     - **Objective:** Make the core feature reviewable and verifiably compatible.

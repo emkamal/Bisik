@@ -205,6 +205,7 @@ static class Program
                 }));
             _trayIcon.SetSelectedLanguage(_settings.DefaultLanguage);
             _trayIcon.AddExperimentsCommand(ShowExperiments);
+            _trayIcon.AddRawRecoveryCommand(ReviewRecoveredRaw);
             _trayIcon.AddResultCommands(() => _ = InsertLatestAsync(), () =>
             {
                 if (_latestResult.Latest is { } pending) _latestResult.Dismiss(pending.Id);
@@ -503,6 +504,7 @@ static class Program
                 {
                     if (_settings.TriggerMode == TriggerMode.Vad) _vadMonitoringEnabled = false;
                     _sessionCancellation?.Cancel();
+                    _pipelineSession?.Cancel();
                     return;
                 }
                 var action = _hotkeyManager.HandleKeyDown(_settings.TriggerMode);
@@ -612,15 +614,28 @@ static class Program
         {
             // Retained results belong in the tray; the overlay only indicates active work.
             _overlayWindow.HideOverlay();
+            _trayIcon.SetRecoveryAvailable(_latestResult.Latest?.Kind == PendingResultKind.RawRecovery);
             _trayIcon.SetState(_latestResult.Latest is not null ? TrayIconState.Ready : TrayIconState.Idle);
         }
 
         private Task InsertLatestAsync()
         {
             if (_isShuttingDown || _experimentOperation.IsActive || _settingsForm is { Visible: true }) return Task.CompletedTask;
-            var claim = _latestResult.Claim();
+            var claim = _latestResult.Claim(allowRecovery: true);
             if (claim is null) return Task.CompletedTask;
             return _recoveryTask = InsertLatestCoreAsync(claim);
+        }
+
+        private void ReviewRecoveredRaw()
+        {
+            if (_isShuttingDown || _experimentOperation.IsActive || _latestResult.Latest?.Kind != PendingResultKind.RawRecovery) return;
+            var claim = _latestResult.Claim(allowRecovery: true); if (claim is null) return;
+            try
+            {
+                using var popup = new ReviewPopupForm(claim.Result.RawText) { Text = "Bisik Raw recovery — cleanup failed" };
+                popup.ShowDialog(); _latestResult.Dismiss(claim.Id);
+            }
+            finally { _latestResult.CompleteClaim(claim.Id, false); _trayIcon.SetRecoveryAvailable(_latestResult.Latest?.Kind == PendingResultKind.RawRecovery); }
         }
 
         private async Task UseFastOutputAsync()
@@ -647,7 +662,9 @@ static class Program
             try
             {
                 using var target = _textOutput.CaptureTarget();
-                var output = await _outputHandler.DispatchAsync(claim.Result, OutputMode.AutoType,
+                // This explicit recovery command validates a fresh target; the failed original result stays failed.
+                var selected = claim.Kind == PendingResultKind.RawRecovery ? new TranscriptionResult(true, claim.Result.RawText, claim.Result.RawText) : claim.Result;
+                var output = await _outputHandler.DispatchAsync(selected, OutputMode.AutoType,
                     _settings.AlwaysCopyToClipboard, target, _shutdownCancellation.Token);
                 dispatched = output.Disposition == OutputDisposition.Inserted;
                 if (!string.IsNullOrEmpty(output.Message)) _trayIcon.ShowBalloon("Bisik", output.Message);
@@ -744,7 +761,9 @@ static class Program
                 cancellation.Token.ThrowIfCancellationRequested();
                 if (!result.Succeeded)
                 {
-                    _trayIcon.ShowBalloon("Transcription failed", result.ErrorMessage, ToolTipIcon.Error);
+                    if (result.RawRecovery is { } recovery && !_isShuttingDown && !_pipelineSession!.ExplicitlyCancelled)
+                        _latestResult.PublishRecovery(recovery, result.ErrorMessage);
+                    _trayIcon.ShowBalloon("Transcription failed", result.ErrorMessage + (result.RawRecovery is null ? "" : " Raw text retained; use Review recovered raw text."), ToolTipIcon.Error);
                     return;
                 }
                 if (string.IsNullOrWhiteSpace(result.OutputText))
@@ -775,6 +794,8 @@ static class Program
             }
             catch (OperationCanceledException)
             {
+                if (!_isShuttingDown && _pipelineSession is { ExplicitlyCancelled: false, RawRecovery: { } recovery })
+                    _latestResult.PublishRecovery(recovery, "Cleanup deadline exceeded.");
                 if (!_isShuttingDown) _trayIcon.ShowBalloon("Bisik", "Dictation cancelled or timed out. No text was inserted.");
             }
             catch (Exception exception) { HandleRuntimeException(exception, "Dictation"); }

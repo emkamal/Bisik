@@ -28,6 +28,8 @@ public sealed class TranscriptionSession : IAsyncDisposable
     internal SpeculativeCleanup? Speculation { get; set; }
     internal EventHandler<CompletedTranscriptEventArgs>? SnapshotHandler { get; set; }
     public bool HasFinalTranscript => _selection.HasTranscript;
+    public RawRecoverySnapshot? RawRecovery => _selection.RecoverySnapshot;
+    public bool ExplicitlyCancelled { get; private set; }
     internal bool CleanupSelected => _selection.CleanupSelected;
     public void SkipCleanup() { _selection.SkipCleanup(); Speculation?.CancelPending(); }
     public bool UseTranscriptNow()
@@ -132,7 +134,7 @@ public sealed class TranscriptionSession : IAsyncDisposable
         catch { State = DictationState.Failed; throw; }
     }
 
-    public void Cancel() { State = DictationState.Cancelled; _lifetime.Cancel(); }
+    public void Cancel() { ExplicitlyCancelled = true; State = DictationState.Cancelled; _lifetime.Cancel(); }
     public async ValueTask DisposeAsync()
     {
         _lifetime.Cancel();

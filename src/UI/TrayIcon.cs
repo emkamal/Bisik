@@ -33,6 +33,7 @@ public sealed class TrayIcon : IDisposable
     private readonly ToolStripMenuItem _postProcessorMenuItem;
     private readonly Action<string> _onLanguageSelected;
     private readonly Dictionary<string, ToolStripMenuItem> _languageItems;
+    private ToolStripMenuItem? _insertResultItem;
 
     public TrayIcon()
         : this(
@@ -94,8 +95,16 @@ public sealed class TrayIcon : IDisposable
 
     public void AddResultCommands(Action insert, Action dismiss)
     {
-        _contextMenu.Items.Insert(0, new ToolStripMenuItem("Insert latest result here", null, (_, _) => insert()));
+        _insertResultItem = new ToolStripMenuItem("Insert latest result here", null, (_, _) => insert());
+        _contextMenu.Items.Insert(0, _insertResultItem);
         _contextMenu.Items.Insert(1, new ToolStripMenuItem("Dismiss latest result", null, (_, _) => dismiss()));
+    }
+
+    public void AddRawRecoveryCommand(Action review) => _contextMenu.Items.Insert(2,
+        new ToolStripMenuItem("Review recovered raw text", null, (_, _) => review()));
+    public void SetRecoveryAvailable(bool available)
+    {
+        if (_insertResultItem is not null) _insertResultItem.Text = available ? "Insert recovered raw text here (cleanup failed)" : "Insert latest result here";
     }
 
     public NotifyIcon NotifyIcon => _notifyIcon;

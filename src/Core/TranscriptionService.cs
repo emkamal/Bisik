@@ -138,6 +138,8 @@ public sealed class TranscriptionService(
         ArgumentNullException.ThrowIfNull(settings);
 
         var metrics = SessionMetrics.Current ?? new SessionMetrics(settings.Provider.Type.ToString(), metricsSink);
+        string? authoritativeRaw = null;
+        var cleanupPending = false;
         using var metricsScope = metrics.Activate();
         try
         {
@@ -167,6 +169,8 @@ public sealed class TranscriptionService(
 
             if (settings.PostProcessor.Enabled)
             {
+                authoritativeRaw = rawText;
+                cleanupPending = true;
                 PhaseChanged?.Invoke(ProcessingPhase.PostProcessing);
                 var postProcessingStopwatch = Stopwatch.StartNew();
                 metrics.Mark(TimingStage.CleanupStart);
@@ -175,6 +179,7 @@ public sealed class TranscriptionService(
                 metrics.Mark(TimingStage.CleanupEnd);
                 postProcessingStopwatch.Stop();
                 postProcessingDurationMs = postProcessingStopwatch.ElapsedMilliseconds;
+                cleanupPending = false;
             }
             else
             {
@@ -237,8 +242,9 @@ public sealed class TranscriptionService(
             return new TranscriptionResult(
                 Succeeded: false,
                 OutputText: string.Empty,
-                RawText: string.Empty,
-                ErrorMessage: exception.Message);
+                RawText: cleanupPending ? authoritativeRaw ?? "" : "",
+                ErrorMessage: exception.Message,
+                RawRecovery: cleanupPending && authoritativeRaw is not null ? new(authoritativeRaw) : null);
         }
         finally
         {
@@ -354,4 +360,5 @@ public sealed record TranscriptionResult(
     string RawText,
     string ErrorMessage = "",
     long TranscriptionDurationMs = 0,
-    long PostProcessingDurationMs = 0);
+    long PostProcessingDurationMs = 0,
+    RawRecoverySnapshot? RawRecovery = null);

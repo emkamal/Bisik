@@ -12,6 +12,8 @@ internal sealed class FinalTextSelection : IAsyncDisposable
     private bool _cleanupSelected;
     public bool CleanupSelected { get { lock (_gate) return _cleanupSelected; } }
     public bool HasTranscript { get { lock (_gate) return _raw is not null; } }
+    public RawRecoverySnapshot? RecoverySnapshot { get { lock (_gate) return _raw is not null && _cleanupTask is not null
+        && !_cleanupSelected && !_selected.Task.IsCompletedSuccessfully ? new(_raw) : null; } }
     public void SkipCleanup() { lock (_gate) _skipCleanup = true; }
     public bool UseTranscriptNow()
     {
@@ -42,6 +44,7 @@ internal sealed class FinalTextSelection : IAsyncDisposable
         try
         {
             var edited = await cleanup(ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
             lock (_gate)
             {
                 if (_selected.TrySetResult(edited)) _cleanupSelected = true;
@@ -57,3 +60,5 @@ internal sealed class FinalTextSelection : IAsyncDisposable
         _cleanupCancellation?.Dispose();
     }
 }
+
+public sealed record RawRecoverySnapshot(string RawText);
