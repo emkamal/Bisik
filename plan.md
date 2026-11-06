@@ -368,3 +368,5 @@ Final audit, item 7: failed/skipped generation now contributes to completed phas
 Final audit, item 9: saved draft setups now reopen with native limit/retry controls and advanced variants; checkbox edits commit before validation, judge probes stay outside the candidate call cap, and scoring runs off the UI thread. Seven STA view/ownership tests passed.
 
 Final audit, item 11: closed Settings tests now retain an owned drain task, gate normal/experiment starts, and drain before HTTP disposal. Experiment cleanup errors release the operation lease; capture disposal is idempotent. Seven STA/settings/ownership tests passed.
+
+Final audit, item 19: replay now signals the actual Stop instant before shared recognition finalization; after-Stop segment work is excluded from recording-overlap time. All 8 segment cases passed.

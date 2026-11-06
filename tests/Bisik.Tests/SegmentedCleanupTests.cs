@@ -64,4 +64,14 @@ public class SegmentedCleanupTests
         var result = await coordinator.FinishAsync("Short.", settings, CancellationToken.None);
         Assert.True(result.UsedFallback); Assert.Equal(1, calls);
     }
+    [Fact]
+    public async Task WorkAfterStopDoesNotCountAsRecordingOverlap()
+    {
+        var service = ExperimentRunnerTests.Service(new TranscriptionServiceTextTests.Processor(async (_, _, ct) =>
+            { await Task.Delay(20, ct); return "edited"; }));
+        await using var coordinator = new SegmentedCleanup(service, Settings, CancellationToken.None);
+        coordinator.RequestStop(); coordinator.OnCompletedPrefix("After stop.", 1);
+        var result = await coordinator.FinishAsync("After stop.", Settings, CancellationToken.None);
+        Assert.Equal(0, result.OverlapRequestMs); Assert.True(result.TailMs >= 15);
+    }
 }

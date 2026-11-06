@@ -52,6 +52,7 @@ public sealed class SegmentedCleanup : IAsyncDisposable
             if (_worker is null || _worker.IsCompleted) _worker = Task.Run(WorkAsync);
         }
     }
+    public void RequestStop() { lock (_gate) _stopAt ??= _watch.Elapsed.TotalMilliseconds; }
     private void Invalidate(string reason) { _fallback ??= reason; _pending.Clear(); _lifetime.Cancel(); }
     private PostProcessorSettings SegmentSettings => _settings with
     {
@@ -92,7 +93,7 @@ public sealed class SegmentedCleanup : IAsyncDisposable
         var watch = Stopwatch.StartNew();
         lock (_gate)
         {
-            _finishing = true; _stopAt = _watch.Elapsed.TotalMilliseconds; worker = _worker;
+            _finishing = true; _stopAt ??= _watch.Elapsed.TotalMilliseconds; worker = _worker;
             if (JsonSerializer.Serialize(_settings) != JsonSerializer.Serialize(currentSettings)) Invalidate("settings-changed");
             if (!finalRaw.StartsWith(_prefix, StringComparison.Ordinal)) Invalidate("final-prefix-coverage");
         }

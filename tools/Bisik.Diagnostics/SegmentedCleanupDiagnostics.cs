@@ -43,7 +43,7 @@ internal static class SegmentedCleanupDiagnostics
                     await Task.Delay(TimeSpan.FromSeconds((double)count / reader.WaveFormat.AverageBytesPerSecond), batch.Token);
                 }
                 stopDeadline.CancelAfter(TimeSpan.FromSeconds(definition.Limits.RecognitionSeconds));
-                var stop = Stopwatch.StartNew(); session.RequestStop();
+                var stop = Stopwatch.StartNew(); segments.RequestStop(); session.RequestStop();
                 var raw = await session.CompleteAsync(options.AudioPath); stopDeadline.Token.ThrowIfCancellationRequested();
                 if (!raw.Succeeded || string.IsNullOrWhiteSpace(raw.RawText)) throw new InvalidDataException("Live final raw unavailable.");
                 var sharedMs = stop.Elapsed.TotalMilliseconds;
