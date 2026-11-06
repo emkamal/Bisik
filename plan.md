@@ -209,15 +209,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
 
 ### Phase 4: Shared diagnostics, recovery and first-version verification
 
-- [ ] 12. Reuse the runner in fixture-driven diagnostics
+- [x] 12. Reuse the runner in fixture-driven diagnostics
     - **Objective:** Support reproducible AI-agent/CLI evaluation without another recording or another scheduler.
     - **Location:** `tools/Bisik.Diagnostics/Program.cs`, `LatencyDiagnostics.cs`, `ComparisonDiagnostics.cs`; `src/Core/BenchmarkOptions.cs`; tasks 7–8.
     - **Implementation:** Add explicit experiment-definition/raw-transcript fixture input and optional saved WAV replay. Invoke the same Core matrix/runner/scoring; preserve existing command behavior and synthetic corpus. Distinguish supplied human content from synthetic fixtures; retained text is an explicitly requested separate quality artifact, timing receipts are content-free. Use SettingsManager.LoadEncryptedCopy only for explicit CLI source, never migrate it. Extend comparisons with full input/config/scoring identity, quality components, failures, token/timing data and nullable unavailable stages. Keep existing live/file/delay/pause/speculation/prewarm comparisons; do not rerun ASR per cleanup row. Include held-out technical/ordinary English/Indonesian/mixed/negation/quantity fixtures without copying the full benchmark into prompts.
     - **Dependencies:** 7, 8.
     - **Validation:** CLI/UI identical definitions yield identical scheduling/ranking; one raw input; source unchanged; truthful labels; old commands remain valid; missing stages not zero.
-    - [ ] 12.1. Add fixture/definition entry points backed by the shared runner.
-    - [ ] 12.2. Extend safe quality/timing comparison artifacts and fixture identity.
-    - [ ] 12.3. Add parser/CLI tests with fakes and a small held-out test corpus.
+    - [x] 12.1. Add fixture/definition entry points backed by the shared runner.
+    - [x] 12.2. Extend safe quality/timing comparison artifacts and fixture identity.
+    - [x] 12.3. Add parser/CLI tests with fakes and a small held-out test corpus.
+    - Validation: 8 CLI/runner cases passed; 6 fixture/parser cases rerun after adding raw identity and direct-run scheduling comparison. Saved WAV recognizes once; live model comparisons postponed.
 
 - [ ] 13. Preserve normal dictation raw text after cleanup failure or timeout
     - **Objective:** Prevent losing a long successful recognition when cleanup fails; recovery stays explicit.

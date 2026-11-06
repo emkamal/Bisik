@@ -27,6 +27,7 @@ public sealed record ExperimentTermEvidence(string Canonical, int Correct, int W
 public sealed record ExperimentTake(Guid Id, string RawText, double SharedStopToRawMs,
     double? RecordingMs, string InputIdentity)
 {
+    public string RawIdentity => ExperimentIdentity.Hash("raw-v1", RawText);
     public void Validate()
     {
         if (Id == Guid.Empty || string.IsNullOrWhiteSpace(RawText) || RawText.Length > 100_000

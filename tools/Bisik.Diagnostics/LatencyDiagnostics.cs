@@ -51,16 +51,7 @@ internal static class LatencyDiagnostics
                     ReasoningCapability = new(ReasoningCapability.Fingerprint(cleanupSettings), [effort]) };
             settings = settings with { PostProcessor = cleanupSettings };
             using var client = new HttpClient(new HttpMetricsHandler()) { Timeout = Timeout.InfiniteTimeSpan };
-            ITranscriptionProvider provider = settings.Provider.Type switch
-            {
-                ProviderType.AzureOpenAi => new AzureOpenAIProvider(client, settings.Provider),
-                ProviderType.OpenAi => new OpenAIProvider(client, settings.Provider),
-                ProviderType.OpenRouter => new OpenRouterProvider(client, settings.Provider),
-                ProviderType.LocalWhisper => new LocalWhisperProvider(client, settings.Provider),
-                _ => new CustomEndpointProvider(client, settings.Provider),
-            };
-            var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider> { [settings.Provider.Type] = provider },
-                new LLMPostProcessor(client), new HistoryLogger(scratch), new ErrorLogger(scratch), () => { }, () => { });
+            var service = CreateService(client, settings, scratch);
             using var reader = cleanupOnly ? null : new WaveFileReader(options.AudioPath);
             for (var i = 0; i < options.Repetitions && !cancellation.IsCancellationRequested; i++)
             {
@@ -143,6 +134,20 @@ internal static class LatencyDiagnostics
             // Resolved beneath our explicitly created scratch directory; contains only our copies.
             Directory.Delete(scratch, recursive: true);
         }
+    }
+
+    internal static TranscriptionService CreateService(HttpClient client, AppSettings settings, string scratch)
+    {
+        ITranscriptionProvider provider = settings.Provider.Type switch
+            {
+                ProviderType.AzureOpenAi => new AzureOpenAIProvider(client, settings.Provider),
+                ProviderType.OpenAi => new OpenAIProvider(client, settings.Provider),
+                ProviderType.OpenRouter => new OpenRouterProvider(client, settings.Provider),
+                ProviderType.LocalWhisper => new LocalWhisperProvider(client, settings.Provider),
+                _ => new CustomEndpointProvider(client, settings.Provider),
+            };
+        return new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider> { [settings.Provider.Type] = provider },
+                new LLMPostProcessor(client), new HistoryLogger(scratch), new ErrorLogger(scratch), () => { }, () => { });
     }
 
     private sealed class ReceiptSink : IMetricsSink

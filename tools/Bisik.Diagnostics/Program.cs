@@ -8,6 +8,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--experiment")
+            return ExperimentDiagnostics.RunAsync(args[1..]).GetAwaiter().GetResult();
         if (args.Length > 0 && args[0] == "--benchmark")
             return LatencyDiagnostics.RunAsync(args[1..]).GetAwaiter().GetResult();
         if (args.Length > 0 && args[0] == "--cleanup-benchmark")
