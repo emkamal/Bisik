@@ -44,8 +44,10 @@ public sealed class ExperimentRunner(TranscriptionService service, LLMExperiment
         var state = ExperimentState.Generating;
         ExperimentRun Snapshot() => new(definition, take, state, seed, trials.ToImmutableArray(), watch.Elapsed.TotalMilliseconds);
         void Report(string? id, bool active, TextCompletionStage? stage = null) => progress?.Report(new(definition.Id, state, id,
-            trials.Count(t => t.Generation is ExperimentGenerationStatus.Succeeded or ExperimentGenerationStatus.Failed or ExperimentGenerationStatus.Cancelled
-                && (state == ExperimentState.Generating || t.EvaluationStatus is ExperimentEvaluationStatus.Succeeded or ExperimentEvaluationStatus.Cached or ExperimentEvaluationStatus.Failed or ExperimentEvaluationStatus.Cancelled)),
+            trials.Count(t => state == ExperimentState.Generating
+                ? t.Generation is ExperimentGenerationStatus.Succeeded or ExperimentGenerationStatus.Failed or ExperimentGenerationStatus.Cancelled or ExperimentGenerationStatus.Skipped
+                : t.Generation is ExperimentGenerationStatus.Failed or ExperimentGenerationStatus.Cancelled or ExperimentGenerationStatus.Skipped
+                    || t.EvaluationStatus is ExperimentEvaluationStatus.Succeeded or ExperimentEvaluationStatus.Cached or ExperimentEvaluationStatus.Failed or ExperimentEvaluationStatus.Cancelled or ExperimentEvaluationStatus.Skipped),
             trials.Length, active, Snapshot(), stage));
         try
         {
@@ -79,6 +81,8 @@ public sealed class ExperimentRunner(TranscriptionService service, LLMExperiment
                 Report(trials[i].Id, false);
             }
             state = ExperimentState.Evaluating;
+            for (var i = 0; i < trials.Length; i++)
+                if (trials[i].Generation != ExperimentGenerationStatus.Succeeded) trials[i] = trials[i] with { EvaluationStatus = ExperimentEvaluationStatus.Skipped };
             foreach (var trial in trials.Where(t => t.Evaluation is not null)) judge.Seed(trial.Evaluation!);
             for (var i = 0; i < trials.Length; i++)
             {

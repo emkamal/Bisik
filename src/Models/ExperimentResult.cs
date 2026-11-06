@@ -3,7 +3,7 @@ using System.Collections.Immutable;
 namespace Bisik.Models;
 
 public enum ExperimentGenerationStatus { Pending, Running, Succeeded, Failed, Cancelled, Skipped }
-public enum ExperimentEvaluationStatus { Pending, Running, Succeeded, Failed, Cancelled, Cached }
+public enum ExperimentEvaluationStatus { Pending, Running, Succeeded, Failed, Cancelled, Cached, Skipped }
 public enum ExperimentSeverity { Minor, Substantial, Major, Extreme }
 public enum ExperimentWarningCategory { Meaning, Omission, Negation, Quantity, Identifier, Readability }
 

@@ -62,4 +62,16 @@ public sealed class ExperimentRunnerTests
         Assert.Contains(run.Trials, t => t.Generation == ExperimentGenerationStatus.Cancelled);
         Assert.All(run.Trials, t => Assert.Null(t.Evaluation));
     }
+    [Fact]
+    public async Task FailedGenerationCountsAsSkippedEvaluationAndFinalProgressCompletes()
+    {
+        var connection = TranscriptionServiceTextTests.Settings(); var definition = Definition(connection);
+        var service = Service(new TranscriptionServiceTextTests.Processor((_, settings, _) => settings.Model == "one"
+            ? throw new InvalidDataException() : Task.FromResult(settings.Model == "judge" ? "{\"meaning\":100,\"readability\":100,\"warnings\":[]}" : "complete")));
+        ExperimentProgress? final = null;
+        var run = await new ExperimentRunner(service, new(service)).RunAsync(definition, new(Guid.NewGuid(), "raw", 1, null, definition.InputIdentity),
+            connection, CancellationToken.None, new ExperimentSessionTests.InlineProgress<ExperimentProgress>(p => final = p));
+        Assert.Equal(final!.Total, final.Completed);
+        Assert.All(run.Trials.Where(t => t.Generation == ExperimentGenerationStatus.Failed), t => Assert.Equal(ExperimentEvaluationStatus.Skipped, t.EvaluationStatus));
+    }
 }
