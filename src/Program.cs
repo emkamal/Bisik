@@ -575,12 +575,9 @@ static class Program
 
         private void ShowPendingState()
         {
-            if (_latestResult.Latest is not null)
-            {
-                _trayIcon.SetState(TrayIconState.Ready);
-                _overlayWindow.ShowProcessingOverlay(OverlayProcessingPhase.Ready);
-            }
-            else { _overlayWindow.HideOverlay(); _trayIcon.SetState(TrayIconState.Idle); }
+            // Retained results belong in the tray; the overlay only indicates active work.
+            _overlayWindow.HideOverlay();
+            _trayIcon.SetState(_latestResult.Latest is not null ? TrayIconState.Ready : TrayIconState.Idle);
         }
 
         private Task InsertLatestAsync()

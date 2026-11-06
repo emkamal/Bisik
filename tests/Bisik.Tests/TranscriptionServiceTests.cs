@@ -13,6 +13,59 @@ public sealed class TranscriptionServiceTests : IDisposable
 {
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.TranscriptionServiceTests", Guid.NewGuid().ToString("N"));
 
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public async Task History_records_opt_in_metadata_and_stop_latency_including_capture_drain(bool recording, bool config)
+    {
+        var settings = new AppSettings { Provider = new() { Type = ProviderType.OpenAi }, QuickLanguages = ["id"],
+            HistoryRecordingDurationEnabled = recording, HistoryConfigurationEnabled = config,
+            PostProcessor = new() { Enabled = true, PresetName = PostProcessorPreset.CleanUp, SystemPrompt = "Unused custom prompt" } };
+        var history = new HistoryLogger(_baseDirectory);
+        var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider>
+            { [ProviderType.OpenAi] = new FakeProvider(ProviderType.OpenAi, "test", _ => { settings.QuickLanguages[0] = "changed"; return "raw"; }) },
+            new FakePostProcessor((_, _) => "edited"), history, new ErrorLogger(_baseDirectory), () => { }, () => { });
+        var metrics = new SessionMetrics("test") { AudioDurationMs = 1500.4 };
+        using var scope = metrics.Activate();
+        metrics.Mark(TimingStage.CaptureStart);
+        metrics.Mark(TimingStage.StopRequested);
+        await Task.Delay(40); // Synthetic drain before the provider pipeline begins.
+        var result = await service.TranscribeAsync(CreateAudioFile(), "id", settings, CancellationToken.None);
+        Assert.True(result.Succeeded);
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.Equal(recording ? 1500L : null, entry.RecordingDurationMs);
+        Assert.Equal(config, entry.ConfigurationSnapshot.HasValue);
+        Assert.True(entry.StopToResultDurationMs >= 30);
+        Assert.True(entry.CaptureToResultDurationMs >= entry.StopToResultDurationMs);
+        Assert.Equal(entry.TranscriptionDurationMs + entry.PostProcessingDurationMs, entry.DurationMs);
+        Assert.True(entry.PostProcessingApplied);
+        if (config)
+        {
+            Assert.Equal("id", entry.ConfigurationSnapshot!.Value.GetProperty("quickLanguages")[0].GetString());
+            Assert.Equal(PostProcessorPresets.ResolveSystemPrompt(settings.PostProcessor),
+                entry.ConfigurationSnapshot.Value.GetProperty("postProcessor").GetProperty("effectiveSystemPrompt").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task Fast_output_history_identifies_raw_selection_without_changing_the_configured_cleanup()
+    {
+        var history = new HistoryLogger(_baseDirectory);
+        var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider>
+            { [ProviderType.OpenAi] = new FakeProvider(ProviderType.OpenAi, "test", _ => "raw") },
+            new FakePostProcessor((_, _) => throw new InvalidOperationException()), history,
+            new ErrorLogger(_baseDirectory), () => { }, () => { });
+        await using var session = service.CreateSession(new AppSettings { Provider = new() { Type = ProviderType.OpenAi },
+            HistoryConfigurationEnabled = true, PostProcessor = new() { Enabled = true } }, CancellationToken.None);
+        session.SkipCleanup();
+        Assert.Equal("raw", (await session.CompleteAsync(CreateAudioFile())).OutputText);
+        var entry = Assert.Single(await history.ReadAllAsync());
+        Assert.False(entry.PostProcessingApplied);
+        Assert.True(entry.ConfigurationSnapshot!.Value.GetProperty("postProcessor").GetProperty("enabled").GetBoolean());
+        Assert.Equal(System.Text.Json.JsonValueKind.Null,
+            entry.ConfigurationSnapshot.Value.GetProperty("postProcessor").GetProperty("effectiveSystemPrompt").ValueKind);
+    }
+
     [Fact]
     public async Task Prewarming_is_one_unused_session_and_claim_transfers_cancellation_ownership()
     {

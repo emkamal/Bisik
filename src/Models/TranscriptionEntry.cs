@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Bisik.Models;
@@ -13,7 +14,12 @@ public sealed record TranscriptionEntry
         long DurationMs,
         string? AudioFilePath,
         long TranscriptionDurationMs = 0,
-        long PostProcessingDurationMs = 0)
+        long PostProcessingDurationMs = 0,
+        long? RecordingDurationMs = null,
+        JsonElement? ConfigurationSnapshot = null,
+        long? StopToResultDurationMs = null,
+        bool? PostProcessingApplied = null,
+        long? CaptureToResultDurationMs = null)
     {
         this.Timestamp = Timestamp;
         this.Text = Text;
@@ -24,6 +30,11 @@ public sealed record TranscriptionEntry
         this.AudioFilePath = AudioFilePath;
         this.TranscriptionDurationMs = TranscriptionDurationMs;
         this.PostProcessingDurationMs = PostProcessingDurationMs;
+        this.RecordingDurationMs = RecordingDurationMs;
+        this.ConfigurationSnapshot = ConfigurationSnapshot;
+        this.StopToResultDurationMs = StopToResultDurationMs;
+        this.PostProcessingApplied = PostProcessingApplied;
+        this.CaptureToResultDurationMs = CaptureToResultDurationMs;
     }
 
     [JsonPropertyName("timestamp")]
@@ -53,4 +64,26 @@ public sealed record TranscriptionEntry
 
     [JsonPropertyName("post_processing_duration_ms")]
     public long PostProcessingDurationMs { get; init; }
+
+    // Audio length includes pauses and VAD pre-roll; it is not a speech-only estimate.
+    [JsonPropertyName("recording_duration_ms")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? RecordingDurationMs { get; init; }
+
+    [JsonPropertyName("configuration_snapshot")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonElement? ConfigurationSnapshot { get; init; }
+
+    // Result availability before history persistence, sound or output dispatch.
+    [JsonPropertyName("stop_to_result_duration_ms")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? StopToResultDurationMs { get; init; }
+
+    [JsonPropertyName("post_processing_applied")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? PostProcessingApplied { get; init; }
+
+    [JsonPropertyName("capture_to_result_duration_ms")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? CaptureToResultDurationMs { get; init; }
 }

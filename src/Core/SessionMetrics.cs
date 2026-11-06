@@ -61,6 +61,11 @@ public sealed class SessionMetrics(string configuration, IMetricsSink? sink = nu
     {
         lock (_gate) _counts[count] = _counts.GetValueOrDefault(count) + value;
     }
+    public double? ElapsedSince(TimingStage stage)
+    {
+        lock (_gate) return _events.FirstOrDefault(e => e.Stage == stage) is { } start
+            ? Stopwatch.GetElapsedTime(_start).TotalMilliseconds - start.ElapsedMs : null;
+    }
     public int? BeginHttpRequest()
     {
         lock (_gate)

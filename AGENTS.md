@@ -54,6 +54,7 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
     HttpMetricsHandler.cs   # Content-free HTTP first/full response and safe status receipts
     RetryPolicy.cs          # Validated server retry delays within the shared deadline
     HistoryLogger.cs         # Appends TranscriptionEntry to history.jsonl
+    HistoryExport.cs         # Complete JSON/CSV/Excel clipboard rows without UI dependencies
     SettingsManager.cs       # Load/save/migrate settings.json via DPAPI
   /Providers
     ITranscriptionProvider.cs       # File-path contract plus optional streaming capability
@@ -70,6 +71,7 @@ Do not introduce new dependencies without a clear reason. If you add a NuGet pac
   /Models
     AppSettings.cs                  # All settings records, ProviderType and reasoning capability metadata
     TranscriptionEntry.cs           # { timestamp, rawText, processedText, provider, language, durationMs }
+    HistoryConfigurationSnapshot.cs # Per-dictation config with connection secrets excluded
   /UI
     TrayIcon.cs                     # NotifyIcon, context menu, icon state machine
     OverlayWindow.cs                # Frameless always-on-top recording indicator

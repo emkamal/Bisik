@@ -9,6 +9,8 @@ internal sealed class FinalTextSelection : IAsyncDisposable
     private Task? _cleanupTask;
     private string? _raw;
     private bool _skipCleanup;
+    private bool _cleanupSelected;
+    public bool CleanupSelected { get { lock (_gate) return _cleanupSelected; } }
     public bool HasTranscript { get { lock (_gate) return _raw is not null; } }
     public void SkipCleanup() { lock (_gate) _skipCleanup = true; }
     public bool UseTranscriptNow()
@@ -37,7 +39,14 @@ internal sealed class FinalTextSelection : IAsyncDisposable
     }
     private async Task ObserveCleanupAsync(Func<CancellationToken, Task<string>> cleanup, CancellationToken ct)
     {
-        try { _selected.TrySetResult(await cleanup(ct).ConfigureAwait(false)); }
+        try
+        {
+            var edited = await cleanup(ct).ConfigureAwait(false);
+            lock (_gate)
+            {
+                if (_selected.TrySetResult(edited)) _cleanupSelected = true;
+            }
+        }
         catch (OperationCanceledException) { _selected.TrySetCanceled(ct); }
         catch (Exception exception) { _selected.TrySetException(exception); }
     }

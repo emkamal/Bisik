@@ -305,6 +305,12 @@ public sealed record AppSettings
     [JsonPropertyName("historyEnabled")]
     public bool HistoryEnabled { get; init; } = true;
 
+    [JsonPropertyName("historyRecordingDurationEnabled")]
+    public bool HistoryRecordingDurationEnabled { get; init; } = true;
+
+    [JsonPropertyName("historyConfigurationEnabled")]
+    public bool HistoryConfigurationEnabled { get; init; }
+
     [JsonPropertyName("provider")]
     public ProviderSettings Provider { get; init; } = new();
 

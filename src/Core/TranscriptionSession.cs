@@ -28,6 +28,7 @@ public sealed class TranscriptionSession : IAsyncDisposable
     internal SpeculativeCleanup? Speculation { get; set; }
     internal EventHandler<CompletedTranscriptEventArgs>? SnapshotHandler { get; set; }
     public bool HasFinalTranscript => _selection.HasTranscript;
+    internal bool CleanupSelected => _selection.CleanupSelected;
     public void SkipCleanup() { _selection.SkipCleanup(); Speculation?.CancelPending(); }
     public bool UseTranscriptNow()
     {

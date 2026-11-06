@@ -23,6 +23,11 @@ public sealed class HistoryLogger
     private readonly SemaphoreSlim _pathLock;
     private readonly HistoryLoggerTestHooks? _testHooks;
 
+    internal string HistoryPath => _historyPath;
+
+    /// <summary>Raised after a successful change, once the history file and lock are released.</summary>
+    public event Action? Changed;
+
     public HistoryLogger(string? baseDirectory = null, bool historyEnabled = true)
         : this(baseDirectory, historyEnabled, testHooks: null)
     {
@@ -63,6 +68,8 @@ public sealed class HistoryLogger
         {
             _pathLock.Release();
         }
+
+        NotifyChanged();
     }
 
     public async Task<IReadOnlyList<TranscriptionEntry>> ReadAllAsync(CancellationToken ct = default)
@@ -114,16 +121,19 @@ public sealed class HistoryLogger
             }
 
             await RewriteHistoryAsync(entries, ct);
-            return true;
         }
         finally
         {
             _pathLock.Release();
         }
+
+        NotifyChanged();
+        return true;
     }
 
     public async Task ClearAsync(CancellationToken ct = default)
     {
+        var changed = false;
         await _pathLock.WaitAsync(ct);
 
         try
@@ -133,11 +143,28 @@ public sealed class HistoryLogger
             if (File.Exists(_historyPath))
             {
                 File.Delete(_historyPath);
+                changed = true;
             }
         }
         finally
         {
             _pathLock.Release();
+        }
+
+        if (changed) NotifyChanged();
+    }
+
+    private void NotifyChanged()
+    {
+        foreach (var handler in Changed?.GetInvocationList() ?? [])
+        {
+            try { ((Action)handler)(); }
+            catch (Exception exception)
+            {
+                // A failed observer must not turn an already saved dictation into a failure.
+                try { new ErrorLogger(Path.GetDirectoryName(_historyPath)).Log(exception); }
+                catch { /* Logging is best effort when the app-data folder is unavailable. */ }
+            }
         }
     }
 

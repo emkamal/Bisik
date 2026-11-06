@@ -71,7 +71,8 @@ public sealed class TranscriptionService(
                 ct => RecognizeSessionAsync(session, provider, path, ct), session.Persistence,
                 (raw, token) => session.SelectFinalAsync(raw, cleanupToken => session.Speculation is null
                     ? _postProcessor.ProcessAsync(raw, session.Settings.PostProcessor, cleanupToken)
-                    : session.Speculation.FinishAsync(raw, session.Settings.PostProcessor, cleanupToken), token)));
+                    : session.Speculation.FinishAsync(raw, session.Settings.PostProcessor, cleanupToken), token),
+                () => session.CleanupSelected));
         if (snapshot.SpeculativeCleanup && snapshot.PostProcessor.Enabled && stream is not null)
         {
             created.Speculation = new SpeculativeCleanup(snapshot.PostProcessor, _postProcessor.ProcessAsync, created.Token, logError: _errorLogger.Log);
@@ -119,7 +120,8 @@ public sealed class TranscriptionService(
         AppSettings settings,
         CancellationToken cancellationToken)
     {
-        return TranscribeCoreAsync(audioFilePath, language, settings, cancellationToken);
+        ArgumentNullException.ThrowIfNull(settings);
+        return TranscribeCoreAsync(audioFilePath, language, settings.Snapshot(), cancellationToken);
     }
 
     private async Task<TranscriptionResult> TranscribeCoreAsync(
@@ -129,7 +131,8 @@ public sealed class TranscriptionService(
         CancellationToken cancellationToken,
         Func<CancellationToken, Task<string>>? recognize = null,
         Task? persistence = null,
-        Func<string, CancellationToken, Task<string>>? cleanup = null)
+        Func<string, CancellationToken, Task<string>>? cleanup = null,
+        Func<bool>? cleanupSelected = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(audioFilePath);
         ArgumentNullException.ThrowIfNull(settings);
@@ -139,6 +142,7 @@ public sealed class TranscriptionService(
         try
         {
             var startedAt = DateTimeOffset.UtcNow;
+            var processingStopwatch = Stopwatch.StartNew();
             var provider = ResolveProvider(settings.Provider);
 
             // Phase 1: Transcription
@@ -178,6 +182,9 @@ public sealed class TranscriptionService(
             }
 
             var totalDurationMs = transcriptionStopwatch.ElapsedMilliseconds + postProcessingDurationMs;
+            var stopToResultMs = (long)Math.Round(metrics.ElapsedSince(TimingStage.StopRequested) ?? processingStopwatch.Elapsed.TotalMilliseconds);
+            var captureToResultMs = metrics.ElapsedSince(TimingStage.CaptureStart);
+            var postProcessingApplied = settings.PostProcessor.Enabled && (cleanupSelected?.Invoke() ?? true);
 
             var entry = new TranscriptionEntry(
                 startedAt,
@@ -188,7 +195,15 @@ public sealed class TranscriptionService(
                 DurationMs: totalDurationMs,
                 AudioFilePath: audioFilePath,
                 TranscriptionDurationMs: transcriptionStopwatch.ElapsedMilliseconds,
-                PostProcessingDurationMs: postProcessingDurationMs);
+                PostProcessingDurationMs: postProcessingDurationMs,
+                RecordingDurationMs: settings.HistoryRecordingDurationEnabled && metrics.AudioDurationMs is { } audioMs
+                    ? (long)Math.Round(audioMs) : null,
+                ConfigurationSnapshot: settings.HistoryEnabled && settings.HistoryConfigurationEnabled
+                    ? HistoryConfigurationSnapshot.Capture(settings, language,
+                        postProcessingApplied ? PostProcessorPresets.ResolveSystemPrompt(settings.PostProcessor) : null) : null,
+                StopToResultDurationMs: stopToResultMs,
+                PostProcessingApplied: postProcessingApplied,
+                CaptureToResultDurationMs: captureToResultMs is { } captureMs ? (long)Math.Round(captureMs) : null);
             cancellationToken.ThrowIfCancellationRequested();
             if (settings.HistoryEnabled)
             {

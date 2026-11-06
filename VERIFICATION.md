@@ -136,3 +136,36 @@ dotnet run --project tools/Bisik.Diagnostics -- --azure-file artifacts/verificat
 ~~~
 
 These tools do not enable startup registration, replace installed executables or modify ChatGPT configuration.
+
+### History metadata and copying (2026-11-06)
+
+- Full xUnit suite: 245 passed, zero failed/skipped. Covers old JSONL rows and metadata-preserving
+  rewrites, duration/config options, captured session settings, resolved preset prompts,
+  credential/endpoint/header exclusion, fast/raw result provenance, and capture-drain latency.
+- Copy tests cover single/multi-row JSON, CSV/TSV multiline/quote/tab/Unicode round trips,
+  UTF-8 HTML clipboard offsets, numeric Excel timings, multi-selection, context-cell copying,
+  toolbar menu actions, and settings load/save. Clipboard tests use a capture callback;
+  they do not overwrite the user's clipboard.
+- Release build passed with zero warnings/errors and registered the latest workspace build.
+  Source changes are uncommitted. Exit the running app and reopen its Start pin to load them.
+- Native computer-use inspection found the synthetic History controls, but input/activation
+  failed with `failed to activate captured window`. The scratch process was closed. Actual
+  mouse interaction, Excel paste, and spoken microphone duration still need manual verification.
+
+### History automatic refresh and header help (2026-11-06)
+
+- `dotnet test Bisik.sln -c Release -p:BisikRegisterLatestBuild=false --nologo --verbosity minimal`:
+  260 passed, zero failed/skipped. Receipt: `artifacts/history-live-verification/history-live-full.trx`.
+- WinForms message-loop tests cover completed transcription/cleanup, background saves, external
+  append/replace/rename/delete/recreate, missing initial history, watcher reconnection, locked-file
+  retry, superseded searches, case-insensitive filters, duplicate rows, selection/scroll retention,
+  minimized updates, copying during refresh, and cancellation/unsubscription on close.
+- Logger tests verify notifications after closing the file/releasing its lock, no notifications
+  for disabled/failed/cancelled/no-op mutations, and isolation/logging of failed observers.
+- Every header retains its title and help text; cell-value tooltips remain enabled. Native
+  computer-use inspection confirmed the repaired column titles. The hover attempt failed with
+  `foreground window did not report a process id`; the preview was absent on recovery, so actual
+  hover rendering remains unverified. Synthetic tests do not use live history, provider APIs,
+  the physical microphone, or the user's clipboard.
+- Final Release build passed with zero warnings/errors and registered as the latest workspace
+  build. Changes remain uncommitted; exit Bisik and reopen its existing Start pin to load them.

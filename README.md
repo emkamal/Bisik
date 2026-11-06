@@ -28,6 +28,8 @@ The repository publish output remains at D:\Dev\Bisik\artifacts\publish\win-x64\
 
 Existing settings are retained. New settings default to **Toggle**, **Ctrl+Shift+Space**, **Insert final text**, automatic language, and post-processing off. Older settings can have different hotkeys, clipboard preferences, and post-processing enabled.
 
+Every settings field has a small **ⓘ** help button. Hover over it, click it, or focus it with Tab to read the full description in a wrapping tooltip with a bold heading. Longer tabs scroll to keep all options reachable.
+
 1. General: choose Toggle and capture a convenient hotkey, preferably Ctrl+Shift+Space. Apply reports conflicts. Win-key combinations remain supported but Windows can intercept them.
 2. Provider: select Azure OpenAI and reuse the saved endpoint, API key and existing gpt-realtime-whisper deployment. No new deployment is needed.
 3. Audio: choose the microphone, WAV and 16000 Hz. Azure realtime converts continuously to PCM16 mono 24000 Hz.
@@ -51,8 +53,8 @@ Settings cannot open during dictation. Stop listening first. Language and post-p
 - Bisik captures the foreground window, accessible text field and selection before recording. Switching fields/windows, moving the caret, or switching away and back invalidates insertion. Do not edit the destination while dictating.
 - Automatic insertion uses **Ctrl+V**, preserving Unicode, punctuation and paragraphs. Bisik never sends Enter, submits a message, or interprets transcription as a command. Terminal fields are excluded because pasting newlines there can execute commands.
 - If the target changed or cannot be verified, a balloon explains manual paste. If another clipboard copy occurred, Bisik offers a review window instead of replacing that newer content. Review's Copy button is an explicit user action.
-- A completed result stays in memory after clipboard-only fallback. The nonactivating Ready
-  indicator means manual insertion is available: select the intended field and press
+- The overlay fades away when dictation finishes, including clipboard-only fallback. A retained
+  result is marked Ready in the tray; select the intended field and press
   **Ctrl+Alt+Shift+V** (configurable Insert latest hotkey in General). This captures the current
   field and selection and performs the same guarded paste. It never reactivates the old field.
   New completed results replace the pending result; dispatch, review dismissal, tray Dismiss,
@@ -132,6 +134,54 @@ Persistent user data is under %APPDATA%\Bisik\:
 sample.settings.json contains placeholders only. Bisik never reads or modifies either ChatGPT profile. Startup registration changes only when you explicitly change the startup checkbox and Apply.
 
 ## Verification
+
+### History comparisons and copying
+
+An open History window updates automatically after saved transcriptions and external changes
+to `history.jsonl`, including file replacement or deletion. New entries remain newest first;
+search, provider/language filters, selected rows and reading position are preserved. Updates
+also work while minimized and do not bring the window forward. Temporary file-access failures
+leave the displayed rows intact, show a warning, and retry automatically.
+
+Hover over any column header for its meaning, timing boundaries and unavailable-value behavior.
+Cell tooltips remain available for long values.
+
+Settings > History has two additional options: **Include recording duration** (on by default)
+and **Include configuration snapshot** (off by default). They apply to future entries while
+history logging is enabled. Recording duration is captured audio length, including pauses,
+silence and VAD pre-roll, rather than a speech-only estimate. Old entries leave unavailable
+values blank; changing options does not backfill old history.
+
+Each snapshot contains the settings used when that dictation started, including audio,
+language, provider/model, live capture, pause commits, speculation, prewarming, cleanup,
+reasoning effort and the configured prompt. The cleanup section also includes the effective
+system prompt and reasoning effort. Built-in presets can use a different prompt from the
+saved custom field. Keys, endpoint URLs and extra-header names/values are excluded; connection
+presence and header count are retained. Prompts remain plain text alongside the transcript.
+`post_processing_applied` identifies fast/raw selection even when cleanup was configured.
+
+Select rows with Ctrl/Shift and right-click, or use **Copy Rows**, to copy JSON, CSV or
+**table (Excel)**. One selected row produces a JSON object; several produce an ordered array.
+JSON includes the raw/final text, timings and optional snapshot for comparison with your
+ground-truth script. CSV and Excel tables include column headers and the snapshot as one
+JSON cell. The Excel clipboard includes an HTML table plus tab-separated text so multiline
+transcripts stay in their corresponding cells. Ctrl+C copies the selected rows as a table.
+Right-click a cell and choose **Copy cell value** to copy its complete value.
+
+History timings are milliseconds:
+
+- **Recording** (`recording_duration_ms`): captured audio length, if enabled and available.
+- **Processing** (`duration_ms`): existing transcription-plus-cleanup duration.
+- **Transcription / Post-Proc**: time spent in each final pipeline stage, including retries;
+  live/speculative work during recording can overlap these stages.
+- **Stop to result** (`stop_to_result_duration_ms`): from Stop through capture drain and final
+  processing until the chosen result exists. File-only callers without capture timing use
+  the elapsed processing time.
+- **Start to result** (`capture_to_result_duration_ms`): wall time from recording activation
+  until the result exists, when capture timing is available.
+
+Result timings exclude history persistence, success sound and paste/clipboard dispatch.
+They measure result availability, rather than acceptance by the destination application.
 
 Non-inserting full-pipeline timing (uses an encrypted disposable copy of existing settings,
 including the configured cleanup; accepts synthetic WAV only):

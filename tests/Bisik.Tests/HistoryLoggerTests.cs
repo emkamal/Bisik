@@ -9,6 +9,92 @@ public sealed class HistoryLoggerTests : IDisposable
     private readonly string _baseDirectory = Path.Combine(Path.GetTempPath(), "Bisik.HistoryLoggerTests", Guid.NewGuid().ToString("N"));
 
     [Fact]
+    public async Task Change_notification_observes_closed_file_and_released_path_lock()
+    {
+        var logger = CreateLogger();
+        TranscriptionEntry? observed = null;
+        Task? clear = null;
+        var lockReleased = false;
+        logger.Changed += () =>
+        {
+            if (observed is not null) return;
+            using (var stream = new FileStream(logger.HistoryPath, FileMode.Open, FileAccess.Read, FileShare.None))
+            using (var reader = new StreamReader(stream))
+                observed = System.Text.Json.JsonSerializer.Deserialize<TranscriptionEntry>(reader.ReadLine()!);
+            // Clear has synchronous file I/O after acquiring the lock, so no blocking await is needed.
+            clear = logger.ClearAsync();
+            lockReleased = clear.IsCompletedSuccessfully;
+        };
+
+        var entry = CreateEntry("saved");
+        await logger.AppendAsync(entry);
+        Assert.Equal(entry, observed);
+        Assert.True(lockReleased);
+        await clear!;
+    }
+
+    [Fact]
+    public async Task Successful_mutations_notify_but_disabled_cancelled_failed_and_no_op_changes_do_not()
+    {
+        var logger = CreateLogger();
+        var notifications = 0;
+        logger.Changed += () => notifications++;
+        var entry = CreateEntry("saved");
+        await logger.ClearAsync();
+        Assert.False(await logger.DeleteAsync(entry.Timestamp, entry.Text));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => logger.AppendAsync(entry, cancellation.Token));
+        Assert.Equal(0, notifications);
+
+        await logger.AppendAsync(entry);
+        Assert.Equal(1, notifications);
+        Assert.True(await logger.DeleteAsync(entry.Timestamp, entry.Text));
+        Assert.Equal(2, notifications);
+        await logger.AppendAsync(entry);
+        await logger.ClearAsync();
+        Assert.Equal(4, notifications);
+
+        var disabled = CreateLogger(historyEnabled: false);
+        disabled.Changed += () => notifications++;
+        await disabled.AppendAsync(entry);
+        Directory.CreateDirectory(logger.HistoryPath);
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => logger.AppendAsync(entry));
+        Assert.Equal(4, notifications);
+    }
+
+    [Fact]
+    public async Task Failed_observer_is_logged_without_failing_persistence_or_other_observers()
+    {
+        var logger = CreateLogger();
+        var notified = false;
+        logger.Changed += () => throw new InvalidOperationException("history observer failed");
+        logger.Changed += () => notified = true;
+        await logger.AppendAsync(CreateEntry("saved"));
+        Assert.True(notified);
+        Assert.Single(await logger.ReadAllAsync());
+        Assert.Contains("history observer failed", await File.ReadAllTextAsync(Path.Combine(_baseDirectory, "error.log")));
+    }
+
+    [Fact]
+    public async Task Old_rows_remain_readable_and_rewrites_preserve_new_history_metadata()
+    {
+        var logger = CreateLogger();
+        var old = CreateEntry(text: "old");
+        var added = CreateEntry(text: "new") with { RecordingDurationMs = 2300,
+            StopToResultDurationMs = 450, CaptureToResultDurationMs = 2750, PostProcessingApplied = true,
+            ConfigurationSnapshot = HistoryConfigurationSnapshot.Capture(new AppSettings(), "en", "prompt") };
+        await logger.AppendAsync(old);
+        await logger.AppendAsync(added);
+        Assert.Null((await logger.ReadAllAsync())[0].RecordingDurationMs);
+        Assert.True(await logger.DeleteAsync(old.Timestamp, old.Text));
+        var remaining = Assert.Single(await logger.ReadAllAsync());
+        Assert.Equal(2300, remaining.RecordingDurationMs);
+        Assert.Equal(2750, remaining.CaptureToResultDurationMs);
+        Assert.Equal("prompt", remaining.ConfigurationSnapshot!.Value.GetProperty("postProcessor").GetProperty("effectiveSystemPrompt").GetString());
+    }
+
+    [Fact]
     public async Task AppendAsync_should_create_history_file_and_store_jsonl_entries()
     {
         var logger = CreateLogger();
