@@ -1,0 +1,65 @@
+# Source template only: register/run manually after provisioning an authorized Windows agent and private fixtures.
+trigger: none
+pr: none
+
+parameters:
+  - name: poolName
+    type: string
+    default: ExistingWindowsAgentPool
+  - name: definitionPath
+    type: string
+    default: '$(Pipeline.Workspace)/private-fixtures/setup.json'
+  - name: fixturePath
+    type: string
+    default: '$(Pipeline.Workspace)/private-fixtures/take.json'
+  - name: encryptedSettingsPath
+    type: string
+    default: '$(Pipeline.Workspace)/private-fixtures/settings.json'
+  - name: label
+    type: string
+    default: evaluation
+  - name: repetitions
+    type: number
+    default: 1
+    values: [1, 2, 3, 4, 5]
+  - name: privateQualityDirectory
+    type: string
+    default: ''
+
+jobs:
+  - job: EvaluateFixtures
+    displayName: Manually evaluate private experiment fixtures
+    pool:
+      name: ${{ parameters.poolName }}
+      demands: [Agent.OS -equals Windows_NT]
+    steps:
+      - checkout: self
+      - powershell: |
+          dotnet build Bisik.sln -p:BisikRegisterLatestBuild=false
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+          dotnet test Bisik.sln --no-build -p:BisikRegisterLatestBuild=false
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+        displayName: Build and test without launcher registration
+      - powershell: |
+          & ./tools/Invoke-BisikExperimentEvaluation.ps1 `
+            -DefinitionPath $env:EXPERIMENT_DEFINITION `
+            -FixturePath $env:EXPERIMENT_FIXTURE `
+            -EncryptedSettingsPath $env:EXPERIMENT_SETTINGS `
+            -OutputDirectory '$(Build.ArtifactStagingDirectory)/experiment-summary-$(System.JobAttempt)' `
+            -Label $env:EXPERIMENT_LABEL `
+            -Repetitions ([int]$env:EXPERIMENT_REPETITIONS) `
+            -PrivateQualityDirectory $env:EXPERIMENT_PRIVATE_QUALITY
+        displayName: Run shared experiment CLI with explicit sources
+        env:
+          EXPERIMENT_DEFINITION: ${{ parameters.definitionPath }}
+          EXPERIMENT_FIXTURE: ${{ parameters.fixturePath }}
+          EXPERIMENT_SETTINGS: ${{ parameters.encryptedSettingsPath }}
+          EXPERIMENT_LABEL: ${{ parameters.label }}
+          EXPERIMENT_REPETITIONS: ${{ parameters.repetitions }}
+          EXPERIMENT_PRIVATE_QUALITY: ${{ parameters.privateQualityDirectory }}
+      - task: PublishPipelineArtifact@1
+        condition: succeededOrFailed()
+        displayName: Publish content-free summary only
+        inputs:
+          targetPath: '$(Build.ArtifactStagingDirectory)/experiment-summary-$(System.JobAttempt)/summary.json'
+          artifact: experiment-summary

@@ -17,6 +17,7 @@ internal static class ExperimentDiagnostics
         try
         {
             var definition = JsonSerializer.Deserialize<ExperimentDefinition>(await ReadBoundedAsync(options.DefinitionPath))!;
+            if (options.Repetitions is { } repeat) definition = definition with { Limits = definition.Limits with { Repetitions = repeat } };
             var fixture = JsonSerializer.Deserialize<ExperimentFixture>(await ReadBoundedAsync(options.FixturePath))!;
             fixture.Validate(options.AudioPath is not null);
             var settings = SettingsManager.LoadEncryptedCopy(options.SettingsPath, scratch);

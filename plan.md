@@ -1,6 +1,6 @@
 # Bisik Experiments implementation plan
 
-Status: execution in progress; completed items are checked with validation receipts. Prepared 6 November 2026. This file is the persistent execution checklist. Repository root: `D:\Dev\Bisik`; all source paths below are relative to it. Files marked **new** do not exist yet.
+Status: autonomous implementation complete for items 1-20 and 22, with validation receipts; item 21 and external acceptance are postponed by user direction. Prepared 6 November 2026. This file is the persistent execution checklist. Repository root: `D:\Dev\Bisik`; all source paths below are relative to it. Files marked **new** do not exist yet.
 
 ## A. Project context and implementation guide
 
@@ -323,15 +323,16 @@ These are additive followups from the original research, not requirements to var
     - [ ] 21.2. Implement thin provider, protected settings, registration/UI and diagnostic selection.
     - [ ] 21.3. Add provider/settings/fixture tests and document external training/deployment dependency.
 
-- [ ] 22. Add an opt-in Azure DevOps evaluation job template
+- [x] 22. Add an opt-in Azure DevOps evaluation job template
     - **Objective:** Make fixture evaluation repeatable without automatic paid CI runs.
     - **Location:** **new** `tools/azure-pipelines-experiments.yml`; task 12 CLI; README/VERIFICATION.
     - **Implementation:** Manual-trigger Windows job invoking build/tests and the shared experiment CLI against explicitly supplied private fixtures/encrypted settings or secret-backed test configuration. Desktop DPAPI settings are not portable to a different CI host/account: require a compatible preprovisioned source, or construct secret-backed settings only in agent memory and use `SettingsManager.Save` to create agent-owned encrypted scratch settings. Never write plaintext secret JSON. No hardcoded keys/endpoints/models, no personal fixture commits, no active desktop settings/launcher mutation. Parameterize paths/labels/repeats; validate paths and publish only content-free summaries by default. Judge/output artifacts require an explicitly configured private destination. Preserve failures/unavailable access as failures, not zero-time samples. This file is source only; do not register/run a pipeline or install/configure agents.
     - **Dependencies:** 12; live execution requires E1/E3.
     - **Validation:** Template structure/arguments and mock CLI invocation validated locally; no automatic trigger or secret/content publication; document required agent/secret/artifact setup and mark real pipeline execution unrun.
-    - [ ] 22.1. Add parameterized manual-only job template using existing CLI commands.
-    - [ ] 22.2. Add safe publication/failure behavior and external setup documentation.
-    - [ ] 22.3. Validate syntax/command generation with fixtures/mocks and record unrun pipeline status.
+    - [x] 22.1. Add parameterized manual-only job template using existing CLI commands.
+    - [x] 22.2. Add safe publication/failure behavior and external setup documentation.
+    - [x] 22.3. Validate syntax/command generation with fixtures/mocks and record unrun pipeline status.
+    - Validation: manual YAML parsed, 7 helper/fixture cases passed, and full solution suite passed 360 tests. Summary-only publication, path separation, compatible agent-owned DPAPI source and fail-on-unavailable execution documented. Actual pipeline/E1/E3 setup and paid run postponed.
 
 ## C. Dependencies and execution order
 
