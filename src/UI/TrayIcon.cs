@@ -89,6 +89,9 @@ public sealed class TrayIcon : IDisposable
         _notifyIcon.DoubleClick += (_, _) => onOpenSettings();
     }
 
+    public void AddExperimentsCommand(Action open) => _contextMenu.Items.Insert(2,
+        new ToolStripMenuItem("Experiments", null, (_, _) => open()));
+
     public void AddResultCommands(Action insert, Action dismiss)
     {
         _contextMenu.Items.Insert(0, new ToolStripMenuItem("Insert latest result here", null, (_, _) => insert()));

@@ -117,6 +117,9 @@ static class Program
         private bool _isShuttingDown;
         private SettingsForm? _settingsForm;
         private HistoryForm? _historyForm;
+        private ExperimentsForm? _experimentsForm;
+        private readonly OperationGate _experimentOperation = new();
+        private HttpClient? _experimentHttpClient;
 
         private readonly WindowsTextOutput _textOutput;
         private readonly LatestResultStore _latestResult = new();
@@ -201,6 +204,7 @@ static class Program
                     PostProcessor = _settings.PostProcessor with { Enabled = enabled },
                 }));
             _trayIcon.SetSelectedLanguage(_settings.DefaultLanguage);
+            _trayIcon.AddExperimentsCommand(ShowExperiments);
             _trayIcon.AddResultCommands(() => _ = InsertLatestAsync(), () =>
             {
                 if (_latestResult.Latest is { } pending) _latestResult.Dismiss(pending.Id);
@@ -222,7 +226,7 @@ static class Program
         {
             try
             {
-                if (_sessionCancellation is not null || _vadMonitoringEnabled)
+                if (_experimentOperation.IsActive || _sessionCancellation is not null || _vadMonitoringEnabled)
                 {
                     _trayIcon.ShowBalloon("Bisik", "Stop or cancel dictation before opening Settings.");
                     return;
@@ -267,6 +271,30 @@ static class Program
                 _historyLogger, _errorLogger, _soundFeedback.PlaySuccess, _soundFeedback.PlayError);
         }
 
+        private void ShowExperiments()
+        {
+            if (_isShuttingDown) return;
+            try
+            {
+                if (_experimentsForm is null || _experimentsForm.IsDisposed)
+                {
+                    _experimentHttpClient = new HttpClient(new HttpMetricsHandler(new HttpClientHandler())) { Timeout = Timeout.InfiniteTimeSpan };
+                    var client = _experimentHttpClient;
+                    TranscriptionService CreateSuiteService(AppSettings settings) => new(BuildProviderMap(client, settings),
+                        new LLMPostProcessor(client), _historyLogger, _errorLogger, () => { }, () => { });
+                    _experimentsForm = new(_settings, CreateSuiteService,
+                        (settings, definition, token, progress) => new ExperimentSession(new AudioRecorder(settings.Audio),
+                            CreateSuiteService(settings), settings, definition, token, progress), new ExperimentStore(),
+                        () => _isShuttingDown || _sessionCancellation is not null || _vadMonitoringEnabled || _processing
+                            || _settingsForm is { Visible: true } || !_recoveryTask.IsCompleted ? null : _experimentOperation.TryEnter());
+                    _experimentsForm.FormClosed += (_, _) => { _experimentsForm = null; client.Dispose(); if (_experimentHttpClient == client) _experimentHttpClient = null; };
+                    _experimentsForm.Show();
+                }
+                _experimentsForm.WindowState = FormWindowState.Normal; _experimentsForm.Show(); _experimentsForm.Activate();
+            }
+            catch (Exception ex) { HandleRuntimeException(ex, "Experiments"); }
+        }
+
         private void RegisterConfiguredHotkey()
         {
             try
@@ -288,6 +316,7 @@ static class Program
 
         private void ApplySettingsAndRebuildProviders(AppSettings fresh)
         {
+            if (_experimentOperation.IsActive) throw new InvalidOperationException("Finish Experiments before applying settings.");
             var gesture = HotkeyManager.ParseHotkey(fresh.Hotkey);
             _hotkeyManager.UnregisterAll();
             try
@@ -325,6 +354,7 @@ static class Program
 
         private void SaveQuickSettings(AppSettings fresh)
         {
+            if (_experimentOperation.IsActive) return;
             if (_settings == fresh) return;
             try
             {
@@ -376,6 +406,7 @@ static class Program
             _shutdownCancellation.Cancel();
             _settingsForm?.Close();
             _historyForm?.Close();
+            _experimentsForm?.Close();
             _pushToTalkReleaseTimer.Stop();
             _vadMonitoringEnabled = false;
             _vadTracker = null;
@@ -389,6 +420,7 @@ static class Program
             _audioRecorder.Dispose();
             _overlayWindow.Dispose();
             _httpClient.Dispose();
+            _experimentHttpClient?.Dispose();
             _shutdownCancellation.Dispose();
             _messageWindow.Dispose();
             _trayIcon.Dispose();
@@ -410,6 +442,8 @@ static class Program
             _pipelineSession?.Cancel();
             _vadMonitoringEnabled = false;
             _audioRecorder.StopVoiceActivityMonitoring();
+            try { if (_experimentsForm is not null) await _experimentsForm.DrainAsync(); }
+            catch (Exception ex) { _errorLogger.Log(ex); }
             try
             {
                 if (_processing && _processingTask is not null) await _processingTask;
@@ -462,7 +496,7 @@ static class Program
 
         private async Task HandleRegisteredHotkeyAsync()
         {
-            if (_isShuttingDown || _settingsForm is { Visible: true }) return;
+            if (_isShuttingDown || _experimentOperation.IsActive || _settingsForm is { Visible: true }) return;
             try
             {
                 if (_processing)
@@ -498,6 +532,7 @@ static class Program
 
         private void StartRecording()
         {
+            if (_experimentOperation.IsActive) return;
             if (_sessionCancellation is not null || _processing) return;
             // Capture the field before any overlay or asynchronous work can change focus.
             _dictationTarget = _textOutput.CaptureTarget();
@@ -582,7 +617,7 @@ static class Program
 
         private Task InsertLatestAsync()
         {
-            if (_isShuttingDown || _settingsForm is { Visible: true }) return Task.CompletedTask;
+            if (_isShuttingDown || _experimentOperation.IsActive || _settingsForm is { Visible: true }) return Task.CompletedTask;
             var claim = _latestResult.Claim();
             if (claim is null) return Task.CompletedTask;
             return _recoveryTask = InsertLatestCoreAsync(claim);
@@ -590,7 +625,7 @@ static class Program
 
         private async Task UseFastOutputAsync()
         {
-            if (_isShuttingDown || _settingsForm is { Visible: true }) return;
+            if (_isShuttingDown || _experimentOperation.IsActive || _settingsForm is { Visible: true }) return;
             if (_processing)
             {
                 if (_pipelineSession?.HasFinalTranscript == true) _pipelineSession.UseTranscriptNow();
@@ -768,7 +803,7 @@ static class Program
 
         private void HandleVadLevelSample(double level, int elapsedMs)
         {
-            if (!_vadMonitoringEnabled || _processing) return;
+            if (_experimentOperation.IsActive || !_vadMonitoringEnabled || _processing) return;
             _vadTracker ??= new VoiceActivityTracker(_settings.Audio);
             var action = _vadTracker.ProcessLevel(level, elapsedMs);
             if (action == VoiceActivityAction.StartRecording)
@@ -786,7 +821,7 @@ static class Program
 
         private void StartVadMonitoring()
         {
-            if (!_vadMonitoringEnabled || _isShuttingDown) return;
+            if (_experimentOperation.IsActive || !_vadMonitoringEnabled || _isShuttingDown) return;
             _vadTracker = new VoiceActivityTracker(_settings.Audio);
             _audioRecorder.UpdateSettings(_settings.Audio);
             _audioRecorder.StartVoiceActivityMonitoring((level, elapsed) => OnUi(() => HandleVadLevelSample(level, elapsed)));

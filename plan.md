@@ -196,15 +196,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 10.3. Extend STA tests for zero weights, major-error winner, selection and no network work.
     - Validation: 16 UI/scoring cases passed, then 2 popup/result tests passed after adding owned weight checkpoints. Build passed. No live calls or automatic output.
 
-- [ ] 11. Integrate tray access, operation ownership and shutdown
+- [x] 11. Integrate tray access, operation ownership and shutdown
     - **Objective:** Ensure experiments cannot capture/insert concurrently with normal app work.
     - **Location:** `src/Program.cs` → `BisikApplicationContext`, form commands, main/fast/latest hotkeys, VAD, `DrainShutdownAsync`; `src/UI/TrayIcon.cs`.
     - **Implementation:** Add Experiments tray action with singleton restore/activate behavior. Composition root injects experiment recorder/service/runner/store; use a suite-owned HttpClient+HttpMetricsHandler with infinite client timeout and explicit stage deadlines, no-op sounds, and no normal PhaseChanged output subscription. Introduce an operation gate for active experiment capture/batch versus normal dictation/VAD/settings connection tests/Apply. A merely idle Experiments window need not block dictation. Gate all main/fast/latest paths; history browsing is allowed. Close cancels and asynchronously drains before disposal; app exit owns the experiment task before any HTTP/recorder disposal. Unsubscribe callbacks/stop timers and reject stale run progress.
     - **Dependencies:** 7, 8, 9, 10.
     - **Validation:** One window, mutually exclusive capture/tests, all hotkey paths blocked while busy, settings unchanged, close/quit during capture/request/save, no background tasks or ObjectDisposed callbacks.
-    - [ ] 11.1. Wire tray/window creation and shared operation ownership guards.
-    - [ ] 11.2. Add owned experiment cancellation/draining to form close and app shutdown.
-    - [ ] 11.3. Add integration/STA tests with delayed fakes and assertions for no output dispatch.
+    - [x] 11.1. Wire tray/window creation and shared operation ownership guards.
+    - [x] 11.2. Add owned experiment cancellation/draining to form close and app shutdown.
+    - [x] 11.3. Add integration/STA tests with delayed fakes and assertions for no output dispatch.
+    - Validation: 37 ownership/form/service tests passed and build passed. Runtime hotkey guards inspected. Installed-app tray/hotkey checks remain unrun; installation unchanged.
 
 ### Phase 4: Shared diagnostics, recovery and first-version verification
 
