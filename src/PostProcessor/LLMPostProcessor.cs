@@ -312,6 +312,11 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
     }
 
     public static async Task<string> ReadCompleteTextAsync(HttpResponseMessage response, CancellationToken ct) => (await ParseCompletionAsync(response, ct)).Text;
+    public static async Task<CompletionText> ReadCompletionAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        var watch = System.Diagnostics.Stopwatch.StartNew(); var parsed = await ParseCompletionAsync(response, ct);
+        ct.ThrowIfCancellationRequested(); return new(parsed.Text, "", "", null, parsed.Usage, FullResponseMs: watch.Elapsed.TotalMilliseconds);
+    }
     private sealed record ParsedCompletion(string Text, CompletionUsage? Usage, double? FirstContentMs = null);
 
     private static CompletionUsage? ReadUsage(JsonElement root)

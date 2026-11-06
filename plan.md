@@ -301,15 +301,16 @@ These are additive followups from the original research, not requirements to var
     - [x] 19.3. Add race/coverage/fallback tests and document why live promotion remains deferred.
     - Validation: 32 segment/prompt/fixture regressions passed; 7 focused coverage/budget/settings/cancellation/prompt cases rerun. Paced replay includes full-text comparison and fixed judge; actual live replay/quality/promotion postponed.
 
-- [ ] 20. Extend existing instructed-audio diagnostics for matched fixtures
+- [x] 20. Extend existing instructed-audio diagnostics for matched fixtures
     - **Objective:** Evaluate the earlier one-stage alternative without replacing production routing.
     - **Location:** `tools/Bisik.Diagnostics/InstructedAudioDiagnostics.cs` → `BuildPayload/RunAsync`; task 12 fixtures/evaluation; existing audio request tests.
     - **Implementation:** Reuse the existing instruction-following audio Chat Completions adapter, not the dedicated transcription session. Make supported model/deployment selectable with explicit callable-contract evidence, and label human versus synthetic fixtures truthfully. Current code fixes gpt-audio and limits one minute/8 MiB; all six original takes exceed a minute. Keep bounds explicit and only extend them to verified model/API limits; otherwise report the unsupported fixture without silently truncating it. Evaluate against the same reference/rubric and show full upload/generation timing versus the live two-stage baseline. Prior 404 is unsupported access, not a quality score. No production provider switch.
     - **Dependencies:** 5, 12, 17; actual audio model/API access requires E1/E2.
     - **Validation:** Supported model option/payload, reference never used as answer instructions, oversized/long fixture rejection, no misleading synthetic labels, safe 404, complete output, no normal routing/installation changes.
-    - [ ] 20.1. Add model/fixture selection and documented contract-aware bounds.
-    - [ ] 20.2. Reuse fixed evaluator and safe comparison artifacts for one-stage outputs.
-    - [ ] 20.3. Extend diagnostic request/bounds/label tests and retain explicit unsupported receipts.
+    - [x] 20.1. Add model/fixture selection and documented contract-aware bounds.
+    - [x] 20.2. Reuse fixed evaluator and safe comparison artifacts for one-stage outputs.
+    - [x] 20.3. Extend diagnostic request/bounds/label tests and retain explicit unsupported receipts.
+    - Validation: 29 audio/completion/prompt cases passed; 3 focused contract/label/bounds/safe-404 cases rerun. Unsupported original long fixtures stay rejected unless exact bounds are verified; live audio access/comparison postponed.
 
 - [ ] 21. Prepare the conditional Azure Speech provider comparison (POSTPONED by user)
     - Blocker: E4 requires user-supplied existing service/access and exact API contract. All adapter work is postponed; continue to item 22.
