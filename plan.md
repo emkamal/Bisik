@@ -372,3 +372,5 @@ Final audit, item 11: closed Settings tests now retain an owned drain task, gate
 Final audit, item 19: replay now signals the actual Stop instant before shared recognition finalization; after-Stop segment work is excluded from recording-overlap time. All 8 segment cases passed.
 
 Final audit, item 10: speed-view validation matches its native B editor bounds (0.001–1,000,000 seconds), so an imported out-of-range scale cannot crash popup construction. Twelve model/weights cases passed. Setup limit captions use readable units.
+
+Final integration receipt: 21 local parent items and 63 subtasks are checked (items 1-20 and 22). Item 21/21.1-21.3 remains postponed under E4. Build passed with zero warnings/errors and latest-build registration disabled; full suite passed 366 tests, zero skips; manual YAML syntax and staged diff checks passed. External E1-E4/live/manual acceptance remains explicitly postponed/unrun. Number-prefixed commits retain every item and focused final-audit correction.
