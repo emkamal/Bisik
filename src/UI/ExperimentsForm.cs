@@ -23,6 +23,8 @@ public sealed class ExperimentsForm : Form
     private readonly ComboBox _judgeEffort = new() { DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "Judge effort" };
     private readonly NumericUpDown _repeats = new() { Minimum = 1, Maximum = 5, Value = 1, AccessibleName = "Repetitions" };
     private readonly CheckBox _retain = new() { Text = "Retain audio", AutoSize = true };
+    private readonly Dictionary<string, NumericUpDown> _limits = [];
+    private readonly CheckBox _retry = new() { Text = "Retry one transient failure", AutoSize = true };
     private readonly Panel _setup = new() { Dock = DockStyle.Fill };
     private readonly Button _start = new() { Text = "Start", AutoSize = true };
     private readonly Button _done = new() { Text = "Done", AutoSize = true, Enabled = false };
@@ -40,6 +42,8 @@ public sealed class ExperimentsForm : Form
     private ExperimentWeights _weights = new();
     private ExperimentWeightsForm? _weightsForm;
     private bool _refreshing;
+    private bool _previewing;
+    private bool _connectionAvailable = true;
     private CancellationTokenSource? _cancellation;
     private ExperimentSession? _capture;
     private Task _work = Task.CompletedTask;
@@ -94,6 +98,15 @@ public sealed class ExperimentsForm : Form
         var suggest = new Button { Text = "Suggest terms", AutoSize = true };
         suggest.Click += (_, _) => { foreach (var term in ExperimentScoring.SuggestTerms(_reference.Text)) _terms.Rows.Add(false, term, ""); };
         options.Controls.AddRange([new Label { Text = "Repeats", AutoSize = true }, _repeats, _retain, suggest]); fields.Controls.Add(options, 0, 6);
+        foreach (var (name, value, maximum) in new[] { (nameof(ExperimentLimits.MaximumTrials), 100, 100),
+            (nameof(ExperimentLimits.RecordingSeconds), 300, 300), (nameof(ExperimentLimits.RecognitionSeconds), 120, 120),
+            (nameof(ExperimentLimits.TrialSeconds), 120, 120), (nameof(ExperimentLimits.QuietHintSeconds), 5, 60) })
+        {
+            var input = new NumericUpDown { Minimum = 1, Maximum = maximum, Value = value, Width = 60, AccessibleName = name };
+            _limits[name] = input; options.Controls.Add(new Label { Text = name, AutoSize = true }); options.Controls.Add(input);
+            input.ValueChanged += (_, _) => Preview();
+        }
+        options.Controls.Add(_retry);
         _setup.Controls.Add(fields); BuildResults(); _tabs.TabPages.AddRange([setupPage, _resultsPage]); root.Controls.Add(_tabs, 0, 0);
         var commands = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
         var probe = Command("Verify unknown efforts", () => StartWorkAsync(true, false));
@@ -143,7 +156,7 @@ public sealed class ExperimentsForm : Form
         .Select(v => v == "default" ? null : v).ToImmutableArray();
     internal ExperimentDefinition ReadDefinition()
     {
-        foreach (var grid in new[] { _models, _prompts, _terms }) { grid.EndEdit(); }
+        foreach (var grid in new[] { _models, _prompts, _terms }) { grid.CommitEdit(DataGridViewDataErrorContexts.Commit); grid.EndEdit(); }
         if (_promptIndex >= 0 && !_prompts.Rows[_promptIndex].IsNewRow) _prompts.Rows[_promptIndex].Cells[1].Value = _prompt.Text;
         return new ExperimentDefinition
         {
@@ -153,13 +166,17 @@ public sealed class ExperimentsForm : Form
             Terms = Rows(_terms).Where(r => r.Cells[0].Value is true).Select(r => new ExperimentTerm(Cell(r, 1),
                 Cell(r, 2).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))).ToImmutableArray(),
             Judge = new("Judge", _judgeDeployment.Text.Trim(), _judgeModel.Text.Trim(), Efforts(Convert.ToString(_judgeEffort.SelectedItem) ?? "default")),
-            Limits = (_loadedDefinition?.Limits ?? new()) with { Repetitions = (int)_repeats.Value }, RetainAudio = _retain.Checked,
+            Limits = new() { Repetitions = (int)_repeats.Value, MaximumTrials = (int)_limits[nameof(ExperimentLimits.MaximumTrials)].Value,
+                RecordingSeconds = (int)_limits[nameof(ExperimentLimits.RecordingSeconds)].Value, RecognitionSeconds = (int)_limits[nameof(ExperimentLimits.RecognitionSeconds)].Value,
+                TrialSeconds = (int)_limits[nameof(ExperimentLimits.TrialSeconds)].Value, QuietHintSeconds = (int)_limits[nameof(ExperimentLimits.QuietHintSeconds)].Value,
+                RetryTransientFailure = _retry.Checked }, RetainAudio = _retain.Checked,
             Weights = _weights,
         }.Snapshot();
     }
     private void Preview()
     {
-        if (IsBusy) return;
+        if (IsBusy || _previewing || _limits.Count == 0) return;
+        _previewing = true;
         try
         {
             var preview = ExperimentMatrix.Build(ReadDefinition(), _settings.PostProcessor, _evidence);
@@ -167,6 +184,7 @@ public sealed class ExperimentsForm : Form
                 preview.Rows.Select(r => $"{r.Candidate.Name} / {r.Candidate.RequestedEffort ?? "default"}: {r.Status} {r.Reason}"));
         }
         catch (Exception ex) { _preview.Text = ex.Message; }
+        finally { _previewing = false; }
     }
 
     internal Task StartWorkAsync(bool probe, bool reuseRaw)
@@ -182,14 +200,16 @@ public sealed class ExperimentsForm : Form
     {
         try
         {
+            if (!_connectionAvailable) throw new InvalidOperationException("Stored connection unavailable. Inspection/export is available; reopen Experiments for a new setup.");
             var definition = reuseRaw ? CurrentRun?.Definition ?? throw new InvalidOperationException("Open a saved raw take first.") : ReadDefinition();
             _runId = definition.Id;
             var service = _serviceFactory(_settings);
             if (probe)
             {
-                var models = definition.Models.Add(definition.Judge);
-                var matrix = ExperimentMatrix.Build(definition with { Models = models, Limits = definition.Limits with { Repetitions = 1 } }, _settings.PostProcessor, _evidence);
-                foreach (var row in matrix.Rows.Where(r => r.Status == ExperimentMatrixStatus.Unknown).DistinctBy(r => (r.Candidate.ApiFingerprint, r.Candidate.RequestedEffort)))
+                var matrix = ExperimentMatrix.Build(definition, _settings.PostProcessor, _evidence);
+                var judgeMatrix = ExperimentMatrix.Build(definition with { Models = [definition.Judge], Prompts = [new("Judge", LLMExperimentJudge.Rubric)],
+                    Limits = definition.Limits with { Repetitions = 1 } }, _settings.PostProcessor, _evidence);
+                foreach (var row in matrix.Rows.Concat(judgeMatrix.Rows).Where(r => r.Status == ExperimentMatrixStatus.Unknown).DistinctBy(r => (r.Candidate.ApiFingerprint, r.Candidate.RequestedEffort)))
                 {
                     var model = new ExperimentModel(row.Candidate.Name, row.Candidate.Deployment, row.Candidate.Model, [row.Candidate.RequestedEffort]);
                     var settings = ExperimentMatrix.Settings(_settings.PostProcessor, model, new("Probe", "Return only the input."), row.Candidate.RequestedEffort);
@@ -218,14 +238,14 @@ public sealed class ExperimentsForm : Form
                 _done.Enabled = true; take = await _capture.RunAsync(); _done.Enabled = false;
             }
             var runner = new ExperimentRunner(service, new(service));
-            CurrentRun = await runner.RunAsync(definition, take, _settings.PostProcessor, _cancellation.Token,
-                new Progress<ExperimentProgress>(p =>
+            var progress = new Progress<ExperimentProgress>(p =>
                 {
                     if (_closing || !_acceptProgress || p.RunId != _runId) return;
                     CurrentRun = p.Snapshot; _status.Text = $"{p.State} {p.Completed}/{p.Total}: {p.TrialId} {p.CompletionStage}";
                     _progress.Maximum = Math.Max(1, p.Total); _progress.Value = Math.Min(p.Completed, _progress.Maximum); _request.Visible = p.RequestActive;
                     Log($"{p.State}: {p.Completed}/{p.Total}"); _checkpoint = SaveAfterAsync(_checkpoint, p.Snapshot); RefreshResults();
-                }), _evidence);
+                });
+            CurrentRun = await Task.Run(() => runner.RunAsync(definition, take, _settings.PostProcessor, _cancellation.Token, progress, _evidence));
             _acceptProgress = false; CurrentRun = CurrentRun with { Definition = CurrentRun.Definition with { Weights = _weights } };
             await _checkpoint; await _store.SaveAsync(CurrentRun, CancellationToken.None, _capture?.AudioPath);
             RefreshResults(); _tabs.SelectedTab = _resultsPage; Log(CurrentRun.State.ToString());
@@ -246,22 +266,40 @@ public sealed class ExperimentsForm : Form
     private async Task SaveSetupAsync() { var definition = ReadDefinition(); await _store.SaveSetupAsync(definition, _settings, CancellationToken.None); _loadedDefinition = definition; Log("Setup saved: " + definition.Id); }
     private async Task OpenAsync()
     {
-        using var dialog = new OpenFileDialog { Filter = "Saved experiment run|run.json", InitialDirectory = Path.GetDirectoryName(_store.DirectoryFor(Guid.NewGuid())) };
+        using var dialog = new OpenFileDialog { Filter = "Saved experiment run or setup|run.json;setup.json", InitialDirectory = Path.GetDirectoryName(_store.DirectoryFor(Guid.NewGuid())) };
         if (dialog.ShowDialog(this) != DialogResult.OK || !Guid.TryParse(Path.GetFileName(Path.GetDirectoryName(dialog.FileName)), out var id)) return;
-        await LoadAsync(id);
+        if (Path.GetFileName(dialog.FileName) == "setup.json") await LoadSetupAsync(id); else await LoadAsync(id);
     }
     public async Task LoadAsync(Guid id)
     {
         CurrentRun = await _store.LoadAsync(id, CancellationToken.None); _loadedDefinition = CurrentRun.Definition;
         var settings = await _store.LoadConnectionAsync(id, CancellationToken.None);
+        _connectionAvailable = settings is not null;
         if (settings is not null) _settings = settings; else Log("Connection unavailable; inspection/export remains available.");
-        var d = CurrentRun.Definition; _weights = d.Weights; _weightsForm?.SetWeights(_weights); _reference.Text = d.Reference; _models.Rows.Clear();
+        PopulateSetup(CurrentRun.Definition);
+        RefreshResults(); _tabs.SelectedTab = _resultsPage; Log(CurrentRun.Interrupted ? "Interrupted run recovered." : "Saved run opened.");
+    }
+    public async Task LoadSetupAsync(Guid id)
+    {
+        var definition = await _store.LoadSetupAsync(id, CancellationToken.None); definition.Validate();
+        var settings = await _store.LoadConnectionAsync(id, CancellationToken.None); _connectionAvailable = settings is not null;
+        if (settings is not null) _settings = settings;
+        CurrentRun = null; _results.Rows.Clear(); _detail.Clear(); _winner.Text = "No results yet.";
+        PopulateSetup(definition); _tabs.SelectedIndex = 0; Log("Saved setup opened.");
+    }
+    public void RefreshIdleSettings(AppSettings settings)
+    { if (!IsBusy && CurrentRun is null && _loadedDefinition is null) _settings = settings.Snapshot(); }
+    private void PopulateSetup(ExperimentDefinition d)
+    {
+        _loadedDefinition = d; _weights = d.Weights; _weightsForm?.SetWeights(_weights); _reference.Text = d.Reference; _models.Rows.Clear();
         foreach (var m in d.Models) _models.Rows.Add(m.Name, m.Deployment, m.Model, string.Join(",", m.Efforts.Select(e => e ?? "default")), m.StreamCompletion, m.UsePrediction);
         _promptIndex = -1; _prompts.Rows.Clear(); foreach (var p in d.Prompts) _prompts.Rows.Add(p.Name, p.SystemPrompt);
         _terms.Rows.Clear(); foreach (var t in d.Terms) _terms.Rows.Add(true, t.Canonical, string.Join(",", t.WrongAliases));
         _judgeModel.Text = d.Judge.Model; _judgeDeployment.Text = d.Judge.Deployment; _judgeEffort.SelectedItem = d.Judge.Efforts[0] ?? "default";
-        _repeats.Value = d.Limits.Repetitions; _retain.Checked = d.RetainAudio; SelectPrompt(); RefreshResults();
-        _tabs.SelectedTab = _resultsPage; Log(CurrentRun.Interrupted ? "Interrupted run recovered." : "Saved run opened.");
+        _repeats.Value = d.Limits.Repetitions; _retain.Checked = d.RetainAudio; _retry.Checked = d.Limits.RetryTransientFailure;
+        _limits[nameof(ExperimentLimits.MaximumTrials)].Value = d.Limits.MaximumTrials; _limits[nameof(ExperimentLimits.RecordingSeconds)].Value = d.Limits.RecordingSeconds;
+        _limits[nameof(ExperimentLimits.RecognitionSeconds)].Value = d.Limits.RecognitionSeconds; _limits[nameof(ExperimentLimits.TrialSeconds)].Value = d.Limits.TrialSeconds;
+        _limits[nameof(ExperimentLimits.QuietHintSeconds)].Value = d.Limits.QuietHintSeconds; SelectPrompt(); Preview();
     }
     private void BuildResults()
     {

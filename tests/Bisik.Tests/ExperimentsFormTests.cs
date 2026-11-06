@@ -55,6 +55,22 @@ public sealed class ExperimentsFormTests
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     });
+    [Fact]
+    public Task SavedDraftRestoresBoundsAndOptionalVariants() => StaTestHost.RunAsync(async () =>
+    {
+        var root = Path.Combine(Path.GetTempPath(), "Bisik.DraftTests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var definition = ExperimentRunnerTests.Definition(Settings.PostProcessor) with { Limits = new() { MaximumTrials = 15, RecordingSeconds = 30, TrialSeconds = 10 },
+                Models = [new("advanced", "dep", "one", [null], true, true)] };
+            var store = new ExperimentStore(root); await store.SaveSetupAsync(definition, Settings, CancellationToken.None);
+            using var form = new ExperimentsForm(Settings, _ => throw new Exception(), (_, _, _, _) => throw new Exception(), store, () => new Lease());
+            form.Show(); await form.LoadSetupAsync(definition.Id); var loaded = form.ReadDefinition();
+            Assert.Equal(definition.Limits, loaded.Limits); Assert.True(loaded.Models[0].StreamCompletion); Assert.True(loaded.Models[0].UsePrediction);
+            Assert.Null(form.CurrentRun); await form.DrainAsync(); form.Close();
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    });
     internal static async Task WaitUntilAsync(Func<bool> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
