@@ -68,6 +68,12 @@ public abstract class OpenAICompatibleProviderBase(HttpClient httpClient, Provid
     protected MultipartFormDataContent CreateMultipartContent(string audioFilePath, string? model, string language)
     {
         var content = new MultipartFormDataContent();
+        var context = Settings.RecognitionContext?.Snapshot();
+        bool Supports(RecognitionField field) => Settings.RecognitionCapability?.Supports(Settings, false, field) == true;
+        if (Supports(RecognitionField.Prompt) && !string.IsNullOrWhiteSpace(context?.Prompt)) content.Add(new StringContent(context.Prompt), "prompt");
+        if (Supports(RecognitionField.Keywords) && context?.Keywords is { Length: > 0 } keywords)
+            content.Add(new StringContent(System.Text.Json.JsonSerializer.Serialize(keywords)), "keywords");
+        if (Supports(RecognitionField.Language) && context?.ExpectedLanguage is { } expected) language = expected;
         var fileStream = File.OpenRead(audioFilePath);
         var fileContent = new StreamContent(fileStream);
         fileContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");

@@ -233,7 +233,7 @@ public sealed class RealtimeTranscriptionStreamTests
 
     private static AppSettings Settings() => new()
     {
-        Provider = new() { Endpoint = "https://example.openai.azure.com", ApiKey = "test-key", DeploymentName = "test-realtime" },
+        Provider = new() { Model = "gpt-realtime-whisper", Endpoint = "https://example.openai.azure.com", ApiKey = "test-key", DeploymentName = "test-realtime" },
     };
 
     [Theory]

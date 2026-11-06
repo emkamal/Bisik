@@ -83,6 +83,10 @@ public enum PostProcessorPreset
 
 public sealed record ProviderSettings
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RecognitionContext? RecognitionContext { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public RecognitionCapability? RecognitionCapability { get; init; }
     [JsonPropertyName("type")]
     public ProviderType Type { get; init; } = ProviderType.AzureOpenAi;
 
@@ -270,6 +274,7 @@ public sealed record AppSettings
 
     private static ProviderSettings CopyProvider(ProviderSettings provider) => provider with
     {
+        RecognitionContext = provider.RecognitionContext?.Snapshot(),
         ExtraHeaders = provider.ExtraHeaders is null ? null : new(provider.ExtraHeaders),
     };
 

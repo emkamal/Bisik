@@ -36,6 +36,8 @@ public static class HistoryConfigurationSnapshot
         AzureV1 = provider.AzureV1,
         TranscriptionDelay = provider.TranscriptionDelay,
         Model = provider.Model,
+        RecognitionContext = provider.RecognitionContext,
+        RecognitionCapability = provider.RecognitionCapability,
     };
 
     private static void ReplaceConnectionFields(JsonObject node, ProviderSettings provider)

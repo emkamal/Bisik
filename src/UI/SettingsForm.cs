@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Bisik.Models;
 using Bisik.Core;
 
@@ -64,6 +65,10 @@ public sealed class SettingsForm : Form
     private TextBox? _postProcessorSystemPromptTextBox;
     private TextBox? _vocabularyName;
     private TextBox? _vocabularyLines;
+    private TextBox? _recognitionPrompt;
+    private TextBox? _recognitionKeywords;
+    private TextBox? _recognitionLanguage;
+    private TextBox? _recognitionFields;
     private Button? _testConnectionButton;
     private Button? _applyButton;
     private Button? _okButton;
@@ -99,6 +104,16 @@ public sealed class SettingsForm : Form
         _tabs.TabPages.Add(CreateLanguageTabPage());
         _tabs.TabPages.Add(CreateHistoryTabPage());
         _tabs.TabPages.Add(CreatePostProcessorTabPage());
+        var hints = CreateTabPage("Recognition context");
+        var hintsLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
+        _recognitionPrompt = new TextBox { Multiline = true, Width = 360, Height = 90 };
+        _recognitionKeywords = new TextBox { Width = 360 };
+        _recognitionLanguage = new TextBox { Width = 200 };
+        _recognitionFields = new TextBox { Width = 360 };
+        var hintControls = new[] { _recognitionPrompt, _recognitionKeywords, _recognitionLanguage, _recognitionFields };
+        var hintNames = new[] { "Optional domain prompt", "Keywords (comma separated)", "Expected language", "Verified fields (Prompt,Keywords,Language,Delay)" };
+        for (var i = 0; i < hintControls.Length; i++) { hintsLayout.Controls.Add(CreateFieldLabel(hintNames[i], "Optional bounded domain hints for the selected recognition connection. Verified fields require exact model/API contract evidence. Defaults omit all hints. Never paste a full reference script. Realtime transport alone does not establish field support."), 0, i); hintsLayout.Controls.Add(hintControls[i], 1, i); }
+        hints.Controls.Add(hintsLayout); _tabs.TabPages.Add(hints);
 
         Controls.Add(_tabs);
         Controls.Add(CreateBottomButtonPanel());
@@ -1172,6 +1187,10 @@ public sealed class SettingsForm : Form
         if (_postProcessorSystemPromptTextBox is not null)
         {
             _postProcessorSystemPromptTextBox.Text = settings.PostProcessor.SystemPrompt;
+            _recognitionPrompt!.Text = settings.Provider.RecognitionContext?.Prompt ?? "";
+            _recognitionKeywords!.Text = string.Join(",", settings.Provider.RecognitionContext?.Keywords ?? []);
+            _recognitionLanguage!.Text = settings.Provider.RecognitionContext?.ExpectedLanguage ?? "";
+            _recognitionFields!.Text = string.Join(",", settings.Provider.RecognitionCapability?.Fields ?? []);
             _vocabularyName!.Text = settings.PostProcessor.Vocabulary?.Name ?? "";
             _vocabularyLines!.Text = settings.PostProcessor.Vocabulary?.Lines ?? "";
         }
@@ -1326,7 +1345,18 @@ public sealed class SettingsForm : Form
             };
         }
 
-        return provider;
+        var prompt = _recognitionPrompt?.Text;
+        var keywords = (_recognitionKeywords?.Text ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var language = _recognitionLanguage?.Text;
+        var selectedFields = (_recognitionFields?.Text ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(v => Enum.GetNames<RecognitionField>().Contains(v) ? Enum.Parse<RecognitionField>(v) : throw new ArgumentException("Unknown recognition field.")).ToImmutableArray();
+        var context = string.IsNullOrWhiteSpace(prompt) && keywords.Length == 0 && string.IsNullOrWhiteSpace(language) ? null
+            : new RecognitionContext(string.IsNullOrWhiteSpace(prompt) ? null : prompt, keywords.ToImmutableArray(), string.IsNullOrWhiteSpace(language) ? null : language).Snapshot();
+        var fingerprint = RecognitionCapability.Fingerprint(provider, provider.Type == ProviderType.AzureOpenAi && Bisik.Providers.AzureOpenAIProvider.UsesRealtime(provider));
+        var old = _loadedSettings.Provider.RecognitionCapability;
+        var unchangedClaim = old is not null && old.Fields.SequenceEqual(selectedFields);
+        return provider with { RecognitionContext = context, RecognitionCapability = selectedFields.Length == 0 || unchangedClaim && old!.ApiFingerprint != fingerprint
+            ? null : new(fingerprint, selectedFields) };
     }
 
     private string? ResolveSelectedDeviceId()

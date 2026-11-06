@@ -162,6 +162,7 @@ public sealed class SettingsManager
             return defaults;
         }
 
+        provider.RecognitionContext?.Snapshot();
         return provider with
         {
             Endpoint = provider.Endpoint ?? defaults.Endpoint,

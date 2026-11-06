@@ -51,9 +51,27 @@ internal static class AzureRealtimeProtocol
         }
     }
 
-    internal static object SessionUpdate(string deployment, string language, string? delay = null)
+    internal static bool SupportsField(ProviderSettings provider, RecognitionField field)
+    {
+        var whisper = provider.Model == "gpt-realtime-whisper" || provider.DeploymentName == "gpt-realtime-whisper";
+        if (whisper) return field is RecognitionField.Language or RecognitionField.Delay;
+        return provider.RecognitionCapability?.Supports(provider, true, field) == true;
+    }
+    internal static object SessionUpdate(ProviderSettings provider, string language)
+    {
+        var context = provider.RecognitionContext?.Snapshot();
+        var supportedLanguage = SupportsField(provider, RecognitionField.Language) ? context?.ExpectedLanguage ?? language : "auto";
+        return SessionUpdate(provider.DeploymentName, supportedLanguage,
+            SupportsField(provider, RecognitionField.Delay) ? provider.TranscriptionDelay : null,
+            SupportsField(provider, RecognitionField.Prompt) ? context?.Prompt : null,
+            SupportsField(provider, RecognitionField.Keywords) ? context?.Keywords : null);
+    }
+    internal static object SessionUpdate(string deployment, string language, string? delay = null,
+        string? prompt = null, System.Collections.Immutable.ImmutableArray<string>? keywords = null)
     {
         var transcription = new Dictionary<string, object> { ["model"] = deployment };
+        if (!string.IsNullOrWhiteSpace(prompt)) transcription["prompt"] = prompt;
+        if (keywords is { Length: > 0 } values) transcription["keywords"] = values;
         if (delay is not null)
         {
             if (delay is not ("minimal" or "low" or "medium" or "high" or "xhigh"))

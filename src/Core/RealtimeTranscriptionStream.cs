@@ -90,11 +90,7 @@ public sealed class RealtimeTranscriptionStream : IRealtimeTranscriber
             (_metrics ?? SessionMetrics.Current)?.Mark(TimingStage.SecretEnd);
             _socket = await _connect(AzureRealtimeProtocol.BuildRealtimeUri(settings.Provider), token, timeout.Token).ConfigureAwait(false);
             _receiveTask = ReceiveLoopAsync(_lifetime.Token);
-            // Dedicated transcription capability is explicit for aliases, or identified by the documented model.
-            var supportsDelay = settings.Provider.AzureRealtime || settings.Provider.DeploymentName.Contains("realtime-whisper", StringComparison.OrdinalIgnoreCase) ||
-                (settings.Provider.Model?.Contains("realtime-whisper", StringComparison.OrdinalIgnoreCase) ?? false);
-            await SendAsync(AzureRealtimeProtocol.SessionUpdate(settings.Provider.DeploymentName, language,
-                supportsDelay ? settings.Provider.TranscriptionDelay : null), timeout.Token).ConfigureAwait(false);
+            await SendAsync(AzureRealtimeProtocol.SessionUpdate(settings.Provider, language), timeout.Token).ConfigureAwait(false);
             await _ready.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
             _started = true;
             (_metrics ?? SessionMetrics.Current)?.Mark(TimingStage.WssReady);

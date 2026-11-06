@@ -257,15 +257,16 @@ These are additive followups from the original research, not requirements to var
     - [x] 15.3. Extend settings/prompt/history/speculation tests and documentation.
     - Validation: 63 vocabulary/prompt/settings/history regressions passed. Immutable vocabulary round trips and every preset preserve old behavior when empty; live glossary quality remains postponed.
 
-- [ ] 16. Add capability-gated recognition context for compatible models
+- [x] 16. Add capability-gated recognition context for compatible models
     - **Objective:** Repair domain terms before cleanup without breaking current Whisper.
     - **Location:** `ProviderSettings`, `AppSettings.Snapshot/CopyProvider`; `SettingsManager.NormalizeProvider`; `AzureRealtimeProtocol.SessionUpdate`; `RealtimeTranscriptionStream.StartAsync`; `AzureOpenAIProvider.UsesRealtime`; `RealtimePrewarmer.Key`; `SettingsForm`; safe snapshots; fixture diagnostics.
     - **Implementation:** Optional typed prompt/keywords/expected-language fields and exact per-field capability evidence. Defaults omit new fields. Separate realtime transport selection from supported prompt/delay/language properties; a generic AzureRealtime flag must not imply Whisper delay support. Current gpt-realtime-whisper GA must not receive unsupported prompt. New gpt-live-transcribe routing can use explicit realtime configuration plus verified field support; aliases must not be guessed from names. The recorded-file transcriber already delegates through the same stream builder: do not duplicate protocol. Include resolved context in prewarmer/cache/session identity and deep-copy arrays. Add context to multipart providers only where a documented/probed contract supports it. Diagnostics can compare en versus auto, or verified en/id hints, on identical saved audio; first-version experiments still use one selected ASR configuration.
     - **Dependencies:** 12, 15; live compatibility requires E1/E2.
     - **Validation:** Captured WSS/multipart payloads omit unsupported fields; forceRealtime does not force delay; current Whisper/file fallback unchanged; context changes retire warm slots; no full-reference injection; newer model tests use fakes.
-    - [ ] 16.1. Add context/field-capability settings, validation and explicit transport/field selection.
-    - [ ] 16.2. Thread supported hints through shared protocol, identity, UI and diagnostics.
-    - [ ] 16.3. Extend realtime/provider/settings/prewarmer/history tests and document unverified live contracts.
+    - [x] 16.1. Add context/field-capability settings, validation and explicit transport/field selection.
+    - [x] 16.2. Thread supported hints through shared protocol, identity, UI and diagnostics.
+    - [x] 16.3. Extend realtime/provider/settings/prewarmer/history tests and document unverified live contracts.
+    - Validation: 67 field-context/realtime/provider/settings cases passed. Unknown forced realtime omits unsupported fields; Whisper fixtures explicitly identify their contract. Context changes warm identity. E1/E2 live contracts postponed.
 
 - [ ] 17. Add completion usage telemetry and optional validated streaming
     - **Objective:** Distinguish queueing/first text/generation/reasoning and expose truthful progress.
