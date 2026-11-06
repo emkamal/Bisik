@@ -85,15 +85,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 1.3. Add `ExperimentModelTests` for immutability, defaults, identity and serialization.
     - Validation: 8 ExperimentModelTests passed; restore and diff check passed. No live calls.
 
-- [ ] 2. Add a non-inserting cleanup-only service stage and capability probes
+- [x] 2. Add a non-inserting cleanup-only service stage and capability probes
     - **Objective:** Execute a saved raw string through production completion validation without rerunning recognition.
     - **Location:** `src/Core/TranscriptionService.cs` → `TranscribeCoreAsync`; `src/PostProcessor/LLMPostProcessor.cs` → `ProcessAsync/BuildRequestPayload/ParseChatCompletionAsync`.
     - **Implementation:** Add `ProcessTextAsync` (new) with typed output/timing/status/effective-parameter receipts; share the stage invocation with normal cleanup without changing final selection. No history/sound/UI/output side effects. Add a distinct explicit compatibility-probe operation for unknown efforts; send the requested probe parameter without fabricating verified capability, accept only complete successful responses, then record experiment-local evidence. Default requests omit effort. Optional one retry for transient 408/429/5xx/network errors stays in the service, obeys Retry-After and shares the trial deadline; do not broaden normal dictation retries implicitly. Never retry authentication/invalid payload/unsupported parameters into another configuration.
     - **Dependencies:** 1.
     - **Validation:** Captured payload proves effective effort/model/prompt; no provider recognition/history/sound calls; cancelled late completions rejected; retry latency included; incomplete/refused output fails.
-    - [ ] 2.1. Add the shared cleanup stage and typed receipts while preserving `IPostProcessor` compatibility.
-    - [ ] 2.2. Add separate capability-probe state and bounded service retry behavior.
-    - [ ] 2.3. Extend `TranscriptionServiceTests`/`PostProcessorTests` with payload, cancellation, retry and no-side-effect cases.
+    - [x] 2.1. Add the shared cleanup stage and typed receipts while preserving `IPostProcessor` compatibility.
+    - [x] 2.2. Add separate capability-probe state and bounded service retry behavior.
+    - [x] 2.3. Extend `TranscriptionServiceTests`/`PostProcessorTests` with payload, cancellation, retry and no-side-effect cases.
+    - Validation: 64 service/completion tests passed, including 11 new text-stage cases; diff check passed. No live probes.
 
 - [ ] 3. Build and validate the candidate matrix
     - **Objective:** Turn selected models/efforts/prompts into an honest, bounded execution plan.

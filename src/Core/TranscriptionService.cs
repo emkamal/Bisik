@@ -70,7 +70,7 @@ public sealed class TranscriptionService(
             TranscribeCoreAsync(path, session.Settings.DefaultLanguage, session.Settings, token,
                 ct => RecognizeSessionAsync(session, provider, path, ct), session.Persistence,
                 (raw, token) => session.SelectFinalAsync(raw, cleanupToken => session.Speculation is null
-                    ? _postProcessor.ProcessAsync(raw, session.Settings.PostProcessor, cleanupToken)
+                    ? InvokeCleanupAsync(raw, session.Settings.PostProcessor, cleanupToken)
                     : session.Speculation.FinishAsync(raw, session.Settings.PostProcessor, cleanupToken), token),
                 () => session.CleanupSelected));
         if (snapshot.SpeculativeCleanup && snapshot.PostProcessor.Enabled && stream is not null)
@@ -170,7 +170,7 @@ public sealed class TranscriptionService(
                 PhaseChanged?.Invoke(ProcessingPhase.PostProcessing);
                 var postProcessingStopwatch = Stopwatch.StartNew();
                 metrics.Mark(TimingStage.CleanupStart);
-                outputText = cleanup is null ? await _postProcessor.ProcessAsync(rawText, settings.PostProcessor, cancellationToken)
+                outputText = cleanup is null ? await InvokeCleanupAsync(rawText, settings.PostProcessor, cancellationToken)
                     : await cleanup(rawText, cancellationToken);
                 metrics.Mark(TimingStage.CleanupEnd);
                 postProcessingStopwatch.Stop();
@@ -246,6 +246,82 @@ public sealed class TranscriptionService(
         }
     }
 
+    private async Task<string> InvokeCleanupAsync(string text, PostProcessorSettings settings, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var output = await _postProcessor.ProcessAsync(text, settings, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        return output;
+    }
+
+    public Task<TextProcessingReceipt> ProcessTextAsync(string text, PostProcessorSettings settings,
+        CancellationToken ct, int timeoutSeconds = 120, bool retryTransient = false) =>
+        ProcessTextCoreAsync(text, settings, false, ct, timeoutSeconds, retryTransient);
+
+    public Task<TextProcessingReceipt> ProbeTextCompatibilityAsync(string text, PostProcessorSettings settings,
+        CancellationToken ct, int timeoutSeconds = 120) =>
+        ProcessTextCoreAsync(text, settings, true, ct, timeoutSeconds, false);
+
+    private async Task<TextProcessingReceipt> ProcessTextCoreAsync(string text, PostProcessorSettings settings,
+        bool probe, CancellationToken ct, int timeoutSeconds, bool retryTransient)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+        if (text.Length > 200_000 || timeoutSeconds is < 1 or > 120) throw new ArgumentOutOfRangeException(nameof(timeoutSeconds));
+        settings = (new AppSettings { PostProcessor = settings }).Snapshot().PostProcessor with { Enabled = true };
+        var fingerprint = ReasoningCapability.Fingerprint(settings);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        var watch = Stopwatch.StartNew();
+        var attempts = 0;
+        var metrics = new SessionMetrics("text-stage");
+        using var scope = metrics.Activate();
+        try
+        {
+            if (probe && (_postProcessor is not ICompletionPostProcessor || settings.ReasoningEffort is null))
+                throw new NotSupportedException("An explicit effort probe requires a completion adapter and an effort.");
+            if (!probe && settings.ReasoningEffort != LLMPostProcessor.EffectiveEffort(settings))
+                throw new InvalidOperationException("Verify the requested effort for this exact model/API before running a trial.");
+            CompletionText completion;
+            while (true)
+            {
+                deadline.Token.ThrowIfCancellationRequested();
+                attempts++;
+                metrics.Add(MetricCount.Attempts);
+                try
+                {
+                    completion = _postProcessor is ICompletionPostProcessor rich
+                        ? await rich.CompleteAsync(text, settings, probe, deadline.Token).ConfigureAwait(false)
+                        : new(await InvokeCleanupAsync(text, settings, deadline.Token).ConfigureAwait(false),
+                            settings.Model, PostProcessorPresets.ResolveSystemPrompt(settings), LLMPostProcessor.EffectiveEffort(settings));
+                    break;
+                }
+                catch (Exception ex) when (retryTransient && attempts == 1 && !deadline.IsCancellationRequested && IsRetryable(ex))
+                {
+                    await RetryPolicy.WaitAsync((ex as ProviderRequestException)?.RetryAfter, deadline.Token).ConfigureAwait(false);
+                }
+            }
+            deadline.Token.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(completion.Text) || completion.Text.Length > 100_000)
+                throw new InvalidDataException("Missing or oversized complete text.");
+            if (completion.EffectiveEffort != settings.ReasoningEffort)
+                throw new InvalidDataException("Completion parameters did not match the requested trial.");
+            return new(true, completion.Text, watch.Elapsed.TotalMilliseconds, attempts, settings.ReasoningEffort,
+                completion.EffectiveEffort, completion.Model, completion.SystemPrompt, fingerprint,
+                probe || completion.EffectiveEffort is not null ? ExperimentVerification.Verified : ExperimentVerification.ProviderDefault);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            return new(false, null, watch.Elapsed.TotalMilliseconds, attempts, settings.ReasoningEffort,
+                null, settings.Model, PostProcessorPresets.ResolveSystemPrompt(settings), fingerprint,
+                probe ? ExperimentVerification.Rejected : ExperimentVerification.Unknown,
+                deadline.IsCancellationRequested ? "deadline" : SafeFailureCode(ex));
+        }
+    }
+
+    internal static string SafeFailureCode(Exception ex) => ex is HttpRequestException http && http.StatusCode is { } status
+        ? $"http-{(int)status}" : ex.GetType().Name;
+
     private static async Task<string> TranscribeWithRetryAsync(
         ITranscriptionProvider provider,
         string audioFilePath,
@@ -279,3 +355,7 @@ public sealed record TranscriptionResult(
     string ErrorMessage = "",
     long TranscriptionDurationMs = 0,
     long PostProcessingDurationMs = 0);
+
+public sealed record TextProcessingReceipt(bool Succeeded, string? Output, double ElapsedMs, int Attempts,
+    string? RequestedEffort, string? EffectiveEffort, string Model, string SystemPrompt, string ApiFingerprint,
+    ExperimentVerification Verification, string? FailureCode = null);

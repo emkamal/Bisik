@@ -4,7 +4,7 @@ using Bisik.Models;
 
 namespace Bisik.PostProcessor;
 
-public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
+public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostProcessor
 {
     private static readonly HashSet<string> ReservedHeaderNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -25,8 +25,15 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
             return rawText;
         }
 
+        return (await CompleteAsync(rawText, settings, false, cancellationToken)).Text;
+    }
+
+    public async Task<CompletionText> CompleteAsync(string rawText, PostProcessorSettings settings,
+        bool probeEffort, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         var requestUri = BuildRequestUri(settings.Provider);
-        var payload = BuildRequestPayload(rawText, settings);
+        var payload = BuildRequestPayload(rawText, settings, probeEffort);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
         {
@@ -41,10 +48,13 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
             cancellationToken);
 
         await EnsureSuccessAsync(response, cancellationToken);
-        return await ParseChatCompletionAsync(response, cancellationToken);
+        var text = await ParseChatCompletionAsync(response, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return new(text, ResolveModel(settings), PostProcessorPresets.ResolveSystemPrompt(settings),
+            EffectiveEffort(settings, probeEffort));
     }
 
-    private static string BuildRequestPayload(string rawText, PostProcessorSettings settings)
+    private static string BuildRequestPayload(string rawText, PostProcessorSettings settings, bool probeEffort = false)
     {
         var prompt = PostProcessorPresets.ResolveSystemPrompt(settings);
         var model = ResolveModel(settings);
@@ -57,14 +67,22 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : IPostProcessor
                 new { role = "user", content = rawText },
             },
         };
-        if (settings.ReasoningEffort is { } effort && settings.ReasoningCapability is { } capability && capability.Matches(settings))
-        {
-            if (effort is not ("none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max") || !capability.SupportedEfforts.Contains(effort, StringComparer.Ordinal))
-                throw new InvalidOperationException("The selected reasoning effort has not been verified for this model/API.");
+        if (EffectiveEffort(settings, probeEffort) is { } effort)
             payload["reasoning_effort"] = effort;
-        }
 
         return JsonSerializer.Serialize(payload);
+    }
+
+    public static string? EffectiveEffort(PostProcessorSettings settings, bool probeEffort = false)
+    {
+        if (settings.ReasoningEffort is not { } effort) return null;
+        if (effort is not ("none" or "minimal" or "low" or "medium" or "high" or "xhigh" or "max"))
+            throw new InvalidOperationException("Invalid reasoning effort.");
+        if (probeEffort) return effort;
+        if (settings.ReasoningCapability is not { } capability || !capability.Matches(settings)) return null;
+        if (!capability.SupportedEfforts.Contains(effort, StringComparer.Ordinal))
+            throw new InvalidOperationException("The selected reasoning effort has not been verified for this model/API.");
+        return effort;
     }
 
     private static string ResolveModel(PostProcessorSettings settings)
