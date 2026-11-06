@@ -220,7 +220,7 @@ public sealed class ExperimentsForm : Form
                 new Progress<ExperimentProgress>(p =>
                 {
                     if (_closing || !_acceptProgress || p.RunId != _runId) return;
-                    CurrentRun = p.Snapshot; _status.Text = $"{p.State} {p.Completed}/{p.Total}: {p.TrialId}";
+                    CurrentRun = p.Snapshot; _status.Text = $"{p.State} {p.Completed}/{p.Total}: {p.TrialId} {p.CompletionStage}";
                     _progress.Maximum = Math.Max(1, p.Total); _progress.Value = Math.Min(p.Completed, _progress.Maximum); _request.Visible = p.RequestActive;
                     Log($"{p.State}: {p.Completed}/{p.Total}"); _checkpoint = SaveAfterAsync(_checkpoint, p.Snapshot); RefreshResults();
                 }), _evidence);

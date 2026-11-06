@@ -10,11 +10,12 @@ public enum TimingStage
     CaptureStart, StopRequested, CaptureDrained, ExportStart, ExportEnd,
     TranscriptionStart, TranscriptionEnd, SecretStart, SecretEnd, WssReady,
     FirstPartial, CommitSent, CommitAcknowledged, ItemCompleted,
-    CleanupStart, CleanupEnd, HistoryStart, HistoryEnd, SoundStart, SoundEnd,
+    CleanupStart, CleanupFirstContent, CleanupEnd, HistoryStart, HistoryEnd, SoundStart, SoundEnd,
     Ready, PasteDispatched, ClipboardRestored,
 }
 
-public enum MetricCount { QueuedBytes, SentBytes, Attempts, Fallbacks, SpeculativeRequests, PrewarmSessions }
+public enum MetricCount { QueuedBytes, SentBytes, Attempts, Fallbacks, SpeculativeRequests, PrewarmSessions,
+    PromptTokens, OutputTokens, ReasoningTokens, CachedTokens, AcceptedPredictionTokens, RejectedPredictionTokens }
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum SessionOutcome { Ready, Empty, Failed, Cancelled, PasteDispatched, Copied, NeedsReview }
 public sealed record TimingEvent(TimingStage Stage, double ElapsedMs);

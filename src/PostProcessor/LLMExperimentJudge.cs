@@ -37,7 +37,7 @@ public sealed class LLMExperimentJudge(TranscriptionService service)
 
     public static string CacheIdentity(ExperimentDefinition definition, string output, PostProcessorSettings judge) =>
         ExperimentIdentity.Hash("evaluation-v1", definition.Reference, output, definition.Terms, definition.RubricVersion,
-            Rubric, ReasoningCapability.Fingerprint(judge), judge.ReasoningEffort, LLMPostProcessor.EffectiveEffort(judge));
+            Rubric, ReasoningCapability.Fingerprint(judge), judge.ReasoningEffort, LLMPostProcessor.EffectiveEffort(judge), judge.StreamCompletion);
 
     public void Seed(ExperimentEvaluation evaluation)
     {

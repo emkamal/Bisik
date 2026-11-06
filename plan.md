@@ -268,15 +268,16 @@ These are additive followups from the original research, not requirements to var
     - [x] 16.3. Extend realtime/provider/settings/prewarmer/history tests and document unverified live contracts.
     - Validation: 67 field-context/realtime/provider/settings cases passed. Unknown forced realtime omits unsupported fields; Whisper fixtures explicitly identify their contract. Context changes warm identity. E1/E2 live contracts postponed.
 
-- [ ] 17. Add completion usage telemetry and optional validated streaming
+- [x] 17. Add completion usage telemetry and optional validated streaming
     - **Objective:** Distinguish queueing/first text/generation/reasoning and expose truthful progress.
     - **Location:** `LLMPostProcessor.ProcessAsync/ParseChatCompletionAsync`; `HttpMetricsHandler`; `SessionMetrics`; task 2 receipts and experiments/diagnostics.
     - **Implementation:** Add nullable typed prompt/output/reasoning/cached/prediction-token counts when returned. Header arrival remains separate from first generated content. Optional capability-gated SSE parser accumulates privately, supports bounded deltas/final usage, and accepts only complete validated text with stop/refusal/truncation checks equivalent to nonstreaming. No partial clipboard/insertion; streaming is measurement/progress, not guaranteed faster final delivery. Preserve string-returning API via a shared richer internal completion result; don't reparse/call a second request. Track retries/statuses without URLs, bodies, transcript or credentials in timing logs.
     - **Dependencies:** 2, 7, 12; live streaming contract requires E2.
     - **Validation:** Split/UTF-8/SSE frames, missing usage, EOF before finish, refusal/filter/truncation, cancellation, bounded accumulation, first-text versus headers and no content leaks.
-    - [ ] 17.1. Add shared usage/first-content metadata to complete-response parsing and typed receipts.
-    - [ ] 17.2. Add optional SSE parsing/private accumulation and stage progress through the service.
-    - [ ] 17.3. Extend parser/metrics/runner tests and comparisons; document nullable/unverified fields.
+    - [x] 17.1. Add shared usage/first-content metadata to complete-response parsing and typed receipts.
+    - [x] 17.2. Add optional SSE parsing/private accumulation and stage progress through the service.
+    - [x] 17.3. Extend parser/metrics/runner tests and comparisons; document nullable/unverified fields.
+    - Validation: 52 completion/service/metrics cases passed, then 7 focused SSE/usage/progress cases passed. Streaming is off by default and scoped in matrix/cache identity. Live streaming compatibility/performance postponed.
 
 - [ ] 18. Add an opt-in predicted-output cleanup comparison
     - **Objective:** Measure reduced regeneration for mostly unchanged transcripts where supported.

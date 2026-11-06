@@ -261,15 +261,15 @@ public sealed class TranscriptionService(
     }
 
     public Task<TextProcessingReceipt> ProcessTextAsync(string text, PostProcessorSettings settings,
-        CancellationToken ct, int timeoutSeconds = 120, bool retryTransient = false) =>
-        ProcessTextCoreAsync(text, settings, false, ct, timeoutSeconds, retryTransient);
+        CancellationToken ct, int timeoutSeconds = 120, bool retryTransient = false, IProgress<TextCompletionStage>? progress = null) =>
+        ProcessTextCoreAsync(text, settings, false, ct, timeoutSeconds, retryTransient, progress);
 
     public Task<TextProcessingReceipt> ProbeTextCompatibilityAsync(string text, PostProcessorSettings settings,
         CancellationToken ct, int timeoutSeconds = 120) =>
-        ProcessTextCoreAsync(text, settings, true, ct, timeoutSeconds, false);
+        ProcessTextCoreAsync(text, settings, true, ct, timeoutSeconds, false, null);
 
     private async Task<TextProcessingReceipt> ProcessTextCoreAsync(string text, PostProcessorSettings settings,
-        bool probe, CancellationToken ct, int timeoutSeconds, bool retryTransient)
+        bool probe, CancellationToken ct, int timeoutSeconds, bool retryTransient, IProgress<TextCompletionStage>? progress)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);
         if (text.Length > 200_000 || timeoutSeconds is < 1 or > 120) throw new ArgumentOutOfRangeException(nameof(timeoutSeconds));
@@ -296,7 +296,7 @@ public sealed class TranscriptionService(
                 try
                 {
                     completion = _postProcessor is ICompletionPostProcessor rich
-                        ? await rich.CompleteAsync(text, settings, probe, deadline.Token).ConfigureAwait(false)
+                        ? await rich.CompleteAsync(text, settings, probe, deadline.Token, progress).ConfigureAwait(false)
                         : new(await InvokeCleanupAsync(text, settings, deadline.Token).ConfigureAwait(false),
                             settings.Model, PostProcessorPresets.ResolveSystemPrompt(settings), LLMPostProcessor.EffectiveEffort(settings));
                     break;
@@ -313,7 +313,8 @@ public sealed class TranscriptionService(
                 throw new InvalidDataException("Completion parameters did not match the requested trial.");
             return new(true, completion.Text, watch.Elapsed.TotalMilliseconds, attempts, settings.ReasoningEffort,
                 completion.EffectiveEffort, completion.Model, completion.SystemPrompt, fingerprint,
-                probe || completion.EffectiveEffort is not null ? ExperimentVerification.Verified : ExperimentVerification.ProviderDefault);
+                probe || completion.EffectiveEffort is not null ? ExperimentVerification.Verified : ExperimentVerification.ProviderDefault,
+                Usage: completion.Usage, HeadersMs: completion.HeadersMs, FirstContentMs: completion.FirstContentMs, FullResponseMs: completion.FullResponseMs);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)

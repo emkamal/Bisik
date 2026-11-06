@@ -29,9 +29,10 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
     }
 
     public async Task<CompletionText> CompleteAsync(string rawText, PostProcessorSettings settings,
-        bool probeEffort, CancellationToken cancellationToken)
+        bool probeEffort, CancellationToken cancellationToken, IProgress<TextCompletionStage>? progress = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         var requestUri = BuildRequestUri(settings.Provider);
         var payload = BuildRequestPayload(rawText, settings, probeEffort);
 
@@ -46,12 +47,23 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
             request,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken);
+        var headersMs = watch.Elapsed.TotalMilliseconds;
+        progress?.Report(TextCompletionStage.Headers);
 
         await EnsureSuccessAsync(response, cancellationToken);
-        var text = await ParseChatCompletionAsync(response, cancellationToken);
+        var parsed = settings.StreamCompletion ? await ParseStreamAsync(response, watch, cancellationToken, progress)
+            : await ParseCompletionAsync(response, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        return new(text, ResolveModel(settings), PostProcessorPresets.ResolveSystemPrompt(settings),
-            EffectiveEffort(settings, probeEffort));
+        if (parsed.Usage is { } usage)
+        {
+            var counts = new[] { (Core.MetricCount.PromptTokens, usage.PromptTokens), (Core.MetricCount.OutputTokens, usage.OutputTokens),
+                (Core.MetricCount.ReasoningTokens, usage.ReasoningTokens), (Core.MetricCount.CachedTokens, usage.CachedTokens),
+                (Core.MetricCount.AcceptedPredictionTokens, usage.AcceptedPredictionTokens), (Core.MetricCount.RejectedPredictionTokens, usage.RejectedPredictionTokens) };
+            foreach (var (kind, value) in counts) if (value is { } n) Core.SessionMetrics.Current?.Add(kind, n);
+        }
+        progress?.Report(TextCompletionStage.Complete);
+        return new(parsed.Text, ResolveModel(settings), PostProcessorPresets.ResolveSystemPrompt(settings),
+            EffectiveEffort(settings, probeEffort), parsed.Usage, headersMs, parsed.FirstContentMs, watch.Elapsed.TotalMilliseconds);
     }
 
     private static string BuildRequestPayload(string rawText, PostProcessorSettings settings, bool probeEffort = false)
@@ -67,6 +79,12 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
                 new { role = "user", content = rawText },
             },
         };
+        if (settings.StreamCompletion)
+        {
+            if (settings.CompletionCapability?.Supports(settings, CompletionFeature.Streaming) != true)
+                throw new InvalidOperationException("Streaming is not verified for this model/API.");
+            payload["stream"] = true; payload["stream_options"] = new { include_usage = true };
+        }
         if (EffectiveEffort(settings, probeEffort) is { } effort)
             payload["reasoning_effort"] = effort;
 
@@ -216,7 +234,7 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
         throw new Bisik.Providers.ProviderRequestException(response.StatusCode, false, Core.RetryPolicy.FromResponse(response));
     }
 
-    private static async Task<string> ParseChatCompletionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private static async Task<ParsedCompletion> ParseCompletionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         if (response.Content is null)
         {
@@ -224,7 +242,15 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
         }
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        using var bytes = new MemoryStream();
+        var buffer = new byte[8192]; int count;
+        while ((count = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+        {
+            if (bytes.Length + count > 2 * 1024 * 1024) throw new InvalidDataException("Oversized completion response.");
+            bytes.Write(buffer, 0, count);
+        }
+        using var document = JsonDocument.Parse(bytes.ToArray());
+        var usage = ReadUsage(document.RootElement);
 
         if (!document.RootElement.TryGetProperty("choices", out var choices) ||
             choices.ValueKind != JsonValueKind.Array ||
@@ -247,7 +273,7 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
         if (content.ValueKind == JsonValueKind.String)
         {
             var text = content.GetString();
-            return !string.IsNullOrWhiteSpace(text) ? text : throw new InvalidDataException("Post-processor returned empty text.");
+            return !string.IsNullOrWhiteSpace(text) && text.Length <= 100_000 ? new(text, usage) : throw new InvalidDataException("Post-processor returned empty or oversized text.");
         }
 
         if (content.ValueKind == JsonValueKind.Array)
@@ -268,14 +294,89 @@ public sealed class LLMPostProcessor(HttpClient httpClient) : ICompletionPostPro
 
             if (textParts.Length > 0 && !string.IsNullOrWhiteSpace(string.Concat(textParts)))
             {
-                return string.Concat(textParts);
+                var text = string.Concat(textParts);
+                if (text.Length > 100_000) throw new InvalidDataException("Oversized complete text.");
+                return new(text, usage);
             }
         }
 
         throw new InvalidDataException("Post-processor response contained an unsupported or empty message content format.");
     }
 
-    public static Task<string> ReadCompleteTextAsync(HttpResponseMessage response, CancellationToken ct) => ParseChatCompletionAsync(response, ct);
+    public static async Task<string> ReadCompleteTextAsync(HttpResponseMessage response, CancellationToken ct) => (await ParseCompletionAsync(response, ct)).Text;
+    private sealed record ParsedCompletion(string Text, CompletionUsage? Usage, double? FirstContentMs = null);
+
+    private static CompletionUsage? ReadUsage(JsonElement root)
+    {
+        if (!root.TryGetProperty("usage", out var usage) || usage.ValueKind == JsonValueKind.Null) return null;
+        static long? Count(JsonElement node, string property)
+        {
+            if (!node.TryGetProperty(property, out var value) || value.ValueKind == JsonValueKind.Null) return null;
+            return value.TryGetInt64(out var count) && count is >= 0 and <= 1_000_000_000_000 ? count : throw new InvalidDataException("Invalid usage count.");
+        }
+        var promptDetails = usage.TryGetProperty("prompt_tokens_details", out var pd) && pd.ValueKind == JsonValueKind.Object ? pd : default;
+        var outputDetails = usage.TryGetProperty("completion_tokens_details", out var od) && od.ValueKind == JsonValueKind.Object ? od : default;
+        long? Detail(JsonElement node, string key) => node.ValueKind == JsonValueKind.Object ? Count(node, key) : null;
+        return new(Count(usage, "prompt_tokens"), Count(usage, "completion_tokens"), Detail(outputDetails, "reasoning_tokens"),
+            Detail(promptDetails, "cached_tokens"), Detail(outputDetails, "accepted_prediction_tokens"), Detail(outputDetails, "rejected_prediction_tokens"));
+    }
+
+    private static async Task<ParsedCompletion> ParseStreamAsync(HttpResponseMessage response, System.Diagnostics.Stopwatch watch, CancellationToken ct,
+        IProgress<TextCompletionStage>? progress)
+    {
+        await using var stream = await response.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream, new UTF8Encoding(false, true));
+        var buffer = new char[1024]; var line = new StringBuilder(); var frame = new StringBuilder(); var text = new StringBuilder();
+        var total = 0; bool finished = false, done = false; double? first = null; CompletionUsage? usage = null;
+        void Dispatch()
+        {
+            var data = frame.ToString().TrimEnd('\n'); frame.Clear();
+            if (data.Length == 0) return;
+            if (done) throw new InvalidDataException("Data after completed stream.");
+            if (data == "[DONE]") { done = true; return; }
+            using var json = JsonDocument.Parse(data); var root = json.RootElement;
+            usage = ReadUsage(root) ?? usage;
+            if (!root.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array) throw new InvalidDataException("Invalid stream choices.");
+            if (choices.GetArrayLength() == 0) return;
+            var choice = choices[0];
+            if (choice.TryGetProperty("delta", out var delta))
+            {
+                if (delta.TryGetProperty("refusal", out var refusal) && refusal.ValueKind != JsonValueKind.Null) throw new InvalidDataException("Refused stream.");
+                if (delta.TryGetProperty("content", out var content) && content.ValueKind != JsonValueKind.Null)
+                {
+                    if (content.ValueKind != JsonValueKind.String || finished) throw new InvalidDataException("Invalid stream text.");
+                    var part = content.GetString()!;
+                    if (text.Length + part.Length > 100_000) throw new InvalidDataException("Oversized stream text.");
+                    if (part.Length > 0 && first is null)
+                    {
+                        first = watch.Elapsed.TotalMilliseconds; Core.SessionMetrics.Current?.Mark(Core.TimingStage.CleanupFirstContent, once: true);
+                        progress?.Report(TextCompletionStage.FirstContent);
+                    }
+                    text.Append(part);
+                }
+            }
+            if (choice.TryGetProperty("finish_reason", out var reason) && reason.ValueKind != JsonValueKind.Null)
+            {
+                if (reason.ValueKind != JsonValueKind.String || reason.GetString() != "stop") throw new InvalidDataException("Incomplete/filtered stream.");
+                finished = true;
+            }
+        }
+        int count;
+        while ((count = await reader.ReadAsync(buffer.AsMemory(), ct)) > 0)
+        {
+            total += count; if (total > 2 * 1024 * 1024) throw new InvalidDataException("Oversized stream.");
+            foreach (var character in buffer.AsSpan(0, count).ToArray())
+            {
+                if (character != '\n') { line.Append(character); if (line.Length > 64_000) throw new InvalidDataException("Oversized SSE line."); continue; }
+                var value = line.ToString().TrimEnd('\r'); line.Clear();
+                if (value.Length == 0) Dispatch();
+                else if (value.StartsWith("data:", StringComparison.Ordinal)) { frame.Append(value[5..].TrimStart()).Append('\n'); if (frame.Length > 128_000) throw new InvalidDataException("Oversized SSE frame."); }
+            }
+        }
+        ct.ThrowIfCancellationRequested();
+        if (!done || !finished || line.Length != 0 || frame.Length != 0 || string.IsNullOrWhiteSpace(text.ToString())) throw new InvalidDataException("Stream ended without a complete final result.");
+        return new(text.ToString(), usage, first);
+    }
 
     private static Uri RequireAbsoluteUri(string endpoint, string parameterName)
     {

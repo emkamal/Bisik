@@ -6,7 +6,7 @@ using Bisik.PostProcessor;
 namespace Bisik.Core;
 
 public sealed record ExperimentProgress(Guid RunId, ExperimentState State, string? TrialId,
-    int Completed, int Total, bool RequestActive, ExperimentRun Snapshot);
+    int Completed, int Total, bool RequestActive, ExperimentRun Snapshot, TextCompletionStage? CompletionStage = null);
 
 public sealed class ExperimentRunner(TranscriptionService service, LLMExperimentJudge judge)
 {
@@ -43,10 +43,10 @@ public sealed class ExperimentRunner(TranscriptionService service, LLMExperiment
         var watch = Stopwatch.StartNew();
         var state = ExperimentState.Generating;
         ExperimentRun Snapshot() => new(definition, take, state, seed, trials.ToImmutableArray(), watch.Elapsed.TotalMilliseconds);
-        void Report(string? id, bool active) => progress?.Report(new(definition.Id, state, id,
+        void Report(string? id, bool active, TextCompletionStage? stage = null) => progress?.Report(new(definition.Id, state, id,
             trials.Count(t => t.Generation is ExperimentGenerationStatus.Succeeded or ExperimentGenerationStatus.Failed or ExperimentGenerationStatus.Cancelled
                 && (state == ExperimentState.Generating || t.EvaluationStatus is ExperimentEvaluationStatus.Succeeded or ExperimentEvaluationStatus.Cached or ExperimentEvaluationStatus.Failed or ExperimentEvaluationStatus.Cancelled)),
-            trials.Length, active, Snapshot()));
+            trials.Length, active, Snapshot(), stage));
         try
         {
             for (var i = 0; i < trials.Length; i++)
@@ -60,7 +60,7 @@ public sealed class ExperimentRunner(TranscriptionService service, LLMExperiment
                     var candidate = trials[i].Candidate;
                     var receipt = candidate.IsBaseline ? null : await service.ProcessTextAsync(take.RawText,
                         ExperimentMatrix.Settings(connection, candidate), ct, definition.Limits.TrialSeconds,
-                        definition.Limits.RetryTransientFailure).ConfigureAwait(false);
+                        definition.Limits.RetryTransientFailure, new StageProgress(stage => Report(trials[i].Id, true, stage))).ConfigureAwait(false);
                     ct.ThrowIfCancellationRequested();
                     if (receipt is { Succeeded: false })
                         trials[i] = trials[i] with { Generation = ExperimentGenerationStatus.Failed, Completion = receipt,
@@ -126,4 +126,6 @@ public sealed class ExperimentRunner(TranscriptionService service, LLMExperiment
         }
         return result.ToArray();
     }
+    private sealed class StageProgress(Action<TextCompletionStage> report) : IProgress<TextCompletionStage>
+    { public void Report(TextCompletionStage value) => report(value); }
 }

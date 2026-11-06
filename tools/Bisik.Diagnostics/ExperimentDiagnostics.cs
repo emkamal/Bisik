@@ -65,6 +65,7 @@ internal static class ExperimentDiagnostics
         run.Take.RawIdentity, run.Take.SharedStopToRawMs, Rankings = ExperimentScoring.Rank(run, run.Definition.Weights).Select(r => new
             { r.CandidateId, r.Factors, r.Score, r.Rank, r.Successful, r.Failed, r.Judged, r.Provisional, WarningCount = r.Warnings.Length }),
         Trials = run.Trials.Select(t => new { t.Id, CandidateId = t.Candidate.Id, t.RepeatIndex, t.ExecutionIndex, t.Generation, t.EvaluationStatus,
-            t.CleanupMs, t.JudgeMs, t.FailureCode, t.Candidate.RequestedEffort, t.Candidate.EffectiveEffort, t.Candidate.Verification, Attempts = t.Completion?.Attempts }),
+            t.CleanupMs, t.JudgeMs, t.FailureCode, t.Candidate.RequestedEffort, t.Candidate.EffectiveEffort, t.Candidate.Verification, Attempts = t.Completion?.Attempts,
+            Usage = t.Completion?.Usage, HeadersMs = t.Completion?.HeadersMs, FirstContentMs = t.Completion?.FirstContentMs, FullResponseMs = t.Completion?.FullResponseMs }),
     };
 }

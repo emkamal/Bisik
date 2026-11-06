@@ -9,7 +9,7 @@ public enum ExperimentWarningCategory { Meaning, Omission, Negation, Quantity, I
 
 public sealed record ExperimentCandidate(string Id, string Name, string Deployment, string Model,
     string SystemPrompt, string? RequestedEffort, string? EffectiveEffort,
-    ExperimentVerification Verification, string ApiFingerprint, bool IsBaseline = false)
+    ExperimentVerification Verification, string ApiFingerprint, bool IsBaseline = false, bool StreamCompletion = false)
 {
     public static ExperimentCandidate Baseline { get; } = new("raw-baseline-v1", "Raw transcript", "", "",
         "", null, null, ExperimentVerification.ProviderDefault, "", true);
@@ -61,4 +61,13 @@ public sealed record ExperimentRun(ExperimentDefinition Definition, ExperimentTa
 
 public sealed record TextProcessingReceipt(bool Succeeded, string? Output, double ElapsedMs, int Attempts,
     string? RequestedEffort, string? EffectiveEffort, string Model, string SystemPrompt, string ApiFingerprint,
-    ExperimentVerification Verification, string? FailureCode = null);
+    ExperimentVerification Verification, string? FailureCode = null, CompletionUsage? Usage = null,
+    double? HeadersMs = null, double? FirstContentMs = null, double? FullResponseMs = null);
+public sealed record CompletionUsage(long? PromptTokens, long? OutputTokens, long? ReasoningTokens,
+    long? CachedTokens, long? AcceptedPredictionTokens, long? RejectedPredictionTokens);
+public enum CompletionFeature { Streaming, Prediction }
+public sealed record CompletionCapability(string ApiFingerprint, ImmutableArray<CompletionFeature> Features)
+{
+    public bool Supports(PostProcessorSettings settings, CompletionFeature feature) => !Features.IsDefault
+        && Features.Contains(feature) && ApiFingerprint == ReasoningCapability.Fingerprint(settings);
+}

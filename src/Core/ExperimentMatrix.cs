@@ -44,7 +44,7 @@ public static class ExperimentMatrix
             var settings = Settings(connection, model, prompt, effort);
             var fingerprint = ReasoningCapability.Fingerprint(settings);
             var resolvedModel = string.IsNullOrWhiteSpace(model.Model) ? model.Deployment : model.Model;
-            var id = ExperimentIdentity.Hash("candidate-v1", fingerprint, resolvedModel, prompt.SystemPrompt, effort);
+            var id = ExperimentIdentity.Hash("candidate-v1", fingerprint, resolvedModel, prompt.SystemPrompt, effort, model.StreamCompletion);
             if (!ids.Add(id)) continue;
             var state = ExperimentMatrixStatus.Ready;
             var verification = ExperimentVerification.ProviderDefault;
@@ -77,8 +77,10 @@ public static class ExperimentMatrix
                     reason = "Explicit compatibility probe required for this exact API/model/effort.";
                 }
             }
+            if (model.StreamCompletion && settings.CompletionCapability?.Supports(settings, CompletionFeature.Streaming) != true)
+            { state = ExperimentMatrixStatus.Excluded; reason = "Streaming capability is not verified for this exact model/API."; }
             rows.Add(new(new(id, model.Name, model.Deployment, resolvedModel, prompt.SystemPrompt, effort,
-                state == ExperimentMatrixStatus.Ready ? effort : null, verification, fingerprint), state, reason));
+                state == ExperimentMatrixStatus.Ready ? effort : null, verification, fingerprint, StreamCompletion: model.StreamCompletion), state, reason));
         }
         var scheduled = checked(rows.Count(r => r.Status == ExperimentMatrixStatus.Ready) * definition.Limits.Repetitions);
         var unknown = checked(rows.Count(r => r.Status == ExperimentMatrixStatus.Unknown) * definition.Limits.Repetitions);
@@ -90,7 +92,7 @@ public static class ExperimentMatrix
     public static PostProcessorSettings Settings(PostProcessorSettings connection, ExperimentModel model,
         ExperimentPrompt prompt, string? effort) => connection with
     {
-        Enabled = true, Model = string.IsNullOrWhiteSpace(model.Model) ? model.Deployment : model.Model,
+        Enabled = true, StreamCompletion = model.StreamCompletion, Model = string.IsNullOrWhiteSpace(model.Model) ? model.Deployment : model.Model,
         Provider = connection.Provider with { DeploymentName = model.Deployment, Model = null },
         PresetName = PostProcessorPreset.Custom, SystemPrompt = prompt.SystemPrompt, ReasoningEffort = effort, Vocabulary = null,
     };
@@ -100,7 +102,7 @@ public static class ExperimentMatrix
         if (candidate.IsBaseline || candidate.Verification is ExperimentVerification.Unknown or ExperimentVerification.Rejected
             || candidate.RequestedEffort != candidate.EffectiveEffort)
             throw new InvalidOperationException("Candidate is not an executable cleanup configuration.");
-        var settings = Settings(connection, new(candidate.Name, candidate.Deployment, candidate.Model, [candidate.RequestedEffort]),
+        var settings = Settings(connection, new(candidate.Name, candidate.Deployment, candidate.Model, [candidate.RequestedEffort], candidate.StreamCompletion),
             new(candidate.Name, candidate.SystemPrompt), candidate.EffectiveEffort);
         if (ReasoningCapability.Fingerprint(settings) != candidate.ApiFingerprint)
             throw new InvalidOperationException("Candidate capability evidence is stale.");
