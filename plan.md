@@ -96,15 +96,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
     - [x] 2.3. Extend `TranscriptionServiceTests`/`PostProcessorTests` with payload, cancellation, retry and no-side-effect cases.
     - Validation: 64 service/completion tests passed, including 11 new text-stage cases; diff check passed. No live probes.
 
-- [ ] 3. Build and validate the candidate matrix
+- [x] 3. Build and validate the candidate matrix
     - **Objective:** Turn selected models/efforts/prompts into an honest, bounded execution plan.
     - **Location:** **new** `src/Core/ExperimentMatrix.cs`; `AppSettings.cs` → `ReasoningCapability.Fingerprint/Matches`; `PostProcessorPresets.ResolveSystemPrompt`.
     - **Implementation:** Use the one current cleanup connection; distinguish Azure deployment and payload model where needed. Resolve each named prompt once. Deduplicate equivalent effective configurations, not merely display names. Model × compatible effort × prompt × repeat produces at most 100 cleanup trials. Show valid/unknown/excluded rows and reasons; unknown pairs need task 2's explicit verification before trial execution. Changing exact connection/API/model invalidates capability evidence. Do not silently omit effort, replace models or infer gateway availability from catalog entries. A raw baseline is a separate row, not a paid cleanup call.
     - **Dependencies:** 1, 2.
     - **Validation:** Exact counts, default versus none, aliases, duplicate prompts, capability invalidation, integer overflow/limits, blank entries and excluded-pair reasons.
-    - [ ] 3.1. Implement matrix expansion, fingerprinting, deduplication and local validation.
-    - [ ] 3.2. Connect explicit compatibility results to eligible configurations and call-count preview.
-    - [ ] 3.3. Add `ExperimentMatrixTests`; verify requested low can never become a labelled default trial.
+    - [x] 3.1. Implement matrix expansion, fingerprinting, deduplication and local validation.
+    - [x] 3.2. Connect explicit compatibility results to eligible configurations and call-count preview.
+    - [x] 3.3. Add `ExperimentMatrixTests`; verify requested low can never become a labelled default trial.
+    - Validation: 5 matrix tests passed for bounds, deduplication, effort evidence and connection invalidation; diff check passed.
 
 - [ ] 4. Implement local factors, weighting and ranking
     - **Objective:** Produce deterministic, explainable factors and instant weight changes.
