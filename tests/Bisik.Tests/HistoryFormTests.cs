@@ -454,28 +454,7 @@ public sealed class HistoryFormTests : IDisposable
         while (!condition()) await Task.Delay(20, timeout.Token);
     }
 
-    private static Task RunOnStaAsync(Func<Task> action)
-    {
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
-        {
-            using var host = new Form { ShowInTaskbar = false, Opacity = 0 };
-            host.Shown += async (_, _) =>
-            {
-                try
-                {
-                    await action().WaitAsync(TimeSpan.FromSeconds(20));
-                    completion.TrySetResult();
-                }
-                catch (Exception exception) { completion.TrySetException(exception); }
-                finally { host.Close(); }
-            };
-            Application.Run(host);
-        }) { IsBackground = true };
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        return completion.Task.WaitAsync(TimeSpan.FromSeconds(25));
-    }
+    private static Task RunOnStaAsync(Func<Task> action) => StaTestHost.RunAsync(action);
 
     private static void RunOnSta(Action action)
     {

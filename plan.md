@@ -174,15 +174,16 @@ Use focused `--filter FullyQualifiedName~...` while implementing; run relevant/f
 
 ### Phase 3: Native window and app lifecycle
 
-- [ ] 9. Build setup, recording and progress UI
+- [x] 9. Build setup, recording and progress UI
     - **Objective:** Present the single-reading workflow without blocking or burying the script.
     - **Location:** **new** `src/UI/ExperimentsForm.cs`; `SettingsForm` layout/help and `HistoryForm` grid patterns.
     - **Implementation:** Modeless singleton window; Setup and Results views using native TableLayoutPanel/SplitContainer/TabControl. Large multiline script remains visible during recording; separate named prompt editor. Editable model/deployment/effort selections, reviewed term checklist, separate judge settings, repeat/retention options and generated-trial preview. Commit pending grid edits before validation. Start/Done/Cancel, mic/elapsed/real-level hint; stage/row identity, bounded status log, completed/total bar and current-request marquee. Controls follow state; setup edits disabled during run, script scroll/copy stays available. Marshal/coalesce progress, discard stale run events, no decorative mic evidence. Reuse DPI/accessibility/help conventions without copying the whole SettingsForm.
     - **Dependencies:** 3, 6, 7, 8.
     - **Validation:** STA fake-runner tests cover input validation, state/buttons, repeated clicks, quiet notification, progress order, long script/prompt, closure and stale events; keyboard/DPI checks listed separately.
-    - [ ] 9.1. Build native setup/matrix/prompt/judge controls and accessible help.
-    - [ ] 9.2. Bind recording/progress states, bounded logs and save/open/rerun commands.
-    - [ ] 9.3. Add `ExperimentsFormTests`; share only the small existing STA host if needed.
+    - [x] 9.1. Build native setup/matrix/prompt/judge controls and accessible help.
+    - [x] 9.2. Bind recording/progress states, bounded logs and save/open/rerun commands.
+    - [x] 9.3. Add `ExperimentsFormTests`; share only the small existing STA host if needed.
+    - Validation: 16 experiment/history STA tests passed; build passed. Long editors, input validation, exclusive repeated start and close/capture drain verified. Physical DPI/keyboard and human microphone acceptance remain unrun.
 
 - [ ] 10. Build live weighted results and detail inspection
     - **Objective:** Make the tradeoff and winner immediately understandable and adjustable.
