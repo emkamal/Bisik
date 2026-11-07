@@ -59,7 +59,16 @@ public class ExperimentEffortFormTests
             using var reopened = new ExperimentsForm(Settings, _ => service, (_, _, _, _) => throw new Exception("No new capture"), store, () => new ExperimentsFormTests.Lease());
             reopened.Show(); await reopened.LoadAsync(id); await reopened.StartWorkAsync(false, true);
             Assert.Equal(1, calls.Count(c => c.User == "This is a compatibility test."));
-            Assert.Equal(ExperimentState.Completed, reopened.CurrentRun!.State); await reopened.DrainAsync(); reopened.Close();
+            Assert.Equal(ExperimentState.Completed, reopened.CurrentRun!.State);
+            var savedRawId = reopened.CurrentRun.Take.Id;
+            Models(reopened).Rows.Add("AstraHigh", "astra", "astra", "high", false, false);
+            var addedPrompts = ExperimentsFormTests.All(reopened).OfType<DataGridView>().Single(g => g.AccessibleName == "Named prompts");
+            addedPrompts.Rows.Add("New prompt", "another editing prompt");
+            await reopened.StartWorkAsync(false, true);
+            Assert.Equal(2, calls.Count(c => c.User == "This is a compatibility test."));
+            Assert.Equal(5, reopened.CurrentRun!.Trials.Length); Assert.Equal(savedRawId, reopened.CurrentRun.Take.Id);
+            Assert.Contains(reopened.CurrentRun.Trials, t => t.Candidate.EffectiveEffort == "high" && t.Candidate.SystemPrompt == "another editing prompt");
+            await reopened.DrainAsync(); reopened.Close();
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     });

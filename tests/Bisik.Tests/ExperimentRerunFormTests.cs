@@ -39,6 +39,8 @@ public class ExperimentRerunFormTests
             ExperimentsFormTests.All(form).OfType<TextBox>().Single(t => t.AccessibleName == "Reference script").Text = "New reference for saved raw.";
             var terms = ExperimentsFormTests.All(form).OfType<DataGridView>().Single(g => g.AccessibleName == "Reviewed identifiers");
             terms.Rows.Add(true, "saved", "");
+            var editedSetup = form.ReadDefinition(); await store.SaveSetupAsync(editedSetup, settings, CancellationToken.None);
+            await form.LoadSetupAsync(editedSetup.Id); Assert.Equal(take.Id, form.CurrentRun!.Take.Id);
             await form.StartWorkAsync(false, true);
             var rerun = form.CurrentRun!; Assert.Equal(ExperimentState.Completed, rerun.State); Assert.Equal(5, rerun.Trials.Length);
             Assert.NotEqual(definition.Id, rerun.Definition.Id); Assert.Equal(definition.Id, rerun.Definition.PreviousExperimentId);

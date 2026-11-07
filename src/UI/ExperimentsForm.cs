@@ -319,11 +319,15 @@ public sealed class ExperimentsForm : Form
     }
     public async Task LoadSetupAsync(Guid id)
     {
+        var rawSource = CurrentRun;
         var definition = await _store.LoadSetupAsync(id, CancellationToken.None); definition.Validate();
         var settings = await _store.LoadConnectionAsync(id, CancellationToken.None); _connectionAvailable = settings is not null;
         if (settings is not null) _settings = settings;
         CurrentRun = null; _results.Rows.Clear(); _detail.Clear(); _winner.Text = "No results yet.";
-        PopulateSetup(definition); _tabs.SelectedIndex = 0; Log("Saved setup opened.");
+        PopulateSetup(definition);
+        // Opening a setup changes the configuration, not the already selected authoritative raw take.
+        CurrentRun = rawSource; RefreshResults(); _tabs.SelectedIndex = 0;
+        Log(rawSource is null ? "Saved setup opened." : "Saved setup opened; the selected raw take remains available for Rerun saved raw.");
     }
     public void RefreshIdleSettings(AppSettings settings)
     { if (!IsBusy && CurrentRun is null && _loadedDefinition is null) _settings = settings.Snapshot(); }

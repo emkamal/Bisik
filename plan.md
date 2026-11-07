@@ -384,3 +384,5 @@ Final audit, item 10: speed-view validation matches its native B editor bounds (
 Final integration receipt: 21 local parent items and 63 subtasks are checked (items 1-20 and 22). Item 21/21.1-21.3 remains postponed under E4. Build passed with zero warnings/errors and latest-build registration disabled; full suite passed 366 tests, zero skips; manual YAML syntax and staged diff checks passed. External E1-E4/live/manual acceptance remains explicitly postponed/unrun. Number-prefixed commits retain every item and focused final-audit correction.
 
 Follow-up 23 audit: explicit retry now skips pairs whose later check succeeded, avoiding repeated compatibility calls caused by old rejection history. All 3 effort-flow cases passed; README's main workflow matches automatic checks.
+
+Follow-up 24 audit: opening an edited saved Setup keeps the selected raw source, so configurations saved before restarting can be applied after opening the original run. Seven rerun/effort/form cases passed, including an added effort plus prompt requiring only one new probe.
