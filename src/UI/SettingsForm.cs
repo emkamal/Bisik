@@ -10,14 +10,7 @@ public sealed class SettingsForm : Form
     public event Action<AppSettings>? SettingsApplied;
 
     private readonly TabControl _tabs;
-    private readonly ToolTip _helpToolTip = new()
-    {
-        OwnerDraw = true,
-        ShowAlways = true,
-        InitialDelay = 350,
-        ReshowDelay = 100,
-        AutoPopDelay = 30000,
-    };
+    private readonly FieldHelp _fieldHelp;
     private readonly Dictionary<ProviderType, Panel> _providerPanels = [];
     private readonly Dictionary<ProviderType, Dictionary<string, TextBox>> _providerFieldInputs = [];
     private readonly SettingsManager _settingsManager;
@@ -97,8 +90,7 @@ public sealed class SettingsForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(760, 560);
         Size = new Size(860, 640);
-        _helpToolTip.Popup += HandleHelpPopup;
-        _helpToolTip.Draw += HandleHelpDraw;
+        _fieldHelp = new(this);
 
         _tabs = new TabControl
         {
@@ -901,86 +893,11 @@ public sealed class SettingsForm : Form
         _ => throw new ArgumentOutOfRangeException(nameof(label), label, "A provider field needs a help description."),
     };
 
-    private Control CreateFieldLabel(string text, string description)
-    {
-        var label = new Label
-        {
-            Text = text,
-            AutoSize = true,
-            MaximumSize = new Size(140, 0),
-            Anchor = AnchorStyles.Left,
-            Margin = Padding.Empty,
-        };
-        var info = new Button
-        {
-            Text = "ⓘ",
-            Size = new Size(24, 24),
-            Anchor = AnchorStyles.Left,
-            Margin = Padding.Empty,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = SystemColors.HotTrack,
-            Cursor = Cursors.Help,
-            AccessibleName = $"{text} help",
-            AccessibleDescription = description,
-            Tag = new HelpContent(text, description),
-        };
-        info.FlatAppearance.BorderSize = 0;
-        _helpToolTip.SetToolTip(info, description);
-        // Clicking or keyboard focus gives users another way to read hover help.
-        info.Click += (_, _) => _helpToolTip.Show(description, info, 0, info.Height, _helpToolTip.AutoPopDelay);
-        info.Enter += (_, _) => _helpToolTip.Show(description, info, 0, info.Height, _helpToolTip.AutoPopDelay);
-        info.Leave += (_, _) => _helpToolTip.Hide(info);
-        info.KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) _helpToolTip.Hide(info); };
-
-        var panel = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            ColumnCount = 2,
-            RowCount = 1,
-            Margin = new Padding(3, 5, 3, 3),
-        };
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 24));
-        panel.Controls.Add(label, 0, 0);
-        panel.Controls.Add(info, 1, 0);
-        return panel;
-    }
-
-    private const TextFormatFlags HelpTextFlags = TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding;
-    private sealed record HelpContent(string Title, string Description);
-
-    private void HandleHelpPopup(object? sender, PopupEventArgs e)
-    {
-        if (e.AssociatedControl?.Tag is not HelpContent help) return;
-        var padding = LogicalToDeviceUnits(12);
-        // Measure the complete text at a bounded width; native one-line sizing clips long help.
-        var width = Math.Min(LogicalToDeviceUnits(420), Screen.FromControl(e.AssociatedControl).WorkingArea.Width - padding * 2);
-        using var titleFont = new Font(Font, FontStyle.Bold);
-        var title = TextRenderer.MeasureText(help.Title, titleFont, new Size(width, int.MaxValue), HelpTextFlags);
-        var body = TextRenderer.MeasureText(help.Description, Font, new Size(width, int.MaxValue), HelpTextFlags);
-        e.ToolTipSize = new Size(width + padding * 2, title.Height + body.Height + padding * 2 + padding / 2);
-    }
-
-    private void HandleHelpDraw(object? sender, DrawToolTipEventArgs e)
-    {
-        if (e.AssociatedControl?.Tag is not HelpContent help) return;
-        e.Graphics.FillRectangle(SystemBrushes.Info, e.Bounds);
-        e.DrawBorder();
-        var padding = LogicalToDeviceUnits(12);
-        var width = e.Bounds.Width - padding * 2;
-        using var titleFont = new Font(Font, FontStyle.Bold);
-        var title = TextRenderer.MeasureText(help.Title, titleFont, new Size(width, int.MaxValue), HelpTextFlags);
-        TextRenderer.DrawText(e.Graphics, help.Title, titleFont,
-            new Rectangle(padding, padding, width, title.Height), SystemColors.InfoText, HelpTextFlags);
-        var bodyTop = padding + title.Height + padding / 2;
-        TextRenderer.DrawText(e.Graphics, help.Description, Font,
-            new Rectangle(padding, bodyTop, width, e.Bounds.Height - bodyTop - padding), SystemColors.InfoText, HelpTextFlags);
-    }
+    private Control CreateFieldLabel(string text, string description) => _fieldHelp.CreateLabel(text, description);
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _helpToolTip.Dispose();
+        if (disposing) _fieldHelp?.Dispose();
         base.Dispose(disposing);
     }
 

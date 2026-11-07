@@ -240,3 +240,5 @@ Models/CleanupVocabulary.cs owns bounded immutable optional profile entries and 
 Models/RecognitionContext.cs holds bounded immutable recognition hints and exact per-field capability evidence. AzureRealtimeProtocol is the shared live/file session builder; keep transport selection separate from field support.
 
 Core/SegmentedCleanup.cs and tools/Bisik.Diagnostics/SegmentedCleanupDiagnostics.cs are diagnostic-only stable-prefix cleanup/replay. Keep whole-text production selection unchanged and own every cancelled request through drain.
+
+UI/FieldHelp.cs shares the native Settings info-button and wrapped tooltip rendering with ExperimentWeightsForm. Keep explanations accessible through hover, focus and click; help must not trigger scoring or network work.

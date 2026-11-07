@@ -8,6 +8,26 @@ namespace Bisik.Tests;
 public class ExperimentWeightsFormTests
 {
     [Fact]
+    public Task InfoButtonsExplainFactorsAndSupportFocusAndClickWithoutReweighting() => StaTestHost.RunAsync(() =>
+    {
+        using var form = new ExperimentWeightsForm(new()); form.Show(); var changes = 0; form.WeightsChanged += _ => changes++;
+        var buttons = ExperimentsFormTests.All(form).OfType<Button>().Where(b => b.AccessibleName?.EndsWith(" help") == true).ToArray();
+        Assert.Equal(6, buttons.Length);
+        var wording = buttons.Single(b => b.AccessibleName == "Wording help"); Assert.Contains("Word error rate", wording.AccessibleDescription);
+        var identifiers = buttons.Single(b => b.AccessibleName == "Identifiers help"); Assert.Contains("unavailable", identifiers.AccessibleDescription);
+        var meaning = buttons.Single(b => b.AccessibleName == "Meaning help"); Assert.Contains("30", meaning.AccessibleDescription); Assert.Contains("10", meaning.AccessibleDescription);
+        Assert.Contains("independently", buttons.Single(b => b.AccessibleName == "Readability help").AccessibleDescription);
+        Assert.Contains("matrix queueing", buttons.Single(b => b.AccessibleName == "Speed help").AccessibleDescription);
+        Assert.Contains("50", buttons.Single(b => b.AccessibleName == "Speed B (seconds) help").AccessibleDescription);
+        foreach (var button in buttons)
+        {
+            Assert.Equal("ⓘ", button.Text); Assert.True(button.TabStop); Assert.Equal(Cursors.Help, button.Cursor);
+            button.Focus(); button.PerformClick();
+        }
+        Assert.Equal(new ExperimentWeights(), form.Weights); Assert.Equal(0, changes);
+        form.Close(); return Task.CompletedTask;
+    });
+    [Fact]
     public Task SlidersAndNumbersSynchronizeOnceAndReset() => StaTestHost.RunAsync(() =>
     {
         using var form = new ExperimentWeightsForm(new()); var changes = 0; form.WeightsChanged += _ => changes++;

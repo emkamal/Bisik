@@ -1,6 +1,6 @@
 # Bisik Experiments implementation plan
 
-Status: autonomous implementation complete for items 1-20 and 22, with validation receipts; item 21 and external acceptance are postponed by user direction. Prepared 6 November 2026. This file is the persistent execution checklist. Repository root: `D:\Dev\Bisik`; all source paths below are relative to it. Files marked **new** do not exist yet.
+Status: autonomous implementation complete for items 1-20 and 22-25, with validation receipts; item 21 and external acceptance are postponed by user direction. Prepared 6 November 2026. This file is the persistent execution checklist. Repository root: `D:\Dev\Bisik`; all source paths below are relative to it. Files marked **new** do not exist yet.
 
 ## A. Project context and implementation guide
 
@@ -340,7 +340,8 @@ These are additive followups from the original research, not requirements to var
     - Validation: 8 effort/form/ownership cases passed. Probes are separate from measured cleanup, failed checks identify the pair, and no live inference was run.
 - [x] 24. Rerun the current edited Setup against the saved raw take, including added models/prompts, in a new saved revision. Preserve raw/timing, old results and optional retained audio; validate scheduling and no recognition calls.
     - Validation: 10 rerun/effort/ownership/store cases passed. Edited Setup generates a new linked revision, all current combinations run, raw identity/timings remain fixed, and original files/audio remain intact.
-- [ ] 25. Add native hover/focus/click info buttons for all weighting factors and speed B. Reuse existing help rendering and validate explanation/accessibility/lifecycle without API calls.
+- [x] 25. Add native hover/focus/click info buttons for all weighting factors and speed B. Reuse existing help rendering and validate explanation/accessibility/lifecycle without API calls.
+    - Validation: 43 weight/settings regressions passed, then 5 help/weight/settings ownership cases passed. All six buttons expose descriptions and keyboard/click help without reweighting or API calls.
 ## C. Dependencies and execution order
 
 First-version order: 1 → 2 → 3; 4 can follow 1 independently; then 5 and 6 can proceed independently once their prerequisites pass; 7 → 8 → 9 → 10 → 11. Task 12 follows 7/8 and can run alongside UI work. Task 13 follows 2, but coordinate its shared service/Program edits with 11. Task 14 closes the first version after 1–13. Preserve every task's checkbox state across sessions.
