@@ -79,6 +79,7 @@ public class ExperimentEffortFormTests
         Assert.Null(form.CurrentRun); Assert.False(form.IsBusy); Assert.Equal(1, requests);
         await form.StartWorkAsync(false, false); Assert.Equal(1, requests);
         reject = false; await form.StartWorkAsync(true, false); Assert.Equal(2, requests);
+        await form.StartWorkAsync(true, false); Assert.Equal(2, requests);
         Assert.Contains(log.Items.Cast<string>(), s => s.Contains("Verified")); await form.DrainAsync(); form.Close();
     });
 

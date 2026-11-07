@@ -273,7 +273,7 @@ public sealed class ExperimentsForm : Form
     {
         var rows = ExperimentMatrix.Build(definition, _settings.PostProcessor, _evidence).Rows.Concat(JudgePreview(definition).Rows);
         // Probes establish local evidence; they never send the reference/raw take or count as measured cleanup.
-        foreach (var row in rows.Where(r => r.Status == ExperimentMatrixStatus.Unknown || retryRejected && _evidence.Any(e =>
+        foreach (var row in rows.Where(r => r.Status == ExperimentMatrixStatus.Unknown || retryRejected && r.Candidate.Verification == ExperimentVerification.Rejected && _evidence.Any(e =>
             e.ApiFingerprint == r.Candidate.ApiFingerprint && e.Effort == r.Candidate.RequestedEffort && e.Verification == ExperimentVerification.Rejected))
             .DistinctBy(r => (r.Candidate.ApiFingerprint, r.Candidate.RequestedEffort)))
         {
