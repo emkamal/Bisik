@@ -386,3 +386,5 @@ Final integration receipt: 21 local parent items and 63 subtasks are checked (it
 Follow-up 23 audit: explicit retry now skips pairs whose later check succeeded, avoiding repeated compatibility calls caused by old rejection history. All 3 effort-flow cases passed; README's main workflow matches automatic checks.
 
 Follow-up 24 audit: opening an edited saved Setup keeps the selected raw source, so configurations saved before restarting can be applied after opening the original run. Seven rerun/effort/form cases passed, including an added effort plus prompt requiring only one new probe.
+
+Follow-up final receipt: 23-25 are checked and committed with their item prefixes. Full suite passed 371 tests with zero skips; Release build and diff checks passed. The Release snapshot is registered for Start, with matching runtime hash and unchanged active settings/stable launcher. Save current Setup before exiting; after restarting, open the saved run and then that Setup to keep its raw source while restoring edits.
