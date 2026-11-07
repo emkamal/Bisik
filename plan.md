@@ -334,6 +334,12 @@ These are additive followups from the original research, not requirements to var
     - [x] 22.3. Validate syntax/command generation with fixtures/mocks and record unrun pipeline status.
     - Validation: manual YAML parsed, 7 helper/fixture cases passed, and full solution suite passed 360 tests. Summary-only publication, path separation, compatible agent-owned DPAPI source and fail-on-unavailable execution documented. Actual pipeline/E1/E3 setup and paid run postponed.
 
+### Follow-up requests (7 November 2026)
+
+- [x] 23. Verify requested reasoning efforts automatically before Start/Rerun; show exact blocked pairs and preserve requested parameters. Validate payloads, deduplication, rejected checks, cancellation and saved capability evidence with fakes.
+    - Validation: 8 effort/form/ownership cases passed. Probes are separate from measured cleanup, failed checks identify the pair, and no live inference was run.
+- [ ] 24. Rerun the current edited Setup against the saved raw take, including added models/prompts, in a new saved revision. Preserve raw/timing, old results and optional retained audio; validate scheduling and no recognition calls.
+- [ ] 25. Add native hover/focus/click info buttons for all weighting factors and speed B. Reuse existing help rendering and validate explanation/accessibility/lifecycle without API calls.
 ## C. Dependencies and execution order
 
 First-version order: 1 → 2 → 3; 4 can follow 1 independently; then 5 and 6 can proceed independently once their prerequisites pass; 7 → 8 → 9 → 10 → 11. Task 12 follows 7/8 and can run alongside UI work. Task 13 follows 2, but coordinate its shared service/Program edits with 11. Task 14 closes the first version after 1–13. Preserve every task's checkbox state across sessions.

@@ -196,36 +196,23 @@ public sealed class ExperimentsForm : Form
         var lease = _acquireOperation();
         if (lease is null) { Log("Another operation is active."); return Task.CompletedTask; }
         IsBusy = true; _setup.Enabled = false; _reference.ReadOnly = true; _start.Enabled = false; _cancel.Enabled = true;
-        _cancellation = new(); _runId = Guid.NewGuid(); _acceptProgress = true; _checkpoint = Task.CompletedTask;
+        _cancellation = new(); _runId = Guid.NewGuid(); _acceptProgress = true;
+        _progress.Value = 0; _status.Text = probe ? "Checking compatibility…" : "Preparing experiment…";
         return _work = ExecuteAsync(probe, reuseRaw, lease);
     }
     private async Task ExecuteAsync(bool probe, bool reuseRaw, IDisposable lease)
     {
         try
         {
+            await _checkpoint; _checkpoint = Task.CompletedTask;
             if (!_connectionAvailable) throw new InvalidOperationException("Stored connection unavailable. Inspection/export is available; reopen Experiments for a new setup.");
             var definition = reuseRaw ? CurrentRun?.Definition ?? throw new InvalidOperationException("Open a saved raw take first.") : ReadDefinition();
             _runId = definition.Id;
             var service = _serviceFactory(_settings);
-            if (probe)
-            {
-                var matrix = ExperimentMatrix.Build(definition, _settings.PostProcessor, _evidence);
-                var judgeMatrix = ExperimentMatrix.Build(definition with { Models = [definition.Judge], Prompts = [new("Judge", LLMExperimentJudge.Rubric)],
-                    Limits = definition.Limits with { Repetitions = 1 } }, _settings.PostProcessor, _evidence);
-                foreach (var row in matrix.Rows.Concat(judgeMatrix.Rows).Where(r => r.Status == ExperimentMatrixStatus.Unknown).DistinctBy(r => (r.Candidate.ApiFingerprint, r.Candidate.RequestedEffort)))
-                {
-                    var model = new ExperimentModel(row.Candidate.Name, row.Candidate.Deployment, row.Candidate.Model, [row.Candidate.RequestedEffort]);
-                    var settings = ExperimentMatrix.Settings(_settings.PostProcessor, model, new("Probe", "Return only the input."), row.Candidate.RequestedEffort);
-                    var result = await service.ProbeTextCompatibilityAsync("This is a compatibility test.", settings, _cancellation!.Token);
-                    _evidence.Add(ExperimentCompatibility.FromProbe(result)); Log($"Probe {row.Candidate.Name}: {result.Verification} {result.FailureCode}");
-                }
-                return;
-            }
-            // Validate matrix and judge before asking the human to read or scheduling any calls.
-            if (!ExperimentMatrix.Build(definition, _settings.PostProcessor, _evidence).CanRun) throw new InvalidOperationException("Resolve the matrix preview before Start.");
-            var judgePreview = ExperimentMatrix.Build(definition with { Models = [definition.Judge], Prompts = [new("Judge", LLMExperimentJudge.Rubric)],
-                Limits = definition.Limits with { Repetitions = 1 } }, _settings.PostProcessor, _evidence);
-            if (!judgePreview.CanRun) throw new InvalidOperationException("Verify the fixed judge effort before Start.");
+            await VerifyEffortsAsync(definition, service, retryRejected: probe);
+            RequireReady(ExperimentMatrix.Build(definition, _settings.PostProcessor, _evidence), "Candidates");
+            RequireReady(JudgePreview(definition), "Judge");
+            if (probe) { _status.Text = "Compatibility checks complete."; return; }
             await _store.SaveSetupAsync(definition, _settings, _cancellation!.Token);
             ExperimentTake take;
             if (reuseRaw) take = CurrentRun!.Take;
@@ -253,8 +240,8 @@ public sealed class ExperimentsForm : Form
             await _checkpoint; await _store.SaveAsync(CurrentRun, CancellationToken.None, _capture?.AudioPath);
             RefreshResults(); _tabs.SelectedTab = _resultsPage; Log(CurrentRun.State.ToString());
         }
-        catch (OperationCanceledException) { Log("Cancelled; completed rows retained."); }
-        catch (Exception ex) { Log(ex.GetType().Name + ": " + ex.Message); }
+        catch (OperationCanceledException) { _status.Text = "Cancelled; completed rows retained."; Log(_status.Text); }
+        catch (Exception ex) { _status.Text = ex.Message; Log(ex.Message); }
         finally
         {
             _acceptProgress = false;
@@ -265,6 +252,39 @@ public sealed class ExperimentsForm : Form
             _start.Enabled = true; _done.Enabled = false; _cancel.Enabled = false; _request.Visible = false;
             _cancellation?.Dispose(); _cancellation = null; Preview();
         }
+    }
+    private ExperimentMatrixPreview JudgePreview(ExperimentDefinition definition) => ExperimentMatrix.Build(definition with
+    {
+        Models = [definition.Judge], Prompts = [new("Judge", LLMExperimentJudge.Rubric)],
+        Limits = definition.Limits with { Repetitions = 1 },
+    }, _settings.PostProcessor, _evidence);
+
+    private async Task VerifyEffortsAsync(ExperimentDefinition definition, TranscriptionService service, bool retryRejected)
+    {
+        var rows = ExperimentMatrix.Build(definition, _settings.PostProcessor, _evidence).Rows.Concat(JudgePreview(definition).Rows);
+        // Probes establish local evidence; they never send the reference/raw take or count as measured cleanup.
+        foreach (var row in rows.Where(r => r.Status == ExperimentMatrixStatus.Unknown || retryRejected && _evidence.Any(e =>
+            e.ApiFingerprint == r.Candidate.ApiFingerprint && e.Effort == r.Candidate.RequestedEffort && e.Verification == ExperimentVerification.Rejected))
+            .DistinctBy(r => (r.Candidate.ApiFingerprint, r.Candidate.RequestedEffort)))
+        {
+            _cancellation!.Token.ThrowIfCancellationRequested();
+            var candidate = row.Candidate;
+            _status.Text = $"Checking {candidate.Name} / {candidate.RequestedEffort}…"; _request.Visible = true;
+            var model = new ExperimentModel(candidate.Name, candidate.Deployment, candidate.Model, [candidate.RequestedEffort]);
+            var settings = ExperimentMatrix.Settings(_settings.PostProcessor, model, new("Probe", "Return only the input."), candidate.RequestedEffort);
+            var result = await service.ProbeTextCompatibilityAsync("This is a compatibility test.", settings, _cancellation.Token, definition.Limits.TrialSeconds);
+            _evidence.Add(ExperimentCompatibility.FromProbe(result));
+            Log($"Compatibility {candidate.Name} / {candidate.RequestedEffort}: {result.Verification} {result.FailureCode}");
+        }
+        _request.Visible = false;
+    }
+
+    private static void RequireReady(ExperimentMatrixPreview preview, string label)
+    {
+        var blocked = preview.Rows.Where(r => r.Status != ExperimentMatrixStatus.Ready).Select(r =>
+            $"{r.Candidate.Name} / {r.Candidate.RequestedEffort ?? "default"}: {r.Reason}").ToArray();
+        if (blocked.Length > 0) throw new InvalidOperationException($"{label} not ready: {string.Join("; ", blocked)} Choose a supported configuration or use Verify unknown efforts to retry a failed check.");
+        if (!preview.CanRun) throw new InvalidOperationException($"{label}: select at least one model and prompt.");
     }
     private async Task SaveAfterAsync(Task previous, ExperimentRun snapshot) { await previous; await _store.SaveAsync(snapshot, CancellationToken.None); }
     private void Log(string message) { if (IsDisposed) return; _log.Items.Add(message); while (_log.Items.Count > 100) _log.Items.RemoveAt(0); _log.TopIndex = _log.Items.Count - 1; }
@@ -281,6 +301,9 @@ public sealed class ExperimentsForm : Form
         var settings = await _store.LoadConnectionAsync(id, CancellationToken.None);
         _connectionAvailable = settings is not null;
         if (settings is not null) _settings = settings; else Log("Connection unavailable; inspection/export remains available.");
+        foreach (var candidate in CurrentRun.Trials.Select(t => t.Candidate).Where(c => c.Verification == ExperimentVerification.Verified
+            && c.RequestedEffort is not null && c.RequestedEffort == c.EffectiveEffort))
+            _evidence.Add(new(candidate.ApiFingerprint, candidate.RequestedEffort!, ExperimentVerification.Verified));
         PopulateSetup(CurrentRun.Definition);
         RefreshResults(); _tabs.SelectedTab = _resultsPage; Log(CurrentRun.Interrupted ? "Interrupted run recovered." : "Saved run opened.");
     }

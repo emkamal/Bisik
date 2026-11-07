@@ -76,7 +76,7 @@ public sealed class ExperimentsFormTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         while (!condition()) await Task.Delay(20, timeout.Token);
     }
-    private sealed class Provider : Bisik.Providers.ITranscriptionProvider
+    internal sealed class Provider : Bisik.Providers.ITranscriptionProvider
     {
         public string Name => "test"; public ProviderType Type => ProviderType.OpenAi;
         public Task<string> TranscribeAsync(string path, string language, CancellationToken ct) => Task.FromResult("raw");
