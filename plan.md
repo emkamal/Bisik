@@ -338,7 +338,8 @@ These are additive followups from the original research, not requirements to var
 
 - [x] 23. Verify requested reasoning efforts automatically before Start/Rerun; show exact blocked pairs and preserve requested parameters. Validate payloads, deduplication, rejected checks, cancellation and saved capability evidence with fakes.
     - Validation: 8 effort/form/ownership cases passed. Probes are separate from measured cleanup, failed checks identify the pair, and no live inference was run.
-- [ ] 24. Rerun the current edited Setup against the saved raw take, including added models/prompts, in a new saved revision. Preserve raw/timing, old results and optional retained audio; validate scheduling and no recognition calls.
+- [x] 24. Rerun the current edited Setup against the saved raw take, including added models/prompts, in a new saved revision. Preserve raw/timing, old results and optional retained audio; validate scheduling and no recognition calls.
+    - Validation: 10 rerun/effort/ownership/store cases passed. Edited Setup generates a new linked revision, all current combinations run, raw identity/timings remain fixed, and original files/audio remain intact.
 - [ ] 25. Add native hover/focus/click info buttons for all weighting factors and speed B. Reuse existing help rendering and validate explanation/accessibility/lifecycle without API calls.
 ## C. Dependencies and execution order
 

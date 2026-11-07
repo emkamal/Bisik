@@ -14,6 +14,8 @@ public sealed class ExperimentStore
     public string DirectoryFor(Guid id) => id != Guid.Empty ? Path.Combine(_root, id.ToString("N")) : throw new ArgumentException("Empty ID.");
     public IEnumerable<Guid> List() => Directory.Exists(_root) ? Directory.EnumerateDirectories(_root)
         .Select(Path.GetFileName).Where(n => Guid.TryParseExact(n, "N", out _)).Select(n => Guid.Parse(n!)) : [];
+    public string? AudioPathFor(Guid id) => new[] { ".wav", ".mp3" }.Select(extension => Path.Combine(DirectoryFor(id), "recording" + extension))
+        .FirstOrDefault(File.Exists);
 
     public async Task SaveSetupAsync(ExperimentDefinition definition, AppSettings connection, CancellationToken ct)
     {

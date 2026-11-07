@@ -59,6 +59,7 @@ public sealed record ExperimentDefinition
     public const int CurrentVersion = 1;
     public int Version { get; init; } = CurrentVersion;
     public Guid Id { get; init; } = Guid.NewGuid();
+    public Guid? PreviousExperimentId { get; init; }
     public string Reference { get; init; } = string.Empty;
     public string ConnectionFingerprint { get; init; } = string.Empty;
     public ImmutableArray<ExperimentTerm> Terms { get; init; } = [];
@@ -80,7 +81,7 @@ public sealed record ExperimentDefinition
 
     public void Validate()
     {
-        if (Version != CurrentVersion || Id == Guid.Empty || string.IsNullOrWhiteSpace(Reference)
+        if (Version != CurrentVersion || Id == Guid.Empty || PreviousExperimentId == Guid.Empty || PreviousExperimentId == Id || string.IsNullOrWhiteSpace(Reference)
             || Reference.Length > 100_000 || Terms.IsDefault || Prompts.IsDefault || Models.IsDefault
             || Terms.Length > 100 || Prompts.Length > 100 || Models.Length > 100)
             throw new ArgumentException("Invalid experiment definition.");

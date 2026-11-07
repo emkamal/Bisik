@@ -206,7 +206,9 @@ public sealed class ExperimentsForm : Form
         {
             await _checkpoint; _checkpoint = Task.CompletedTask;
             if (!_connectionAvailable) throw new InvalidOperationException("Stored connection unavailable. Inspection/export is available; reopen Experiments for a new setup.");
-            var definition = reuseRaw ? CurrentRun?.Definition ?? throw new InvalidOperationException("Open a saved raw take first.") : ReadDefinition();
+            var previous = reuseRaw ? CurrentRun ?? throw new InvalidOperationException("Open a saved raw take first.") : null;
+            // Every rerun freezes today's Setup in a new revision; the original run stays inspectable.
+            var definition = ReadDefinition() with { PreviousExperimentId = previous?.Definition.Id };
             _runId = definition.Id;
             var service = _serviceFactory(_settings);
             await VerifyEffortsAsync(definition, service, retryRejected: probe);
@@ -215,7 +217,14 @@ public sealed class ExperimentsForm : Form
             if (probe) { _status.Text = "Compatibility checks complete."; return; }
             await _store.SaveSetupAsync(definition, _settings, _cancellation!.Token);
             ExperimentTake take;
-            if (reuseRaw) take = CurrentRun!.Take;
+            string? retainedAudio = null;
+            if (previous is not null)
+            {
+                take = previous.Take with { InputIdentity = definition.InputIdentity };
+                retainedAudio = definition.RetainAudio ? _store.AudioPathFor(previous.Definition.Id) : null;
+                Log("Reusing the saved raw take with the edited models, prompts and evaluation settings.");
+                if (definition.RetainAudio && retainedAudio is null) Log("Saved audio is unavailable; this rerun still uses the saved raw text.");
+            }
             else
             {
                 _capture = _captureFactory(_settings, definition, _cancellation.Token, new Progress<ExperimentCaptureProgress>(p =>
@@ -237,7 +246,8 @@ public sealed class ExperimentsForm : Form
                 });
             CurrentRun = await Task.Run(() => runner.RunAsync(definition, take, _settings.PostProcessor, _cancellation.Token, progress, _evidence));
             _acceptProgress = false; CurrentRun = CurrentRun with { Definition = CurrentRun.Definition with { Weights = _weights } };
-            await _checkpoint; await _store.SaveAsync(CurrentRun, CancellationToken.None, _capture?.AudioPath);
+            await _checkpoint; await _store.SaveAsync(CurrentRun, CancellationToken.None, _capture?.AudioPath ?? retainedAudio);
+            _loadedDefinition = CurrentRun.Definition;
             RefreshResults(); _tabs.SelectedTab = _resultsPage; Log(CurrentRun.State.ToString());
         }
         catch (OperationCanceledException) { _status.Text = "Cancelled; completed rows retained."; Log(_status.Text); }
