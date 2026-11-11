@@ -13,17 +13,22 @@ public sealed class ExperimentsFormTests
     [Fact]
     public Task ValidationAndNativeEditorsPreserveLongText() => StaTestHost.RunAsync(async () =>
     {
-        using var form = new ExperimentsForm(Settings, _ => throw new Exception(), (_, _, _, _) => throw new Exception(),
-            new ExperimentStore(), () => new Lease());
-        form.Show();
-        Assert.Throws<ArgumentException>(() => form.ReadDefinition());
-        var script = All(form).OfType<TextBox>().Single(t => t.AccessibleName == "Reference script");
-        script.Text = string.Join("\r\n", Enumerable.Repeat("Do not change 12 HAPPI instances.", 100));
-        Assert.Equal(script.Text, form.ReadDefinition().Reference);
-        var prompt = All(form).OfType<TextBox>().Single(t => t.AccessibleName == "Selected system prompt");
-        prompt.Text = "Keep identifiers.\r\n" + new string('x', 4000);
-        Assert.Equal(prompt.Text, form.ReadDefinition().Prompts[0].SystemPrompt);
-        await form.DrainAsync(); form.Close();
+        var root = Path.Combine(Path.GetTempPath(), "Bisik.EditorTests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var form = new ExperimentsForm(Settings, _ => throw new Exception(), (_, _, _, _) => throw new Exception(),
+                new ExperimentStore(root), () => new Lease());
+            form.Show();
+            Assert.Throws<ArgumentException>(() => form.ReadDefinition());
+            var script = All(form).OfType<TextBox>().Single(t => t.AccessibleName == "Reference script");
+            script.Text = string.Join("\r\n", Enumerable.Repeat("Do not change 12 HAPPI instances.", 100));
+            Assert.Equal(script.Text, form.ReadDefinition().Reference);
+            var prompt = All(form).OfType<TextBox>().Single(t => t.AccessibleName == "Selected system prompt");
+            prompt.Text = "Keep identifiers.\r\n" + new string('x', 4000);
+            Assert.Equal(prompt.Text, form.ReadDefinition().Prompts[0].SystemPrompt);
+            await form.DrainAsync(); form.Close();
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     });
 
     [Fact]

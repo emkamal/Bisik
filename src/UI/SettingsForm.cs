@@ -22,6 +22,7 @@ public sealed class SettingsForm : Form
     private Task _connectionTestTask = Task.CompletedTask;
     private bool _suppressTestFeedback;
     private readonly Func<AudioSettings, AudioRecorder> _testRecorderFactory;
+    private readonly Func<bool> _canRunOperation;
     public Task ConnectionTestTask => _connectionTestTask;
     public Task CancelConnectionTestAsync() { _suppressTestFeedback = true; _connectionTestCancellation?.Cancel(); return _connectionTestTask; }
     private CheckBox? _azureRealtimeCheckBox;
@@ -61,8 +62,7 @@ public sealed class SettingsForm : Form
     private TextBox? _postProcessorModelTextBox;
     private TextBox? _postProcessorTargetLanguageTextBox;
     private TextBox? _postProcessorSystemPromptTextBox;
-    private TextBox? _vocabularyName;
-    private TextBox? _vocabularyLines;
+    private CleanupVocabularyEditor? _vocabularyEditor;
     private TextBox? _recognitionPrompt;
     private TextBox? _recognitionKeywords;
     private TextBox? _recognitionLanguage;
@@ -78,8 +78,10 @@ public sealed class SettingsForm : Form
     }
 
     public SettingsForm(AudioRecorder? audioRecorder, TranscriptionService? transcriptionService, SettingsManager? settingsManager = null,
-        Func<AppSettings, TranscriptionService>? serviceFactory = null, Func<AudioSettings, AudioRecorder>? testRecorderFactory = null)
+        Func<AppSettings, TranscriptionService>? serviceFactory = null, Func<AudioSettings, AudioRecorder>? testRecorderFactory = null,
+        Func<bool>? canRunOperation = null)
     {
+        _canRunOperation = canRunOperation ?? (() => true);
         _testRecorderFactory = testRecorderFactory ?? (settings => new AudioRecorder(settings));
         _settingsManager = settingsManager ?? new SettingsManager();
         _audioRecorder = audioRecorder;
@@ -87,9 +89,11 @@ public sealed class SettingsForm : Form
         _serviceFactory = serviceFactory;
         FormClosed += (_, _) => _connectionTestCancellation?.Cancel();
         Text = "Bisik Settings";
+        AutoScaleDimensions = new SizeF(96, 96);
+        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(760, 560);
-        Size = new Size(860, 640);
+        MinimumSize = new Size(900, 620);
+        Size = new Size(1100, 820);
         _fieldHelp = new(this);
 
         _tabs = new TabControl
@@ -103,10 +107,16 @@ public sealed class SettingsForm : Form
         _tabs.TabPages.Add(CreateLanguageTabPage());
         _tabs.TabPages.Add(CreateHistoryTabPage());
         _tabs.TabPages.Add(CreatePostProcessorTabPage());
+        var vocabulary = CreateTabPage("Vocabulary");
+        vocabulary.AutoScroll = false;
+        _vocabularyEditor = new CleanupVocabularyEditor { Dock = DockStyle.Fill };
+        vocabulary.Controls.Add(_vocabularyEditor);
+        _tabs.TabPages.Add(vocabulary);
         var hints = CreateTabPage("Recognition context");
         var hintsLayout = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
-        _recognitionPrompt = new TextBox { Multiline = true, Width = 360, Height = 90 };
-        _recognitionKeywords = new TextBox { Width = 360 };
+        hintsLayout.ColumnStyles.Add(new(SizeType.Absolute, 180)); hintsLayout.ColumnStyles.Add(new(SizeType.Percent, 100));
+        _recognitionPrompt = new TextBox { Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.Vertical, Width = 360, Height = 90, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+        _recognitionKeywords = new TextBox { Dock = DockStyle.Fill };
         _recognitionLanguage = new TextBox { Width = 200 };
         _recognitionFields = new TextBox { Width = 360 };
         var hintControls = new[] { _recognitionPrompt, _recognitionKeywords, _recognitionLanguage, _recognitionFields };
@@ -117,9 +127,18 @@ public sealed class SettingsForm : Form
         Controls.Add(_tabs);
         Controls.Add(CreateBottomButtonPanel());
         LoadSettingsIntoForm(_settingsManager.Load());
+        Shown += (_, _) =>
+        {
+            // Keep the larger default usable on small monitors and at high Windows scaling.
+            var area = Screen.FromControl(this).WorkingArea;
+            MinimumSize = new Size(Math.Min(MinimumSize.Width, area.Width), Math.Min(MinimumSize.Height, area.Height));
+            Size = new Size(Math.Min(Width, area.Width), Math.Min(Height, area.Height));
+            Location = new Point(Math.Clamp(Left, area.Left, area.Right - Width), Math.Clamp(Top, area.Top, area.Bottom - Height));
+        };
     }
 
     public TabControl Tabs => _tabs;
+    internal bool BlocksNewRecording => Visible && (ContainsFocus || Form.ActiveForm?.Owner == this);
 
     private static TabPage CreateTabPage(string title)
     {
@@ -545,6 +564,7 @@ public sealed class SettingsForm : Form
         _quickLanguagesTextBox = new TextBox
         {
             Multiline = true,
+            AcceptsReturn = true,
             Width = 280,
             Height = 120,
             ScrollBars = ScrollBars.Vertical,
@@ -712,10 +732,10 @@ public sealed class SettingsForm : Form
         providerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
         providerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        _postProcessorEndpointTextBox = new TextBox { Dock = DockStyle.Left, Width = 280, Text = settings.Provider.Endpoint };
-        _postProcessorApiKeyTextBox = new TextBox { Dock = DockStyle.Left, Width = 280, Text = settings.Provider.ApiKey, UseSystemPasswordChar = true };
-        _postProcessorDeploymentNameTextBox = new TextBox { Dock = DockStyle.Left, Width = 280, Text = settings.Provider.DeploymentName };
-        _postProcessorModelTextBox = new TextBox { Dock = DockStyle.Left, Width = 280, Text = settings.Model };
+        _postProcessorEndpointTextBox = new TextBox { Dock = DockStyle.Fill, Text = settings.Provider.Endpoint };
+        _postProcessorApiKeyTextBox = new TextBox { Dock = DockStyle.Fill, Text = settings.Provider.ApiKey, UseSystemPasswordChar = true };
+        _postProcessorDeploymentNameTextBox = new TextBox { Dock = DockStyle.Fill, Text = settings.Provider.DeploymentName };
+        _postProcessorModelTextBox = new TextBox { Dock = DockStyle.Fill, Text = settings.Model };
 
         providerLayout.Controls.Add(CreateFieldLabel("Endpoint / Base URL",
             "Address of the cleanup provider's API. Azure uses your resource/gateway endpoint. Local Whisper appends chat/completions to the base URL. Custom Endpoint requires the complete chat-completions URL. OpenAI/OpenRouter use their hosted endpoints and ignore this field.\n\nThis is separate from the transcription endpoint and is encrypted when settings are saved."), 0, 0);
@@ -774,23 +794,20 @@ public sealed class SettingsForm : Form
         _postProcessorSystemPromptTextBox = new TextBox
         {
             Multiline = true,
+            AcceptsReturn = true,
             ScrollBars = ScrollBars.Vertical,
             Width = 360,
             Height = 150,
+            Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             Text = settings.SystemPrompt,
         };
         root.Controls.Add(CreateFieldLabel("System prompt",
             "Instructions sent to the cleanup model when Preset is Custom. Describe how to edit the transcript and ask it to return only the final text. Your custom prompt is used verbatim.\n\nBuilt-in presets generate their own instructions and ignore this field. The prompt is sent with the transcript to the cleanup provider when post-processing is enabled; avoid putting credentials in it."), 0, 5);
         root.Controls.Add(_postProcessorSystemPromptTextBox, 1, 5);
-        _vocabularyName = new TextBox { Width = 360, AccessibleName = "Vocabulary profile name" };
-        _vocabularyLines = new TextBox { Multiline = true, ScrollBars = ScrollBars.Vertical, Width = 360, Height = 150, AccessibleName = "Vocabulary entries" };
-        root.Controls.Add(CreateFieldLabel("Vocabulary profile", "Optional project name. Leave both fields empty to preserve the existing prompt exactly."), 0, 6);
-        root.Controls.Add(_vocabularyName, 1, 6);
-        root.Controls.Add(CreateFieldLabel("Canonical vocabulary", "One canonical | context | comma-separated variants per line. Context distinguishes API/tool names and ordinary words. This is guidance, never global replacement or a full reference script."), 0, 7);
-        root.Controls.Add(_vocabularyLines, 1, 7);
-        var template = new Button { Text = "Load editable ABB template", AutoSize = true };
-        template.Click += (_, _) => { _vocabularyName.Text = CleanupVocabulary.AbbTemplate.Name; _vocabularyLines.Text = CleanupVocabulary.AbbTemplate.Lines; };
-        root.Controls.Add(template, 1, 8);
+        var vocabularyLink = new Button { Text = "Edit canonical vocabulary…", AutoSize = true };
+        vocabularyLink.Click += (_, _) => _tabs.SelectedTab = _tabs.TabPages.Cast<TabPage>().Single(p => p.Text == "Vocabulary");
+        root.Controls.Add(CreateFieldLabel("Canonical vocabulary", "Optional project terms and mishearings are edited in the Vocabulary tab. Guidance is included with every cleanup preset when post-processing is enabled."), 0, 6);
+        root.Controls.Add(vocabularyLink, 1, 6);
 
         page.Controls.Add(root);
         return page;
@@ -831,10 +848,12 @@ public sealed class SettingsForm : Form
             var textBox = new TextBox
             {
                 Text = field.Value,
-                Dock = DockStyle.Left,
+                Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
                 Width = 280,
                 UseSystemPasswordChar = field.Label.Contains("API Key", StringComparison.OrdinalIgnoreCase),
                 Multiline = field.Label == "Extra Headers",
+                AcceptsReturn = field.Label == "Extra Headers",
+                ScrollBars = field.Label == "Extra Headers" ? ScrollBars.Vertical : ScrollBars.None,
                 Height = field.Label == "Extra Headers" ? 70 : 23,
             };
             fieldInputs[field.Label] = textBox;
@@ -967,6 +986,7 @@ public sealed class SettingsForm : Form
     internal Task BeginConnectionTestAsync()
     {
         if (!_connectionTestTask.IsCompleted) return _connectionTestTask;
+        if (!_canRunOperation()) { ShowModelessStatus("Bisik busy", "Stop or cancel dictation or Experiments before testing a connection."); return Task.CompletedTask; }
         _suppressTestFeedback = false;
         return _connectionTestTask = TestConnectionCoreAsync();
     }
@@ -1122,8 +1142,7 @@ public sealed class SettingsForm : Form
             _recognitionKeywords!.Text = string.Join(",", settings.Provider.RecognitionContext?.Keywords ?? []);
             _recognitionLanguage!.Text = settings.Provider.RecognitionContext?.ExpectedLanguage ?? "";
             _recognitionFields!.Text = string.Join(",", settings.Provider.RecognitionCapability?.Fields ?? []);
-            _vocabularyName!.Text = settings.PostProcessor.Vocabulary?.Name ?? "";
-            _vocabularyLines!.Text = settings.PostProcessor.Vocabulary?.Lines ?? "";
+            _vocabularyEditor!.LoadVocabulary(settings.PostProcessor.Vocabulary);
         }
     }
 
@@ -1153,7 +1172,7 @@ public sealed class SettingsForm : Form
             TargetLanguage = _postProcessorTargetLanguageTextBox?.Text ?? defaults.PostProcessor.TargetLanguage,
             PresetName = GetSelectedComboValue(_postProcessorPresetComboBox, defaults.PostProcessor.PresetName),
             SystemPrompt = _postProcessorSystemPromptTextBox?.Text ?? defaults.PostProcessor.SystemPrompt,
-            Vocabulary = CleanupVocabulary.ParseLines(_vocabularyName?.Text ?? "", _vocabularyLines?.Text ?? ""),
+            Vocabulary = _vocabularyEditor?.GetVocabulary(),
             ReasoningEffort = _reasoningEffortComboBox?.SelectedIndex > 0 ? _reasoningEffortComboBox.SelectedItem?.ToString() : null,
             ReasoningCapability = null,
         };
@@ -1205,6 +1224,7 @@ public sealed class SettingsForm : Form
     {
         try
         {
+            if (!_canRunOperation()) throw new InvalidOperationException("Stop or cancel dictation or Experiments before applying settings.");
             var settings = BuildSettingsFromForm();
             _ = HotkeyManager.ParseHotkey(settings.Hotkey);
             SettingsApplied?.Invoke(settings);
@@ -1389,10 +1409,18 @@ public sealed class SettingsForm : Form
         }
 
         // Space and Tab are commonly used in capture bindings and should reach KeyDown unchanged.
-        if (eventArgs.KeyCode is Keys.Space or Keys.Tab)
+        if (eventArgs.KeyCode is Keys.Space or Keys.Tab or Keys.Enter or Keys.Escape)
         {
             eventArgs.IsInputKey = true;
         }
+    }
+
+    internal bool TryCaptureHotkey(HotkeyGesture gesture)
+    {
+        var input = new[] { _hotkeyTextBox, _insertLatestHotkeyTextBox, _fastOutputHotkeyTextBox }.FirstOrDefault(t => t?.Focused == true);
+        if (input is null) return false;
+        input.Text = HotkeyManager.FormatHotkey(gesture); input.SelectionStart = input.TextLength;
+        return true;
     }
 
     private void HandleHotkeyKeyDown(object? sender, KeyEventArgs eventArgs)
@@ -1436,16 +1464,9 @@ public sealed class SettingsForm : Form
 
         var keyCode = keyData & Keys.KeyCode;
 
-        // Win key (LWin/RWin) appears as a key code but should be treated as a modifier.
-        // Detect it here and add the Win modifier flag so the display and registration
-        // work correctly. We keep LWin/RWin as the keyCode because RegisterHotKey
-        // supports using them as virtual keys alongside modifier flags.
-        if (keyCode is Keys.LWin or Keys.RWin)
-        {
-            modifiers |= HotkeyModifiers.Win;
-        }
         // Reject bare modifier keys (Ctrl, Shift, Alt, Win alone) - they are not valid hotkeys.
-        else if (IsModifierOnlyKey(keyCode))
+        // Ctrl+Win remains a supported legacy gesture, but a bare Win must not become Win+Win.
+        if (IsModifierOnlyKey(keyCode) && !(keyCode is Keys.LWin or Keys.RWin && modifiers != HotkeyModifiers.None))
         {
             return null;
         }

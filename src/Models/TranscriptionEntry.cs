@@ -3,6 +3,9 @@ using System.Text.Json.Serialization;
 
 namespace Bisik.Models;
 
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum HistoryEntryStatus { Transcribing, CleaningUp, Completed, NoSpeech, Cancelled, Failed }
+
 public sealed record TranscriptionEntry
 {
     public TranscriptionEntry(
@@ -19,7 +22,9 @@ public sealed record TranscriptionEntry
         JsonElement? ConfigurationSnapshot = null,
         long? StopToResultDurationMs = null,
         bool? PostProcessingApplied = null,
-        long? CaptureToResultDurationMs = null)
+        long? CaptureToResultDurationMs = null,
+        Guid? Id = null,
+        HistoryEntryStatus Status = HistoryEntryStatus.Completed)
     {
         this.Timestamp = Timestamp;
         this.Text = Text;
@@ -35,7 +40,16 @@ public sealed record TranscriptionEntry
         this.StopToResultDurationMs = StopToResultDurationMs;
         this.PostProcessingApplied = PostProcessingApplied;
         this.CaptureToResultDurationMs = CaptureToResultDurationMs;
+        this.Id = Id;
+        this.Status = Status;
     }
+
+    // New dictations keep the same identity through audio, recognition and cleanup updates.
+    [JsonPropertyName("id")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? Id { get; init; }
+    [JsonPropertyName("status")]
+    public HistoryEntryStatus Status { get; init; }
 
     [JsonPropertyName("timestamp")]
     public DateTimeOffset Timestamp { get; init; }

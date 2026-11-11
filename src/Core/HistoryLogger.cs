@@ -56,13 +56,7 @@ public sealed class HistoryLogger
 
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_historyPath)!);
-
-            var json = JsonSerializer.Serialize(entry, SerializerOptions);
-
-            await using var stream = new FileStream(_historyPath, FileMode.Append, FileAccess.Write, FileShare.Read);
-            await using var writer = new StreamWriter(stream, Encoding.UTF8);
-            await writer.WriteLineAsync(json.AsMemory(), ct);
+            await AppendCoreAsync(entry, ct);
         }
         finally
         {
@@ -70,6 +64,29 @@ public sealed class HistoryLogger
         }
 
         NotifyChanged();
+    }
+
+    public async Task UpdateAsync(TranscriptionEntry entry, CancellationToken ct = default)
+    {
+        if (!_historyEnabled || entry.Id is null) return;
+        await _pathLock.WaitAsync(ct);
+        try
+        {
+            // A user may delete or clear a pending row. Later stages must not resurrect it.
+            if (!(await ReadAllCoreAsync(ct)).Any(e => e.Id == entry.Id)) return;
+            await AppendCoreAsync(entry, ct);
+        }
+        finally { _pathLock.Release(); }
+        NotifyChanged();
+    }
+
+    private async Task AppendCoreAsync(TranscriptionEntry entry, CancellationToken ct)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_historyPath)!);
+        var json = JsonSerializer.Serialize(entry, SerializerOptions);
+        await using var stream = new FileStream(_historyPath, FileMode.Append, FileAccess.Write, FileShare.Read);
+        await using var writer = new StreamWriter(stream, Encoding.UTF8);
+        await writer.WriteLineAsync(json.AsMemory(), ct);
     }
 
     public async Task<IReadOnlyList<TranscriptionEntry>> ReadAllAsync(CancellationToken ct = default)
@@ -101,14 +118,15 @@ public sealed class HistoryLogger
             .ToArray();
     }
 
-    public async Task<bool> DeleteAsync(DateTimeOffset timestamp, string text, CancellationToken ct = default)
+    public async Task<bool> DeleteAsync(DateTimeOffset timestamp, string text, CancellationToken ct = default, Guid? id = null)
     {
         await _pathLock.WaitAsync(ct);
 
         try
         {
             var entries = (await ReadAllCoreAsync(ct)).ToList();
-            var index = entries.FindIndex(entry => entry.Timestamp == timestamp && string.Equals(entry.Text, text, StringComparison.Ordinal));
+            var index = entries.FindIndex(entry => id is not null ? entry.Id == id
+                : entry.Timestamp == timestamp && string.Equals(entry.Text, text, StringComparison.Ordinal));
             if (index < 0)
             {
                 return false;
@@ -239,6 +257,7 @@ public sealed class HistoryLogger
         }
 
         var entries = new List<TranscriptionEntry>();
+        var identities = new Dictionary<Guid, int>();
         using var stream = new FileStream(_historyPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
 
         if (_testHooks?.AfterReadOpenAsync is not null)
@@ -263,7 +282,13 @@ public sealed class HistoryLogger
                 var entry = JsonSerializer.Deserialize<TranscriptionEntry>(line, SerializerOptions);
                 if (entry is not null)
                 {
-                    entries.Add(entry);
+                    // JSONL remains append-only during dictation; expose only the latest revision.
+                    if (entry.Id is { } id && identities.TryGetValue(id, out var index)) entries[index] = entry;
+                    else
+                    {
+                        if (entry.Id is { } newId) identities[newId] = entries.Count;
+                        entries.Add(entry);
+                    }
                 }
             }
             catch (JsonException)

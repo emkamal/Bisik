@@ -137,7 +137,7 @@ Never call provider APIs directly from UI code.
 
 ### Audio recording
 - Record as 16-bit PCM, 16000 Hz mono (optimal for Whisper).
-- Buffer in memory during capture and await RecordingStopped before finalizing the file. The existing provider/history contract uses recorded files; delete failed/empty/no-history recordings. Azure realtime converts continuously to PCM16 mono 24 kHz.
+- Buffer in memory during capture and await RecordingStopped before finalizing the file. Retain successfully persisted dictation audio when its History row is created, including failed/cancelled/no-speech outcomes. Delete recordings without a saved History row. Azure realtime converts continuously to PCM16 mono 24 kHz.
 - Expose a `WaveformDataAvailable` event from `AudioRecorder` that fires with recent amplitude values so the overlay can render a live level meter.
 
 ### Overlay window
@@ -233,6 +233,8 @@ The same steps apply for adding a provider to the post-processor — it shares t
 
 Experiment contracts: Models/ExperimentDefinition.cs and ExperimentResult.cs hold versioned immutable setup/results without connection secrets.
 
+Models/ExperimentWorkspace.cs preserves editable experiment rows, including incomplete drafts and unchecked identifiers. ExperimentStore saves the workspace and its private connection in one atomic DPAPI snapshot; ExperimentsForm restores it without requests and drains it on window close or application shutdown. Keep workspace edits separate from immutable saved run definitions.
+
 Experiments components: Core/ExperimentMatrix.cs, ExperimentScoring.cs, ExperimentSession.cs, ExperimentRunner.cs, ExperimentStore.cs, ExperimentExport.cs, ExperimentOptions.cs and OperationGate.cs; PostProcessor/LLMExperimentJudge.cs and ICompletionPostProcessor.cs; UI/ExperimentsForm.cs and ExperimentWeightsForm.cs. TabularExport.cs shares only explicit Unicode table formatting with HistoryExport. Models hold immutable versioned setup/take/trial/evaluation records. No public experiment DTO contains ProviderSettings. The composition root owns the suite HTTP client, operation lease, capture and shutdown drain. Keep generation/evaluation separate and all automatic dictation output success-only; recovery claims require explicit user commands.
 
 Models/CleanupVocabulary.cs owns bounded immutable optional profile entries and the editable template; prompt composition happens only in PostProcessorPresets.
@@ -242,3 +244,9 @@ Models/RecognitionContext.cs holds bounded immutable recognition hints and exact
 Core/SegmentedCleanup.cs and tools/Bisik.Diagnostics/SegmentedCleanupDiagnostics.cs are diagnostic-only stable-prefix cleanup/replay. Keep whole-text production selection unchanged and own every cancelled request through drain.
 
 UI/FieldHelp.cs shares the native Settings info-button and wrapped tooltip rendering with ExperimentWeightsForm. Keep explanations accessible through hover, focus and click; help must not trigger scoring or network work.
+
+UI/ExperimentDetailsView.cs presents saved experiment text, metadata and evidence in a fixed three-column, two-row native grid; each section owns its scrolling. Repeat selection is inspection-only and must not start requests or change saved results.
+
+UI/CleanupVocabularyEditor.cs edits optional cleanup vocabulary in a native three-column table with bounded validation. Preserve existing profiles when loading; compose prompts only in PostProcessorPresets.
+
+Recorded dictations append a History row after audio persistence, then append revisions with the same optional TranscriptionEntry.Id as recognition and cleanup finish. HistoryLogger exposes the latest revision per ID, preserves legacy rows without IDs, and does not resurrect deleted pending rows. Failed/cancelled/no-speech dictations retain saved audio when History is enabled. HistoryForm owns original-audio playback and disposes it on close.

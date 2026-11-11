@@ -12,6 +12,7 @@ public sealed class ExperimentsForm : Form
     private readonly Func<AppSettings, ExperimentDefinition, CancellationToken, IProgress<ExperimentCaptureProgress>, ExperimentSession> _captureFactory;
     private readonly ExperimentStore _store;
     private readonly Func<IDisposable?> _acquireOperation;
+    private readonly Action<Exception> _reportError;
     private readonly ToolTip _help = new() { ShowAlways = true, AutoPopDelay = 30000 };
     private readonly TextBox _reference = Editor("Reference script");
     private readonly TextBox _prompt = Editor("Selected system prompt");
@@ -25,7 +26,7 @@ public sealed class ExperimentsForm : Form
     private readonly CheckBox _retain = new() { Text = "Retain audio", AutoSize = true };
     private readonly Dictionary<string, NumericUpDown> _limits = [];
     private readonly CheckBox _retry = new() { Text = "Retry one transient failure", AutoSize = true };
-    private readonly Panel _setup = new() { Dock = DockStyle.Fill };
+    private readonly Panel _setup = new() { Dock = DockStyle.Fill, AutoScroll = true };
     private readonly Button _start = new() { Text = "Start", AutoSize = true };
     private readonly Button _done = new() { Text = "Done", AutoSize = true, Enabled = false };
     private readonly Button _cancel = new() { Text = "Cancel", AutoSize = true, Enabled = false };
@@ -38,7 +39,7 @@ public sealed class ExperimentsForm : Form
     private readonly TabPage _resultsPage = new("Results");
     private readonly Label _winner = new() { Dock = DockStyle.Fill, AutoSize = true, Font = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold) };
     private readonly DataGridView _results = Grid("Ranked results");
-    private readonly TextBox _detail = Editor("Reference raw output and evidence");
+    private readonly ExperimentDetailsView _detail = new();
     private ExperimentWeights _weights = new();
     private ExperimentWeightsForm? _weightsForm;
     private bool _refreshing;
@@ -55,16 +56,51 @@ public sealed class ExperimentsForm : Form
     private bool _acceptProgress;
     private int _promptIndex = -1;
     private ExperimentDefinition? _loadedDefinition;
+    private bool _populatingSetup;
+    private bool _restoring;
+    private bool _hasWorkspace;
+    private bool _workspaceLoadFailed;
+    private string? _savedWorkspaceIdentity;
+    public Task Initialization { get; }
     public bool IsBusy { get; private set; }
     public ExperimentRun? CurrentRun { get; private set; }
-    public async Task DrainAsync() { _cancellation?.Cancel(); try { await _work; } finally { await _checkpoint; } }
+    public async Task DrainAsync()
+    {
+        _cancellation?.Cancel();
+        await Initialization;
+        try { await _work; }
+        finally
+        {
+            try { await _checkpoint; }
+            finally
+            {
+                if (!_workspaceLoadFailed)
+                {
+                    var workspace = ReadWorkspace();
+                    var identity = ExperimentIdentity.Hash("workspace-v1", workspace, _settings);
+                    if (identity != _savedWorkspaceIdentity)
+                    {
+                        await _store.SaveWorkspaceAsync(workspace, _settings, CancellationToken.None);
+                        _savedWorkspaceIdentity = identity;
+                    }
+                }
+            }
+        }
+    }
+    public async Task CloseAsync()
+    {
+        _closing = true; Enabled = false;
+        await DrainAsync();
+        _allowClose = true; Close();
+    }
 
     public ExperimentsForm(AppSettings settings, Func<AppSettings, TranscriptionService> serviceFactory,
         Func<AppSettings, ExperimentDefinition, CancellationToken, IProgress<ExperimentCaptureProgress>, ExperimentSession> captureFactory,
-        ExperimentStore store, Func<IDisposable?> acquireOperation)
+        ExperimentStore store, Func<IDisposable?> acquireOperation, Action<Exception>? reportError = null)
     {
         _settings = settings.Snapshot(); _serviceFactory = serviceFactory; _captureFactory = captureFactory;
         _store = store; _acquireOperation = acquireOperation;
+        _reportError = reportError ?? new ErrorLogger().Log;
         Text = "Bisik Experiments"; AutoScaleMode = AutoScaleMode.Dpi; Size = new(1180, 800); MinimumSize = new(760, 540);
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 5, ColumnCount = 1, Padding = new(8) };
         root.RowStyles.Add(new(SizeType.Percent, 100)); root.RowStyles.Add(new(SizeType.AutoSize));
@@ -75,8 +111,9 @@ public sealed class ExperimentsForm : Form
         script.RowStyles.Add(new(SizeType.AutoSize)); script.RowStyles.Add(new(SizeType.Percent, 100));
         script.Controls.Add(new Label { Text = "Read this reference once. Scroll/copy remains available while running.", AutoSize = true }, 0, 0);
         script.Controls.Add(_reference, 0, 1); split.Panel1.Controls.Add(script); split.Panel2.Controls.Add(_setup); setupPage.Controls.Add(split);
-        var fields = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 7, ColumnCount = 1 };
-        foreach (var height in new[] { 23, 25, 20, 17, 15 }) fields.RowStyles.Add(new(SizeType.Percent, height));
+        // Keep editable rows visible beneath the taller headers; small windows scroll this setup pane.
+        var fields = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, RowCount = 7, ColumnCount = 1 };
+        foreach (var height in new[] { 130, 130, 80, 130, 60 }) fields.RowStyles.Add(new(SizeType.Absolute, height));
         fields.RowStyles.Add(new(SizeType.AutoSize)); fields.RowStyles.Add(new(SizeType.AutoSize));
         AddColumns(_models, "Name", "Deployment", "Model", "Efforts (default,low,...)");
         _models.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "Stream (verified)" });
@@ -121,24 +158,52 @@ public sealed class ExperimentsForm : Form
         _help.SetToolTip(probe, "Explicit calls verify unknown effort parameters for this exact connection and model. These are separate from measured trials.");
         _help.SetToolTip(_retain, "Off by default. Reference, raw text and results are saved; audio is retained only when selected.");
         _help.SetToolTip(_repeats, "1–5 randomized rounds, at most 100 cleanup requests plus a separate fixed judge phase.");
-        _prompts.SelectionChanged += (_, _) => SelectPrompt();
+        // SelectionChanged can run before CurrentRow moves, so follow the committed current cell.
+        _prompts.CurrentCellChanged += (_, _) => SelectPrompt();
+        _prompt.TextChanged += (_, _) =>
+        {
+            if (!_populatingSetup && _promptIndex >= 0 && _promptIndex < _prompts.Rows.Count && !_prompts.Rows[_promptIndex].IsNewRow)
+                _prompts.Rows[_promptIndex].Cells[1].Value = _prompt.Text;
+        };
+        _prompts.CellValueChanged += (_, e) =>
+        {
+            if (!_populatingSetup && e.RowIndex == _promptIndex && e.ColumnIndex == 1) SelectPrompt();
+        };
         _reference.TextChanged += (_, _) => Preview(); _models.CellEndEdit += (_, _) => Preview(); _repeats.ValueChanged += (_, _) => Preview();
         FormClosing += async (_, e) =>
         {
             if (_allowClose) return;
-            e.Cancel = true; if (_closing) return; _closing = true;
-            try { await DrainAsync(); } catch (Exception ex) { Log(ex.GetType().Name); }
-            _allowClose = true; Close();
+            e.Cancel = true; if (_closing) return;
+            try { await CloseAsync(); }
+            catch (Exception ex)
+            {
+                _closing = false; Enabled = true;
+                _status.Text = "Could not save the experiment workspace. Close again to retry.";
+                Log(_status.Text); _reportError(ex);
+            }
         };
         FormClosed += (_, _) => { _weightsForm?.Dispose(); _help.Dispose(); _cancellation?.Dispose(); };
         SelectPrompt(); Preview();
+        Initialization = RestoreWorkspaceAsync();
     }
 
     private static TextBox Editor(string name) => new() { Multiline = true, ScrollBars = ScrollBars.Both, AcceptsReturn = true,
         AcceptsTab = true, Dock = DockStyle.Fill, AccessibleName = name, WordWrap = true };
-    private static DataGridView Grid(string name) => new() { Dock = DockStyle.Fill, AutoGenerateColumns = false,
-        AccessibleName = name, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect };
-    private static void AddColumns(DataGridView grid, params string[] names) { foreach (var name in names) grid.Columns.Add(name, name); }
+    private static DataGridView Grid(string name)
+    {
+        var headerFont = new Font(SystemFonts.MessageBoxFont!, FontStyle.Bold);
+        var grid = new DataGridView { Dock = DockStyle.Fill, AutoGenerateColumns = false,
+            AccessibleName = name, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            EnableHeadersVisualStyles = false, ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+            ColumnHeadersHeight = 56, ColumnHeadersDefaultCellStyle = new() { Font = headerFont, WrapMode = DataGridViewTriState.True,
+                Alignment = DataGridViewContentAlignment.MiddleLeft, Padding = new(4) } };
+        grid.Disposed += (_, _) => headerFont.Dispose();
+        return grid;
+    }
+    private static void AddColumns(DataGridView grid, params string[] names)
+    {
+        foreach (var name in names) grid.Columns.Add(new DataGridViewTextBoxColumn { Name = name, HeaderText = name, MinimumWidth = 90 });
+    }
     private static GroupBox Group(string label, Control control) { var group = new GroupBox { Text = label, Dock = DockStyle.Fill }; group.Controls.Add(control); return group; }
     private Button Command(string text, Func<Task> action)
     {
@@ -148,19 +213,18 @@ public sealed class ExperimentsForm : Form
     }
     private void SelectPrompt()
     {
-        if (_promptIndex >= 0 && _promptIndex < _prompts.Rows.Count && !_prompts.Rows[_promptIndex].IsNewRow)
-            _prompts.Rows[_promptIndex].Cells[1].Value = _prompt.Text;
+        if (_populatingSetup) return;
         _promptIndex = _prompts.CurrentRow?.Index ?? -1;
         _prompt.Text = _promptIndex < 0 ? "" : Convert.ToString(_prompts.Rows[_promptIndex].Cells[1].Value) ?? "";
     }
     private static IEnumerable<DataGridViewRow> Rows(DataGridView grid) => grid.Rows.Cast<DataGridViewRow>().Where(r => !r.IsNewRow);
-    private static string Cell(DataGridViewRow row, int column) => Convert.ToString(row.Cells[column].Value)?.Trim() ?? "";
+    private static string CellText(DataGridViewRow row, int column) => Convert.ToString(row.Cells[column].Value) ?? "";
+    private static string Cell(DataGridViewRow row, int column) => CellText(row, column).Trim();
     private static ImmutableArray<string?> Efforts(string value) => value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
         .Select(v => v == "default" ? null : v).ToImmutableArray();
     internal ExperimentDefinition ReadDefinition()
     {
-        foreach (var grid in new[] { _models, _prompts, _terms }) { grid.CommitEdit(DataGridViewDataErrorContexts.Commit); grid.EndEdit(); }
-        if (_promptIndex >= 0 && !_prompts.Rows[_promptIndex].IsNewRow) _prompts.Rows[_promptIndex].Cells[1].Value = _prompt.Text;
+        CommitEditors();
         return new ExperimentDefinition
         {
             Reference = _reference.Text, ConnectionFingerprint = ExperimentMatrix.ConnectionIdentity(_settings.PostProcessor),
@@ -169,16 +233,66 @@ public sealed class ExperimentsForm : Form
             Terms = Rows(_terms).Where(r => r.Cells[0].Value is true).Select(r => new ExperimentTerm(Cell(r, 1),
                 Cell(r, 2).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))).ToImmutableArray(),
             Judge = new("Judge", _judgeDeployment.Text.Trim(), _judgeModel.Text.Trim(), Efforts(Convert.ToString(_judgeEffort.SelectedItem) ?? "default")),
-            Limits = new() { Repetitions = (int)_repeats.Value, MaximumTrials = (int)_limits[nameof(ExperimentLimits.MaximumTrials)].Value,
-                RecordingSeconds = (int)_limits[nameof(ExperimentLimits.RecordingSeconds)].Value, RecognitionSeconds = (int)_limits[nameof(ExperimentLimits.RecognitionSeconds)].Value,
-                TrialSeconds = (int)_limits[nameof(ExperimentLimits.TrialSeconds)].Value, QuietHintSeconds = (int)_limits[nameof(ExperimentLimits.QuietHintSeconds)].Value,
-                RetryTransientFailure = _retry.Checked }, RetainAudio = _retain.Checked,
+            Limits = ReadLimits(), RetainAudio = _retain.Checked,
             Weights = _weights,
         }.Snapshot();
     }
+    private void CommitEditors()
+    {
+        foreach (var grid in new[] { _models, _prompts, _terms }) { grid.CommitEdit(DataGridViewDataErrorContexts.Commit); grid.EndEdit(); }
+        ValidateChildren(); // Commit NumericUpDown text too, including when Exit is chosen from the tray.
+    }
+    private ExperimentLimits ReadLimits() => new()
+    {
+        Repetitions = (int)_repeats.Value, MaximumTrials = (int)_limits[nameof(ExperimentLimits.MaximumTrials)].Value,
+        RecordingSeconds = (int)_limits[nameof(ExperimentLimits.RecordingSeconds)].Value, RecognitionSeconds = (int)_limits[nameof(ExperimentLimits.RecognitionSeconds)].Value,
+        TrialSeconds = (int)_limits[nameof(ExperimentLimits.TrialSeconds)].Value, QuietHintSeconds = (int)_limits[nameof(ExperimentLimits.QuietHintSeconds)].Value,
+        RetryTransientFailure = _retry.Checked,
+    };
+    private ExperimentWorkspace ReadWorkspace()
+    {
+        CommitEditors();
+        return new()
+        {
+            Reference = _reference.Text,
+            Models = Rows(_models).Select(r => new ExperimentWorkspaceModel(CellText(r, 0), CellText(r, 1), CellText(r, 2), CellText(r, 3),
+                r.Cells[4].Value is true, r.Cells[5].Value is true)).ToImmutableArray(),
+            Prompts = Rows(_prompts).Select(r => new ExperimentPrompt(CellText(r, 0), CellText(r, 1))).ToImmutableArray(),
+            Terms = Rows(_terms).Select(r => new ExperimentWorkspaceTerm(r.Cells[0].Value is true, CellText(r, 1), CellText(r, 2))).ToImmutableArray(),
+            JudgeModel = _judgeModel.Text, JudgeDeployment = _judgeDeployment.Text, JudgeEffort = Convert.ToString(_judgeEffort.SelectedItem) ?? "default",
+            Limits = ReadLimits(), Weights = _weights, RetainAudio = _retain.Checked, SelectedPromptIndex = _promptIndex,
+            SelectedPromptText = _prompt.Text,
+            SelectedTabIndex = _tabs.SelectedIndex, RunId = CurrentRun?.Definition.Id, ConnectionAvailable = _connectionAvailable,
+            Compatibility = _evidence.Select(e => new ExperimentWorkspaceCompatibility(e.ApiFingerprint, e.Effort, e.Verification, e.FailureCode)).ToImmutableArray(),
+        };
+    }
+    private async Task RestoreWorkspaceAsync()
+    {
+        _restoring = true; Enabled = false;
+        try
+        {
+            var saved = await _store.LoadWorkspaceAsync(CancellationToken.None);
+            if (saved is not { } snapshot) return;
+            _settings = snapshot.Connection; _connectionAvailable = snapshot.Workspace.ConnectionAvailable; _hasWorkspace = true;
+            if (snapshot.Workspace.RunId is { } id)
+            {
+                try { CurrentRun = await _store.LoadAsync(id, CancellationToken.None); }
+                catch (Exception ex) { Log("Saved results unavailable; the experiment setup is restored."); _reportError(ex); }
+            }
+            _evidence.AddRange(snapshot.Workspace.Compatibility.Select(e => new ExperimentCompatibility(e.ApiFingerprint, e.Effort, e.Verification, e.FailureCode)));
+            PopulateWorkspace(snapshot.Workspace); RefreshResults(); Log("Experiment workspace restored.");
+        }
+        catch (Exception ex)
+        {
+            // Preserve an unreadable snapshot rather than silently replacing the user's configuration.
+            _workspaceLoadFailed = true; _status.Text = "Could not restore the experiment workspace; saved configuration has been preserved.";
+            Log(_status.Text); _reportError(ex);
+        }
+        finally { _restoring = false; Enabled = true; }
+    }
     private void Preview()
     {
-        if (IsBusy || _previewing || _limits.Count == 0) return;
+        if (IsBusy || _previewing || _populatingSetup || _limits.Count == 0) return;
         _previewing = true;
         try
         {
@@ -192,7 +306,7 @@ public sealed class ExperimentsForm : Form
 
     internal Task StartWorkAsync(bool probe, bool reuseRaw)
     {
-        if (IsBusy || _closing) return _work;
+        if (IsBusy || _closing || _restoring) return _work;
         var lease = _acquireOperation();
         if (lease is null) { Log("Another operation is active."); return Task.CompletedTask; }
         IsBusy = true; _setup.Enabled = false; _reference.ReadOnly = true; _start.Enabled = false; _cancel.Enabled = true;
@@ -307,6 +421,7 @@ public sealed class ExperimentsForm : Form
     }
     public async Task LoadAsync(Guid id)
     {
+        await Initialization;
         CurrentRun = await _store.LoadAsync(id, CancellationToken.None); _loadedDefinition = CurrentRun.Definition;
         var settings = await _store.LoadConnectionAsync(id, CancellationToken.None);
         _connectionAvailable = settings is not null;
@@ -319,6 +434,7 @@ public sealed class ExperimentsForm : Form
     }
     public async Task LoadSetupAsync(Guid id)
     {
+        await Initialization;
         var rawSource = CurrentRun;
         var definition = await _store.LoadSetupAsync(id, CancellationToken.None); definition.Validate();
         var settings = await _store.LoadConnectionAsync(id, CancellationToken.None); _connectionAvailable = settings is not null;
@@ -330,28 +446,57 @@ public sealed class ExperimentsForm : Form
         Log(rawSource is null ? "Saved setup opened." : "Saved setup opened; the selected raw take remains available for Rerun saved raw.");
     }
     public void RefreshIdleSettings(AppSettings settings)
-    { if (!IsBusy && CurrentRun is null && _loadedDefinition is null) _settings = settings.Snapshot(); }
+    { if (!IsBusy && !_restoring && !_hasWorkspace && CurrentRun is null && _loadedDefinition is null) _settings = settings.Snapshot(); }
     private void PopulateSetup(ExperimentDefinition d)
     {
-        _loadedDefinition = d; _weights = d.Weights; _weightsForm?.SetWeights(_weights); _reference.Text = d.Reference; _models.Rows.Clear();
-        foreach (var m in d.Models) _models.Rows.Add(m.Name, m.Deployment, m.Model, string.Join(",", m.Efforts.Select(e => e ?? "default")), m.StreamCompletion, m.UsePrediction);
-        _promptIndex = -1; _prompts.Rows.Clear(); foreach (var p in d.Prompts) _prompts.Rows.Add(p.Name, p.SystemPrompt);
-        _terms.Rows.Clear(); foreach (var t in d.Terms) _terms.Rows.Add(true, t.Canonical, string.Join(",", t.WrongAliases));
-        _judgeModel.Text = d.Judge.Model; _judgeDeployment.Text = d.Judge.Deployment; _judgeEffort.SelectedItem = d.Judge.Efforts[0] ?? "default";
-        _repeats.Value = d.Limits.Repetitions; _retain.Checked = d.RetainAudio; _retry.Checked = d.Limits.RetryTransientFailure;
-        _limits[nameof(ExperimentLimits.MaximumTrials)].Value = d.Limits.MaximumTrials; _limits[nameof(ExperimentLimits.RecordingSeconds)].Value = d.Limits.RecordingSeconds;
-        _limits[nameof(ExperimentLimits.RecognitionSeconds)].Value = d.Limits.RecognitionSeconds; _limits[nameof(ExperimentLimits.TrialSeconds)].Value = d.Limits.TrialSeconds;
-        _limits[nameof(ExperimentLimits.QuietHintSeconds)].Value = d.Limits.QuietHintSeconds; SelectPrompt(); Preview();
+        _loadedDefinition = d;
+        PopulateWorkspace(new()
+        {
+            Reference = d.Reference, Models = d.Models.Select(m => new ExperimentWorkspaceModel(m.Name, m.Deployment, m.Model,
+                string.Join(",", m.Efforts.Select(e => e ?? "default")), m.StreamCompletion, m.UsePrediction)).ToImmutableArray(),
+            Prompts = d.Prompts, Terms = d.Terms.Select(t => new ExperimentWorkspaceTerm(true, t.Canonical, string.Join(",", t.WrongAliases))).ToImmutableArray(),
+            JudgeModel = d.Judge.Model, JudgeDeployment = d.Judge.Deployment, JudgeEffort = d.Judge.Efforts[0] ?? "default",
+            Limits = d.Limits, Weights = d.Weights, RetainAudio = d.RetainAudio, SelectedPromptIndex = d.Prompts.Length > 0 ? 0 : -1,
+        });
+    }
+    private void PopulateWorkspace(ExperimentWorkspace workspace)
+    {
+        _populatingSetup = true;
+        try
+        {
+            _weights = workspace.Weights; _weightsForm?.SetWeights(_weights); _reference.Text = workspace.Reference;
+            _models.Rows.Clear(); foreach (var m in workspace.Models) _models.Rows.Add(m.Name, m.Deployment, m.Model, m.Efforts, m.StreamCompletion, m.UsePrediction);
+            _promptIndex = -1; _prompts.Rows.Clear(); foreach (var p in workspace.Prompts) _prompts.Rows.Add(p.Name, p.SystemPrompt);
+            _terms.Rows.Clear(); foreach (var t in workspace.Terms) _terms.Rows.Add(t.Use, t.Canonical, t.WrongAliases);
+            _judgeModel.Text = workspace.JudgeModel; _judgeDeployment.Text = workspace.JudgeDeployment; _judgeEffort.SelectedItem = workspace.JudgeEffort;
+            _repeats.Value = workspace.Limits.Repetitions; _retain.Checked = workspace.RetainAudio; _retry.Checked = workspace.Limits.RetryTransientFailure;
+            _limits[nameof(ExperimentLimits.MaximumTrials)].Value = workspace.Limits.MaximumTrials;
+            _limits[nameof(ExperimentLimits.RecordingSeconds)].Value = workspace.Limits.RecordingSeconds;
+            _limits[nameof(ExperimentLimits.RecognitionSeconds)].Value = workspace.Limits.RecognitionSeconds;
+            _limits[nameof(ExperimentLimits.TrialSeconds)].Value = workspace.Limits.TrialSeconds;
+            _limits[nameof(ExperimentLimits.QuietHintSeconds)].Value = workspace.Limits.QuietHintSeconds;
+            _prompts.CurrentCell = workspace.SelectedPromptIndex >= 0 && workspace.SelectedPromptIndex < _prompts.Rows.Count
+                ? _prompts.Rows[workspace.SelectedPromptIndex].Cells[0] : null;
+            _tabs.SelectedIndex = workspace.SelectedTabIndex;
+        }
+        finally { _populatingSetup = false; }
+        SelectPrompt();
+        if (workspace.SelectedPromptText is { } text) _prompt.Text = text;
+        Preview();
     }
     private void BuildResults()
     {
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4 };
-        layout.RowStyles.Add(new(SizeType.AutoSize)); layout.RowStyles.Add(new(SizeType.Percent, 48));
-        layout.RowStyles.Add(new(SizeType.Percent, 52)); layout.RowStyles.Add(new(SizeType.AutoSize));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+        layout.RowStyles.Add(new(SizeType.AutoSize)); layout.RowStyles.Add(new(SizeType.Percent, 100));
+        layout.RowStyles.Add(new(SizeType.AutoSize));
         _results.ReadOnly = true; _results.AllowUserToAddRows = false; _results.AllowUserToDeleteRows = false;
-        AddColumns(_results, "Rank", "Candidate", "Score", "Wording", "Identifiers", "Meaning", "Readability", "Speed", "Samples / failed / judged", "Cleanup ms (median)", "Estimated Stop→final ms", "Warnings");
-        _detail.ReadOnly = true;
-        _results.SelectionChanged += (_, _) => { if (!_refreshing) ShowDetail(); };
+        AddColumns(_results, "Rank", "Candidate", "Prompt", "Score", "Wording", "Identifiers", "Meaning", "Readability", "Speed", "Samples / failed / judged", "Cleanup ms (median)", "Estimated Stop→final ms", "Warnings");
+        _results.Columns["Prompt"].MinimumWidth = 140;
+        _results.Columns["Prompt"].ToolTipText = "Saved cleanup prompt name. Hover a cell or select a row to read the full prompt.";
+        var split = new SplitContainer { Size = new(1100, 650), Dock = DockStyle.Fill, Orientation = Orientation.Horizontal,
+            SplitterDistance = 170, Panel1MinSize = 90, Panel2MinSize = 180 };
+        split.Panel1.Controls.Add(_results); split.Panel2.Controls.Add(_detail);
+        _results.CurrentCellChanged += (_, _) => { if (!_refreshing) ShowDetail(); };
         var commands = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         var weights = new Button { Text = "Weights…", AutoSize = true }; weights.Click += (_, _) => ShowWeights();
         commands.Controls.Add(weights);
@@ -374,7 +519,7 @@ public sealed class ExperimentsForm : Form
             var run = System.Text.Json.JsonSerializer.Deserialize<ExperimentRun>(await File.ReadAllTextAsync(dialog.FileName)) ?? throw new InvalidDataException("Empty import.");
             ExperimentStore.Validate(run); await _store.SaveAsync(run, CancellationToken.None); await LoadAsync(run.Definition.Id);
         }));
-        layout.Controls.Add(_winner, 0, 0); layout.Controls.Add(_results, 0, 1); layout.Controls.Add(_detail, 0, 2); layout.Controls.Add(commands, 0, 3);
+        layout.Controls.Add(_winner, 0, 0); layout.Controls.Add(split, 0, 1); layout.Controls.Add(commands, 0, 2);
         _resultsPage.Controls.Add(layout);
     }
     internal void SetViewWeights(ExperimentWeights weights)
@@ -423,10 +568,12 @@ public sealed class ExperimentsForm : Form
                 double? cleanup = timings.Length == 0 ? null : timings.Length % 2 == 1 ? timings[timings.Length / 2]
                     : (timings[timings.Length / 2 - 1] + timings[timings.Length / 2]) / 2;
                 var warning = string.Join(", ", r.Warnings.Select(w => w.Severity.ToString()).Distinct().Concat(trials.SelectMany(t => t.LocalWarnings)).Distinct());
-                var index = _results.Rows.Add(r.Rank?.ToString() ?? "—", trials[0].Candidate.Name, Number(r.Score), Number(r.Factors.Wording), Number(r.Factors.Identifiers),
+                var candidate = trials[0].Candidate;
+                var index = _results.Rows.Add(r.Rank?.ToString() ?? "—", candidate.Name, ExperimentExport.PromptName(CurrentRun, candidate), Number(r.Score), Number(r.Factors.Wording), Number(r.Factors.Identifiers),
                     Number(r.Factors.Meaning), Number(r.Factors.Readability), Number(r.Factors.Speed), $"{r.Successful}/{r.Failed}/{r.Judged}" + (r.Provisional ? " provisional" : ""),
                     Number(cleanup), Number(cleanup + CurrentRun.Take.SharedStopToRawMs), warning);
                 _results.Rows[index].Tag = r.CandidateId;
+                _results.Rows[index].Cells["Prompt"].ToolTipText = candidate.IsBaseline ? "No cleanup prompt; this is the shared raw transcript." : candidate.SystemPrompt;
                 if (r.CandidateId == selected) _results.CurrentCell = _results.Rows[index].Cells[0];
             }
         }
@@ -435,13 +582,7 @@ public sealed class ExperimentsForm : Form
     }
     private void ShowDetail()
     {
-        if (CurrentRun is null || _results.CurrentRow?.Tag is not string id) return;
-        _detail.Text = $"Reference\r\n{CurrentRun.Definition.Reference}\r\n\r\nShared raw ({CurrentRun.Take.SharedStopToRawMs:0.0} ms Stop→raw)\r\n{CurrentRun.Take.RawText}\r\n\r\n" +
-            string.Join("\r\n\r\n", CurrentRun.Trials.Where(t => t.Candidate.Id == id).Select(t =>
-                $"Repeat {t.RepeatIndex + 1}: {t.Generation}/{t.EvaluationStatus}; model {t.Candidate.Model}; deployment {t.Candidate.Deployment}; stream {t.Candidate.StreamCompletion}; prediction {t.Candidate.UsePrediction}; requested {t.Candidate.RequestedEffort ?? "default"}; effective {t.Candidate.EffectiveEffort ?? "omitted"} ({t.Candidate.Verification})\r\n"
-                + $"Cleanup {t.CleanupMs:0.0} ms; judge {t.JudgeMs:0.0} ms; prediction accepted/rejected {t.Completion?.Usage?.AcceptedPredictionTokens}/{t.Completion?.Usage?.RejectedPredictionTokens}; failure {t.FailureCode}\r\n{t.Output}\r\nTerms: "
-                + string.Join("; ", t.TermEvidence.Select(e => $"{e.Canonical}: {e.Correct} correct / {e.Wrong} wrong"))
-                + $"\r\nReported/effective meaning: {t.Evaluation?.ReportedMeaning}/{t.Evaluation?.EffectiveMeaning}\r\n"
-                + string.Join("\r\n", t.Evaluation?.Warnings.Select(w => $"{w.Severity} {w.Category}: {w.ReferenceEvidence} → {w.OutputEvidence}: {w.Explanation}") ?? [])));
+        if (CurrentRun is null || _results.CurrentRow?.Tag is not string id) { _detail.Clear(); return; }
+        _detail.ShowCandidate(CurrentRun, id);
     }
 }

@@ -59,7 +59,7 @@ public class ExperimentWeightsFormTests
             using var form = new ExperimentsForm(settings, _ => throw new Exception("No network"), (_, _, _, _) => throw new Exception("No capture"), store, () => new ExperimentsFormTests.Lease());
             form.Show(); await form.LoadAsync(definition.Id); form.SetViewWeights(new(0, 0, 0, 0, 100));
             var grid = ExperimentsFormTests.All(form).OfType<DataGridView>().Single(g => g.AccessibleName == "Ranked results");
-            Assert.Equal("bad", grid.Rows[0].Tag); Assert.Equal("Major", grid.Rows[0].Cells[11].Value);
+            Assert.Equal("bad", grid.Rows[0].Tag); Assert.Equal("Major", grid.Rows[0].Cells["Warnings"].Value);
             grid.CurrentCell = grid.Rows[0].Cells[0]; form.SetViewWeights(new(0, 0, 100, 0, 0));
             Assert.Equal("bad", grid.CurrentRow!.Tag); Assert.Equal("good", grid.Rows[0].Tag);
             form.SetViewWeights(new(0, 0, 0, 0, 0)); Assert.All(grid.Rows.Cast<DataGridViewRow>(), r => Assert.Equal("—", r.Cells[0].Value));

@@ -72,7 +72,9 @@ public sealed class TranscriptionService(
                 (raw, token) => session.SelectFinalAsync(raw, cleanupToken => session.Speculation is null
                     ? InvokeCleanupAsync(raw, session.Settings.PostProcessor, cleanupToken)
                     : session.Speculation.FinishAsync(raw, session.Settings.PostProcessor, cleanupToken), token),
-                () => session.CleanupSelected));
+                () => session.CleanupSelected,
+                session.Persistence is null ? null : session.Id,
+                () => session.HistoryAudioRetained = true));
         if (snapshot.SpeculativeCleanup && snapshot.PostProcessor.Enabled && stream is not null)
         {
             created.Speculation = new SpeculativeCleanup(snapshot.PostProcessor, _postProcessor.ProcessAsync, created.Token, logError: _errorLogger.Log);
@@ -132,7 +134,9 @@ public sealed class TranscriptionService(
         Func<CancellationToken, Task<string>>? recognize = null,
         Task? persistence = null,
         Func<string, CancellationToken, Task<string>>? cleanup = null,
-        Func<bool>? cleanupSelected = null)
+        Func<bool>? cleanupSelected = null,
+        Guid? historyId = null,
+        Action? historyStarted = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(audioFilePath);
         ArgumentNullException.ThrowIfNull(settings);
@@ -140,12 +144,27 @@ public sealed class TranscriptionService(
         var metrics = SessionMetrics.Current ?? new SessionMetrics(settings.Provider.Type.ToString(), metricsSink);
         string? authoritativeRaw = null;
         var cleanupPending = false;
+        TranscriptionEntry? pendingEntry = null;
         using var metricsScope = metrics.Activate();
         try
         {
             var startedAt = DateTimeOffset.UtcNow;
             var processingStopwatch = Stopwatch.StartNew();
             var provider = ResolveProvider(settings.Provider);
+
+            if (settings.HistoryEnabled && historyId is not null)
+            {
+                if (persistence is not null) await persistence.WaitAsync(cancellationToken);
+                pendingEntry = new TranscriptionEntry(startedAt, "", null, provider.Name, language, 0, audioFilePath,
+                    RecordingDurationMs: settings.HistoryRecordingDurationEnabled && metrics.AudioDurationMs is { } recordedMs
+                        ? (long)Math.Round(recordedMs) : null,
+                    ConfigurationSnapshot: settings.HistoryConfigurationEnabled
+                        ? HistoryConfigurationSnapshot.Capture(settings, language,
+                            settings.PostProcessor.Enabled ? PostProcessorPresets.ResolveSystemPrompt(settings.PostProcessor) : null) : null,
+                    Id: historyId, Status: HistoryEntryStatus.Transcribing);
+                await _historyLogger.AppendAsync(pendingEntry, cancellationToken);
+                historyStarted?.Invoke();
+            }
 
             // Phase 1: Transcription
             PhaseChanged?.Invoke(ProcessingPhase.Transcribing);
@@ -159,8 +178,17 @@ public sealed class TranscriptionService(
             cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(rawText))
             {
+                await UpdatePendingAsync(HistoryEntryStatus.NoSpeech);
                 metrics.Publish(SessionOutcome.Empty);
                 return new TranscriptionResult(true, string.Empty, string.Empty);
+            }
+
+            if (pendingEntry is not null)
+            {
+                pendingEntry = pendingEntry with { RawText = rawText,
+                    TranscriptionDurationMs = transcriptionStopwatch.ElapsedMilliseconds,
+                    Status = settings.PostProcessor.Enabled ? HistoryEntryStatus.CleaningUp : HistoryEntryStatus.Transcribing };
+                await _historyLogger.UpdateAsync(pendingEntry, cancellationToken);
             }
 
             // Phase 2: Post-processing
@@ -208,13 +236,15 @@ public sealed class TranscriptionService(
                         postProcessingApplied ? PostProcessorPresets.ResolveSystemPrompt(settings.PostProcessor) : null) : null,
                 StopToResultDurationMs: stopToResultMs,
                 PostProcessingApplied: postProcessingApplied,
-                CaptureToResultDurationMs: captureToResultMs is { } captureMs ? (long)Math.Round(captureMs) : null);
+                CaptureToResultDurationMs: captureToResultMs is { } captureMs ? (long)Math.Round(captureMs) : null,
+                Id: historyId);
             cancellationToken.ThrowIfCancellationRequested();
             if (settings.HistoryEnabled)
             {
                 if (persistence is not null) await persistence.WaitAsync(cancellationToken);
                 metrics.Mark(TimingStage.HistoryStart);
-                await _historyLogger.AppendAsync(entry, cancellationToken);
+                if (pendingEntry is null) await _historyLogger.AppendAsync(entry, cancellationToken);
+                else await _historyLogger.UpdateAsync(entry, cancellationToken);
                 metrics.Mark(TimingStage.HistoryEnd);
             }
             metrics.Mark(TimingStage.Ready);
@@ -229,11 +259,13 @@ public sealed class TranscriptionService(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            await UpdatePendingAsync(HistoryEntryStatus.Cancelled);
             metrics.Publish(SessionOutcome.Cancelled);
             throw;
         }
         catch (Exception exception)
         {
+            await UpdatePendingAsync(HistoryEntryStatus.Failed);
             metrics.Publish(SessionOutcome.Failed);
             _errorLogger.Log(exception);
             try { _playError(); }
@@ -249,6 +281,15 @@ public sealed class TranscriptionService(
         finally
         {
             PhaseChanged?.Invoke(ProcessingPhase.None);
+        }
+
+        async Task UpdatePendingAsync(HistoryEntryStatus status)
+        {
+            if (pendingEntry is null) return;
+            // Persist terminal state even after dictation cancellation; keep this work bounded and owned.
+            using var saveDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            try { await _historyLogger.UpdateAsync(pendingEntry with { Status = status }, saveDeadline.Token); }
+            catch (Exception exception) { _errorLogger.Log(exception); }
         }
     }
 

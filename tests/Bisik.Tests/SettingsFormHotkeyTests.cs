@@ -26,6 +26,20 @@ public sealed class SettingsFormHotkeyTests : IDisposable
         });
     }
 
+    [Theory]
+    [InlineData(Keys.LWin, "Ctrl+Shift+Space")]
+    [InlineData(Keys.Control | Keys.LWin, "Ctrl+Win")]
+    [InlineData(Keys.Control | Keys.Enter, "Ctrl+Enter")]
+    public void PickerRejectsBareWindowsAndKeepsValidModifierCombinations(Keys key, string expected)
+    {
+        RunOnSta(() =>
+        {
+            using var form = new SettingsForm(null, null, new SettingsManager(_settingsDirectory));
+            var input = GetHotkeyTextBox(form); input.Text = "Ctrl+Shift+Space";
+            RaiseKeyEvents(input, key); Assert.Equal(expected, input.Text);
+        });
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_settingsDirectory))

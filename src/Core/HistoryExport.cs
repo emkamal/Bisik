@@ -27,6 +27,8 @@ public static class HistoryExport
         ("language", e => e.Language),
         ("configuration_snapshot", e => ConfigurationText(e.ConfigurationSnapshot)),
         ("audio_file_path", e => e.AudioFilePath ?? string.Empty),
+        ("id", e => e.Id?.ToString() ?? string.Empty),
+        ("status", e => e.Status.ToString()),
     ];
 
     public static string Format(IReadOnlyList<TranscriptionEntry> entries, HistoryCopyFormat format) => format switch

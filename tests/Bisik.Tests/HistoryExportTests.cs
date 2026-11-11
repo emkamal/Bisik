@@ -69,7 +69,7 @@ public sealed class HistoryExportTests
         Assert.Contains("mso-number-format:'0';white-space:pre-wrap\">1500</td>", fragment);
         Assert.StartsWith("<html>", Encoding.UTF8.GetString(bytes[offsets["StartHTML"]..]));
         Assert.Equal(bytes.Length, offsets["EndHTML"]);
-        Assert.Equal(14, fragment.Split("<td ").Length - 1);
+        Assert.Equal(16, fragment.Split("<td ").Length - 1);
     }
 
     [Fact]

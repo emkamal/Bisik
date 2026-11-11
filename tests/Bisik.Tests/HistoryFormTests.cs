@@ -21,7 +21,7 @@ public sealed class HistoryFormTests : IDisposable
         {
             using var form = new HistoryForm(new HistoryLogger(_directory));
             var grid = Field<DataGridView>(form, "_grid");
-            Assert.Equal(14, grid.Columns.Count);
+            Assert.Equal(16, grid.Columns.Count);
             Assert.True(grid.ShowCellToolTips);
             foreach (DataGridViewColumn column in grid.Columns)
             {
@@ -420,6 +420,29 @@ public sealed class HistoryFormTests : IDisposable
             Field<CheckBox>(form, "_historyEnabledCheckBox").Checked = false;
             Assert.False(recording.Enabled);
             Assert.False(config.Enabled);
+        });
+    }
+
+    [Fact]
+    public async Task In_place_stage_updates_keep_the_pending_row_selected()
+    {
+        var logger = new HistoryLogger(_directory);
+        var entry = Entry(DateTimeOffset.UtcNow, "") with { Id = Guid.NewGuid(), RawText = null, Status = HistoryEntryStatus.Transcribing };
+        await logger.AppendAsync(entry);
+        await RunOnStaAsync(async () =>
+        {
+            using var form = new HistoryForm(logger); form.Show();
+            var grid = Field<DataGridView>(form, "_grid");
+            await WaitUntilAsync(() => grid.Rows.Count == 1);
+            grid.CurrentCell = grid.Rows[0].Cells[2]; grid.Rows[0].Selected = true;
+            await logger.UpdateAsync(entry with { RawText = "raw", Status = HistoryEntryStatus.CleaningUp });
+            await WaitUntilAsync(() => Equals(grid.Rows[0].Cells[1].Value, "raw"));
+            Assert.Single(grid.SelectedRows.Cast<DataGridViewRow>());
+            await logger.UpdateAsync(entry with { RawText = "raw", Text = "edited", Status = HistoryEntryStatus.Completed });
+            await WaitUntilAsync(() => RowText(grid, 0) == "edited");
+            Assert.Single(grid.Rows.Cast<DataGridViewRow>());
+            Assert.Single(grid.SelectedRows.Cast<DataGridViewRow>());
+            Assert.Equal(2, grid.CurrentCell!.ColumnIndex);
         });
     }
 

@@ -181,3 +181,30 @@ Pipeline source validation: manual YAML parsed with PyYAML; helper command gener
 Final autonomous integration receipt: dotnet build Bisik.sln -p:BisikRegisterLatestBuild=false passed with zero warnings/errors; dotnet test Bisik.sln --no-build -p:BisikRegisterLatestBuild=false passed 366 tests with zero skips. Manual YAML parsed successfully. Final audit covers failed/skipped phase progress, saved drafts/native bounds, separate Settings test shutdown ownership and actual Stop-based segment overlap. All diff checks passed; no installed runtime/launcher or cloud execution was changed.
 
 Experiments follow-ups 23-25 (7 November 2026): full suite passed 371 tests, zero skips. Fake completion/STA tests cover automatic effort checks, explicit rejected-pair retries, saved evidence, edited model/prompt expansion, unchanged raw/timings, preserved prior runs/audio, setup reload, and all factor/B help buttons without weight changes. Release built with zero warnings/errors and was registered for the existing Start launcher; copied runtime hash matches Release, settings and stable launcher hashes remain unchanged. Live model compatibility probes and microphone acceptance were not run by the agent.
+
+Experiment workspace persistence (9 November 2026): `dotnet test Bisik.sln -p:BisikRegisterLatestBuild=false --no-restore` passed 379 tests, zero failures/skips. New isolated DPAPI/STA tests recreate the window and store after window close and the application shutdown close path, checking all editable fields, uncommitted cell edits, multiline prompts/names, selected prompt, unfinished drafts, unchecked identifiers, judge, limits, retry/audio options, weights and connection identity. Additional checks cover saved raw with later setup edits, unchanged original runs, unattached draft prompt text, encrypted credentials/headers/content, cancelled writes and temporary-file cleanup, save failure with close retry, and preserving unreadable snapshots. These tests make no provider requests and do not change personal experiment data. Actual installed-app exit/reopen remains a manual check; exit Bisik and reopen its existing Start pin to load the updated build. Changes remain uncommitted.
+
+Experiment result prompt column (9 November 2026): full suite passed 379 tests, zero failures/skips; Release built with zero warnings/errors and was registered for the existing Start launcher. An isolated native-form smoke check in ignored artifacts/prompt-column-smoke verified duplicate candidate labels with different saved prompts, full prompt tooltips and selected-row details, baseline labeling, later Setup edits, reranking, multiline CSV/table/HTML exports and unmatched imported-prompt fallback without provider or capture calls. Registered runtime DLL hash matches Release; active settings and stable launcher hashes are unchanged. Installed-app visual acceptance remains manual; exit Bisik and reopen the existing Start pin to load the new column. Changes remain uncommitted.
+
+Settings interaction fixes (9 November 2026): full suite passed 389 tests, zero failures/skips. After the final popup-expiration change, 12 focused settings/help/weights tests passed. Regression checks cover native Enter preprocessing and newline insertion without Apply/close, popup toggle/hide/deactivate/close lifetime, background Settings allowing recording, busy Apply/test guards, registered shortcut capture and rejecting a bare Windows key. An isolated native preview in ignored artifacts/settings-ui-check showed complete icons and wrapped, dismissible help; physical microphone/global-toggle acceptance was not run. Release built with zero warnings/errors and was registered for the existing Start launcher; registered DLL matches Release, active settings and stable launcher hashes are unchanged. Exit Bisik and reopen Start to load these fixes. Changes remain uncommitted.
+
+Overlay, progressive History and vocabulary improvements (11 November 2026): Release built
+with zero warnings/errors and registered for the existing Start launcher; registered DLL
+matches Release, and active settings/stable launcher hashes are unchanged. Eleven new
+regression cases pass: persisted audio before recognition, raw before cleanup, one stable
+row identity, terminal audio/raw retention, disabled History and failed persistence,
+deleted-row suppression/legacy duplicates, selection retention, structured vocabulary
+round trips/active-cell commit/Add-term focus/bounds, and quiet-speech display scaling.
+The final full run passed 399 of 400 tests (zero skips); the existing
+SettingsManagerTests.Load_should_accept_legacy_plaintext_api_keys_and_encrypt_them_on_next_save
+failed with File.Replace's "Unable to remove the file to be replaced." Earlier full runs
+had varying temporary-file access failures in settings/experiment persistence. The 24
+focused settings-manager/History checks passed separately. Serial test collections and an
+isolated temporary directory did not eliminate the intermittent failure. Final receipt:
+artifacts/ui-improvements/ui-improvements-isolated.trx. SettingsManager source was not changed.
+
+Computer Use inspected isolated native Settings/vocabulary, original-audio Play/Stop and
+status-rendering previews. Play started a synthetic WAV and returned to Play on completion.
+Physical microphone speech, global hotkey/installed-app acceptance and multiple physical
+DPI settings were not run. No provider calls or personal settings/history changes were made.
+Exit Bisik and reopen its existing Start pin to load the updated Release; edits are uncommitted.

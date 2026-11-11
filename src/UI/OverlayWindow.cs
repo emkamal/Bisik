@@ -29,14 +29,14 @@ public enum OverlayProcessingPhase
 public sealed class OverlayWindow : Form
 {
     // --- Geometry (content sizes exclude the shadow padding that surrounds them) ---
-    private const int ShadowPadding = 16;
-    private const int BarScreenMargin = 16;
+    private const int ShadowPadding = 8;
+    private const int BarScreenMargin = 10;
     private const int CursorOffsetX = 20;
     private const int CursorOffsetY = 20;
 
-    private static readonly Size DotContentSize = new(98, 38);
-    private static readonly Size BarContentSize = new(300, 44);
-    private static readonly Size ProcessingContentSize = new(110, 44);
+    private static readonly Size DotContentSize = new(152, 30);
+    private static readonly Size BarContentSize = new(184, 30);
+    private static readonly Size ProcessingContentSize = new(152, 30);
 
     // --- Animation tuning ---
     private const int FrameIntervalMs = 16; // ~60 fps
@@ -44,8 +44,8 @@ public sealed class OverlayWindow : Form
     private const double LevelReleaseRate = 9d;
     private const double OpacityRate = 16d;
     private const double WaveShiftIntervalSeconds = 0.045d;
-    private const int ShadowLayers = 9;
-    private const double ShadowBaseAlpha = 26d;
+    private const int ShadowLayers = 4;
+    private const double ShadowBaseAlpha = 18d;
 
     // --- Win32 layered-window plumbing ---
     private const uint SwpNoActivate = 0x0010;
@@ -73,6 +73,10 @@ public sealed class OverlayWindow : Form
     private OverlayProcessingPhase _processingPhase;
     private Point _frozenLocation;
     private bool _locationFrozen;
+    private readonly Font _statusFont = new("Segoe UI", 9f);
+    public string StatusText => Mode == OverlayWindowMode.Processing
+        ? _processingPhase == OverlayProcessingPhase.Transcribing ? "Transcribing…" : "Cleaning up…"
+        : "Recording";
 
     public OverlayWindow()
     {
@@ -122,12 +126,20 @@ public sealed class OverlayWindow : Form
 
     public void SetLevel(double level)
     {
-        _targetLevel = Math.Clamp(level, 0d, 1d);
+        _targetLevel = DisplayLevel(level);
+    }
+
+    internal static double DisplayLevel(double peak)
+    {
+        if (!double.IsFinite(peak) || peak <= 0) return 0;
+        // Display quiet speech on a dB scale. Capture gain and VAD still use the original samples.
+        return Math.Clamp((20 * Math.Log10(Math.Min(peak, 1)) + 60) / 45, 0, 1);
     }
 
     public void ShowDotNearCursor()
     {
         Mode = OverlayWindowMode.DotNearCursor;
+        ResetMeter();
         BeginShow(DotContentSize);
         UpdateDotLocation();
         RenderFrame();
@@ -137,6 +149,7 @@ public sealed class OverlayWindow : Form
     {
         _barAtBottom = atBottom;
         Mode = OverlayWindowMode.BarOverlay;
+        ResetMeter();
         BeginShow(BarContentSize);
         UpdateBarLocation();
         RenderFrame();
@@ -181,13 +194,21 @@ public sealed class OverlayWindow : Form
         if (disposing)
         {
             _renderTimer.Dispose();
+            _statusFont.Dispose();
         }
 
         base.Dispose(disposing);
     }
 
-    private static Size AddPadding(Size content)
-        => new(content.Width + (ShadowPadding * 2), content.Height + (ShadowPadding * 2));
+    private Size AddPadding(Size content)
+        => new((int)Math.Ceiling((content.Width + ShadowPadding * 2) * DeviceDpi / 96d),
+            (int)Math.Ceiling((content.Height + ShadowPadding * 2) * DeviceDpi / 96d));
+
+    private void ResetMeter()
+    {
+        _targetLevel = _smoothedLevel = _waveAccumulator = 0;
+        Array.Clear(_waveBars);
+    }
 
     private void BeginShow(Size contentSize)
     {
@@ -278,9 +299,9 @@ public sealed class OverlayWindow : Form
         }
 
         var cursor = Cursor.Position;
-        Location = new Point(
-            (cursor.X + CursorOffsetX) - ShadowPadding,
-            (cursor.Y + CursorOffsetY) - ShadowPadding);
+        var area = Screen.FromPoint(cursor).WorkingArea;
+        Location = new Point(Math.Clamp(cursor.X + CursorOffsetX, area.Left, Math.Max(area.Left, area.Right - Width)),
+            Math.Clamp(cursor.Y + CursorOffsetY, area.Top, Math.Max(area.Top, area.Bottom - Height)));
     }
 
     private void UpdateBarLocation()
@@ -302,7 +323,7 @@ public sealed class OverlayWindow : Form
     {
         var screen = Screen.FromPoint(_locationFrozen ? _frozenLocation : Cursor.Position);
         var x = screen.WorkingArea.Left + ((screen.WorkingArea.Width - Width) / 2);
-        var y = screen.WorkingArea.Bottom - Height - BarScreenMargin - 48;
+        var y = screen.WorkingArea.Bottom - Height - BarScreenMargin;
         Location = new Point(x, y);
     }
 
@@ -331,12 +352,14 @@ public sealed class OverlayWindow : Form
             graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
             graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
             graphics.Clear(Color.Transparent);
+            var scale = DeviceDpi / 96f;
+            graphics.ScaleTransform(scale, scale);
 
             var content = new RectangleF(
                 ShadowPadding,
                 ShadowPadding,
-                width - (ShadowPadding * 2),
-                height - (ShadowPadding * 2));
+                width / scale - (ShadowPadding * 2),
+                height / scale - (ShadowPadding * 2));
 
             switch (Mode)
             {
@@ -361,7 +384,8 @@ public sealed class OverlayWindow : Form
         var accent = Color.FromArgb(235, 226, 78, 70); // warm coral-red
         DrawShell(graphics, content, accent);
 
-        var meter = RectangleF.Inflate(content, -16f, -12f);
+        DrawStatus(graphics, content, 68f);
+        var meter = new RectangleF(content.Left + 10, content.Top + 6, 48, content.Height - 12);
         EnsureWaveBars(meter.Width);
 
         var barCount = _waveBars.Length;
@@ -378,7 +402,7 @@ public sealed class OverlayWindow : Form
         for (var i = 0; i < barCount; i++)
         {
             var magnitude = (float)Math.Clamp(_waveBars[i], 0d, 1d);
-            var half = Math.Max(1.6f, magnitude * maxHalf);
+            var half = Math.Max(1f, magnitude * maxHalf);
             var x = meter.Left + (i * (barWidth + gap));
             var rect = new RectangleF(x, centerY - half, barWidth, half * 2f);
 
@@ -396,7 +420,8 @@ public sealed class OverlayWindow : Form
         var accent = Color.FromArgb(235, 224, 168, 78); // amber
         DrawShell(graphics, content, accent);
 
-        var center = new PointF(content.Left + (content.Width / 2f), content.Top + (content.Height / 2f));
+        DrawStatus(graphics, content, 38f);
+        var center = new PointF(content.Left + 21f, content.Top + (content.Height / 2f));
         var radius = (Math.Min(content.Width, content.Height) / 2f) - 8f;
         var diameter = radius * 2f;
         var arcRect = new RectangleF(center.X - radius, center.Y - radius, diameter, diameter);
@@ -429,7 +454,8 @@ public sealed class OverlayWindow : Form
         var accent = Color.FromArgb(235, 96, 178, 180); // teal
         DrawShell(graphics, content, accent);
 
-        var center = new PointF(content.Left + (content.Width / 2f), content.Top + (content.Height / 2f));
+        DrawStatus(graphics, content, 38f);
+        var center = new PointF(content.Left + 21f, content.Top + (content.Height / 2f));
         var orbit = (Math.Min(content.Width, content.Height) / 2f) - 9f;
 
         // Pulsing core.
@@ -458,7 +484,7 @@ public sealed class OverlayWindow : Form
 
     private void DrawShell(Graphics graphics, RectangleF content, Color accent)
     {
-        const float radius = 16f;
+        const float radius = 14f;
 
         DrawSoftShadow(graphics, content, radius);
 
@@ -484,6 +510,14 @@ public sealed class OverlayWindow : Form
             using var accentPath = RoundedRect(RectangleF.Inflate(content, -1.4f, -1.4f), radius - 1.4f);
             graphics.DrawPath(accentPen, accentPath);
         }
+    }
+
+    private void DrawStatus(Graphics graphics, RectangleF content, float left)
+    {
+        using var brush = new SolidBrush(Color.FromArgb(245, 239, 241, 245));
+        using var format = new StringFormat { LineAlignment = StringAlignment.Center, FormatFlags = StringFormatFlags.NoWrap };
+        graphics.DrawString(StatusText, _statusFont, brush,
+            new RectangleF(content.Left + left, content.Top, content.Width - left - 8, content.Height), format);
     }
 
     private static void DrawSoftShadow(Graphics graphics, RectangleF content, float radius)
@@ -526,10 +560,7 @@ public sealed class OverlayWindow : Form
             _waveBars[i] = _waveBars[i + 1];
         }
 
-        // A faint idle shimmer keeps the meter visibly alive even in silence.
-        var idle = 0.10d + (0.05d * Math.Sin(_timeSeconds * 5.5d));
-        var driven = _smoothedLevel * (0.85d + (0.30d * _random.NextDouble()));
-        _waveBars[^1] = Math.Clamp(Math.Max(idle, driven), 0d, 1d);
+        _waveBars[^1] = _smoothedLevel;
     }
 
     private void EnsureWaveBars(float meterWidth)
@@ -622,8 +653,6 @@ public sealed class OverlayWindow : Form
         path.CloseFigure();
         return path;
     }
-
-    private readonly Random _random = new();
 
     // ----------------------------------------------------------------------------------
     //  Win32 interop

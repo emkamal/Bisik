@@ -182,6 +182,15 @@ static class Program
             _recordingLimitTimer.Tick += async (_, _) => await CompleteRecordingAndTranscriptionAsync();
             _messageWindow.HotkeyPressed += async (_, hotkeyId) =>
             {
+                var gesture = hotkeyId switch
+                {
+                    MainHotkeyId => _hotkeyGesture,
+                    InsertLatestHotkeyId => HotkeyManager.ParseHotkey(_settings.InsertLatestHotkey),
+                    FastOutputHotkeyId => HotkeyManager.ParseHotkey(_settings.FastOutputHotkey),
+                    _ => default,
+                };
+                // Registered combinations arrive as WM_HOTKEY, bypassing the textbox's KeyDown.
+                if (_settingsForm?.TryCaptureHotkey(gesture) == true) return;
                 if (hotkeyId == MainHotkeyId)
                 {
                     await HandleRegisteredHotkeyAsync();
@@ -239,7 +248,9 @@ static class Program
                         audioRecorder: _audioRecorder,
                         transcriptionService: _transcriptionService,
                         settingsManager: _settingsManager,
-                        serviceFactory: CreateTranscriptionService);
+                        serviceFactory: CreateTranscriptionService,
+                        canRunOperation: () => !_isShuttingDown && !_experimentOperation.IsActive && _sessionCancellation is null
+                            && !_processing && !_vadMonitoringEnabled && _settingsTestDrain.IsCompleted && _recoveryTask.IsCompleted);
                     // React immediately to both Apply and OK so changes like deployment name,
                     // hotkey, endpoint, etc. take effect without requiring the form to close.
                     _settingsForm.SettingsApplied += ApplySettingsAndRebuildProviders;
@@ -289,7 +300,8 @@ static class Program
                         (settings, definition, token, progress) => new ExperimentSession(new AudioRecorder(settings.Audio),
                             CreateSuiteService(settings), settings, definition, token, progress), new ExperimentStore(),
                         () => _isShuttingDown || _sessionCancellation is not null || _vadMonitoringEnabled || _processing
-                            || _settingsForm is { Visible: true } || !_settingsTestDrain.IsCompleted || !_recoveryTask.IsCompleted ? null : _experimentOperation.TryEnter());
+                            || _settingsForm is { Visible: true } || !_settingsTestDrain.IsCompleted || !_recoveryTask.IsCompleted ? null : _experimentOperation.TryEnter(),
+                        ex => HandleRuntimeException(ex, "Experiment workspace"));
                     _experimentsForm.FormClosed += (_, _) => { _experimentsForm = null; client.Dispose(); if (_experimentHttpClient == client) _experimentHttpClient = null; };
                     _experimentsForm.Show();
                 }
@@ -321,6 +333,8 @@ static class Program
         private void ApplySettingsAndRebuildProviders(AppSettings fresh)
         {
             if (_experimentOperation.IsActive) throw new InvalidOperationException("Finish Experiments before applying settings.");
+            if (_sessionCancellation is not null || _processing || _vadMonitoringEnabled)
+                throw new InvalidOperationException("Stop or cancel dictation before applying settings.");
             var gesture = HotkeyManager.ParseHotkey(fresh.Hotkey);
             _hotkeyManager.UnregisterAll();
             try
@@ -448,7 +462,7 @@ static class Program
             _audioRecorder.StopVoiceActivityMonitoring();
             try { if (_settingsForm is not null) await _settingsForm.CancelConnectionTestAsync(); await _settingsTestDrain; }
             catch (Exception ex) { _errorLogger.Log(ex); }
-            try { if (_experimentsForm is not null) await _experimentsForm.DrainAsync(); }
+            try { if (_experimentsForm is not null) await _experimentsForm.CloseAsync(); }
             catch (Exception ex) { _errorLogger.Log(ex); }
             try
             {
@@ -502,7 +516,7 @@ static class Program
 
         private async Task HandleRegisteredHotkeyAsync()
         {
-            if (_isShuttingDown || _experimentOperation.IsActive || !_settingsTestDrain.IsCompleted || _settingsForm is { Visible: true }) return;
+            if (SettingsBlocksRecording()) return;
             try
             {
                 if (_processing)
@@ -535,6 +549,20 @@ static class Program
                 }
             }
             catch (Exception exception) { HandleCaptureFailure(exception); }
+        }
+
+        private bool SettingsBlocksRecording()
+        {
+            if (_isShuttingDown || _experimentOperation.IsActive || !_settingsTestDrain.IsCompleted
+                || _settingsForm is { ConnectionTestTask.IsCompleted: false }) return true;
+            // An open background Settings window must not silently disable global dictation.
+            // Stops/cancellation remain available if the user returns to Settings mid-session.
+            if (_pipelineSession is null && !_vadMonitoringEnabled && _settingsForm is { BlocksNewRecording: true })
+            {
+                _trayIcon.ShowBalloon("Bisik", "Switch to the field you want to dictate into. Recording is paused while editing Settings.");
+                return true;
+            }
+            return false;
         }
 
         private void StartRecording()
@@ -645,7 +673,7 @@ static class Program
 
         private async Task UseFastOutputAsync()
         {
-            if (_isShuttingDown || _experimentOperation.IsActive || !_settingsTestDrain.IsCompleted || _settingsForm is { Visible: true }) return;
+            if (SettingsBlocksRecording()) return;
             if (_processing)
             {
                 if (_pipelineSession?.HasFinalTranscript == true) _pipelineSession.UseTranscriptNow();
@@ -752,7 +780,6 @@ static class Program
             _pipelineSession!.RequestStop();
             CapturedRecording? captured = null;
             Task<RecordedAudio>? persistence = null;
-            var retainAudio = false;
             try
             {
                 _overlayWindow.ShowProcessingOverlay(OverlayProcessingPhase.Transcribing);
@@ -762,7 +789,6 @@ static class Program
                 using (var reader = new NAudio.Wave.WaveFileReader(new MemoryStream(captured.WavData)))
                     metrics.AudioDurationMs = reader.TotalTime.TotalMilliseconds;
                 var result = await _pipelineSession!.CompleteAsync(captured, persistence);
-                retainAudio = settings.HistoryEnabled && result.Succeeded && !string.IsNullOrWhiteSpace(result.RawText);
                 cancellation.Token.ThrowIfCancellationRequested();
                 if (!result.Succeeded)
                 {
@@ -812,7 +838,7 @@ static class Program
                     catch (OperationCanceledException) { }
                     catch (Exception exception) { _errorLogger.Log(exception); }
                 }
-                if (!retainAudio && captured is not null)
+                if (_pipelineSession?.HistoryAudioRetained != true && captured is not null)
                 {
                     try { File.Delete(captured.FilePath); }
                     catch (Exception exception) { _errorLogger.Log(exception); }

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Bisik.Models;
 
@@ -9,6 +10,7 @@ public sealed class ExperimentStore
     private readonly string _root;
     private readonly SemaphoreSlim _writes = new(1, 1);
     private sealed record Envelope(int Version, string Hash, JsonElement Data);
+    private sealed record WorkspaceSnapshot(ExperimentWorkspace Workspace, AppSettings Connection);
     public ExperimentStore(string? root = null) => _root = Path.GetFullPath(root ?? Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bisik", "experiments"));
     public string DirectoryFor(Guid id) => id != Guid.Empty ? Path.Combine(_root, id.ToString("N")) : throw new ArgumentException("Empty ID.");
@@ -16,6 +18,32 @@ public sealed class ExperimentStore
         .Select(Path.GetFileName).Where(n => Guid.TryParseExact(n, "N", out _)).Select(n => Guid.Parse(n!)) : [];
     public string? AudioPathFor(Guid id) => new[] { ".wav", ".mp3" }.Select(extension => Path.Combine(DirectoryFor(id), "recording" + extension))
         .FirstOrDefault(File.Exists);
+
+    public async Task SaveWorkspaceAsync(ExperimentWorkspace workspace, AppSettings connection, CancellationToken ct)
+    {
+        workspace.Validate();
+        var snapshot = new WorkspaceSnapshot(workspace, connection.Snapshot());
+        await _writes.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            // One protected, atomic snapshot keeps connection changes and editable rows together.
+            var protectedData = await Task.Run(() => ProtectedData.Protect(
+                JsonSerializer.SerializeToUtf8Bytes(snapshot), null, DataProtectionScope.CurrentUser), ct).ConfigureAwait(false);
+            await WriteAsync(_root, "workspace.json", Convert.ToBase64String(protectedData), ct).ConfigureAwait(false);
+        }
+        finally { _writes.Release(); }
+    }
+
+    public async Task<(ExperimentWorkspace Workspace, AppSettings Connection)?> LoadWorkspaceAsync(CancellationToken ct)
+    {
+        if (!File.Exists(Path.Combine(_root, "workspace.json"))) return null;
+        var data = await ReadAsync<string>(_root, "workspace.json", ct).ConfigureAwait(false);
+        var snapshot = await Task.Run(() => JsonSerializer.Deserialize<WorkspaceSnapshot>(ProtectedData.Unprotect(
+            Convert.FromBase64String(data), null, DataProtectionScope.CurrentUser)), ct).ConfigureAwait(false)
+            ?? throw new InvalidDataException("Empty experiment workspace.");
+        snapshot.Workspace.Validate();
+        return (snapshot.Workspace, snapshot.Connection);
+    }
 
     public async Task SaveSetupAsync(ExperimentDefinition definition, AppSettings connection, CancellationToken ct)
     {
@@ -79,9 +107,10 @@ public sealed class ExperimentStore
         finally { if (Directory.Exists(scratch)) Directory.Delete(scratch, true); }
     }
 
-    private async Task WriteAsync<T>(Guid id, string name, T value, CancellationToken ct)
+    private Task WriteAsync<T>(Guid id, string name, T value, CancellationToken ct) => WriteAsync(DirectoryFor(id), name, value, ct);
+    private async Task WriteAsync<T>(string directory, string name, T value, CancellationToken ct)
     {
-        var directory = DirectoryFor(id); Directory.CreateDirectory(directory);
+        Directory.CreateDirectory(directory);
         var data = JsonSerializer.SerializeToElement(value);
         var envelope = new Envelope(1, ExperimentIdentity.Hash("stored-v1", data.GetRawText()), data);
         var temp = Path.Combine(directory, $"{name}.{Guid.NewGuid():N}.tmp");
@@ -93,9 +122,10 @@ public sealed class ExperimentStore
         }
         finally { File.Delete(temp); }
     }
-    private async Task<T> ReadAsync<T>(Guid id, string name, CancellationToken ct)
+    private Task<T> ReadAsync<T>(Guid id, string name, CancellationToken ct) => ReadAsync<T>(DirectoryFor(id), name, ct);
+    private async Task<T> ReadAsync<T>(string directory, string name, CancellationToken ct)
     {
-        var path = Path.Combine(DirectoryFor(id), name);
+        var path = Path.Combine(directory, name);
         if (new FileInfo(path).Length > 32 * 1024 * 1024) throw new InvalidDataException("Oversized experiment file.");
         var envelope = JsonSerializer.Deserialize<Envelope>(await File.ReadAllTextAsync(path, ct).ConfigureAwait(false));
         if (envelope is null || envelope.Version != 1 || envelope.Hash != ExperimentIdentity.Hash("stored-v1", envelope.Data.GetRawText()))

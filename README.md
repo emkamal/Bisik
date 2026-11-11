@@ -40,6 +40,8 @@ Every settings field has a small **ⓘ** help button. Hover over it, click it, o
 
 Settings cannot open during dictation. Stop listening first. Language and post-processor tray choices affect the next recording. Apply rebuilds providers and registers the new hotkey immediately.
 
+An open Settings window allows dictation when you switch to another app. Recording pauses while editing Settings; Apply and connection tests wait until dictation/listening finishes. Multiline fields accept Enter as a new line. Field help supports hover, keyboard focus and click, and dismisses on a second click, focus loss, window hide or close.
+
 ## Recording and insertion
 
 - Toggle: hotkey starts; hotkey stops and transcribes. Push-to-talk: hold, then release to transcribe. Optional VAD is armed/disarmed by the hotkey, with a short pre-roll buffer for speech onset.
@@ -127,7 +129,7 @@ clipboard access denied (5), so successful acceptance remains unverified. No ins
 Persistent user data is under %APPDATA%\Bisik\:
 
 - settings.json: keys, endpoints and sensitive headers encrypted using Windows DPAPI for the current user. Legacy plaintext secret fields migrate on load/save; undecryptable ciphertext is preserved. API-key UI fields are masked.
-- history.jsonl and recorded audio: retained when history is enabled and a successful nonempty result is logged. These contain dictation content. Turn history off if retention is unwanted. Empty/failed/no-history recordings and Test Connection recordings are removed.
+- history.jsonl and recorded audio: retained when History is enabled and the recorded-audio row is saved, including failed, cancelled and no-speech outcomes. These contain dictation content. Turn History off if retention is unwanted. Recordings without a saved History row and Test Connection recordings are removed.
 - error.log: timestamps and exception stack traces with credential redaction. Provider failures report safe status/error identifiers instead of raw response bodies.
 - settings.json.bad: an encrypted recovery copy if malformed settings were replaced with defaults.
 
@@ -142,6 +144,14 @@ to `history.jsonl`, including file replacement or deletion. New entries remain n
 search, provider/language filters, selected rows and reading position are preserved. Updates
 also work while minimized and do not bring the window forward. Temporary file-access failures
 leave the displayed rows intact, show a warning, and retry automatically.
+
+When History is enabled, a dictation row appears as soon as recording has stopped and its
+audio file is saved. **Status** shows Transcribing, Cleaning up, or the final outcome.
+Raw text appears as soon as recognition finishes; Final Text appears when output is selected.
+The **Audio** column plays the original recording; click **Stop** to end playback. Missing
+files show Unavailable. Failed, cancelled and no-speech dictations keep saved audio, and
+cleanup failures also keep completed raw text. Disabling History prevents this retention.
+New rows have a stable ID; JSONL revisions are collapsed into one row when read or exported.
 
 Hover over any column header for its meaning, timing boundaries and unavailable-value behavior.
 Cell tooltips remain available for long values.
@@ -248,11 +258,15 @@ non-inserting verification. Test/build receipts for this setup are under `artifa
 
 Tray > Experiments opens one native modeless window. Paste a reference, review identifier suggestions (unchecked until accepted), add named cleanup prompts and candidate deployment/model/effort rows, and select one fixed judge. `default` omits effort; `none` explicitly requests none. Start and Rerun check unknown pairs automatically before running; Verify unknown efforts can retry failed checks explicitly. Compatibility is exact API/model evidence, not proof of deployment entitlement. Every successful candidate receives the identical single raw take. Experiments never insert/copy automatically, apply a winner, update normal history/latest results or change active settings. Active recording/batches exclude normal dictation, recovery insertion, Settings tests and Apply; an idle window does not exclude dictation.
 
+Closing Experiments or exiting Bisik automatically saves the current workspace, including candidate rows and efforts, named prompts and unfinished edits, reference, checked and unchecked identifiers, fixed judge, repeats, limits, retry/audio options and scoring weights. Reopening Experiments restores that configuration and the selected saved raw run without making requests. No Save setup click or completed run is required. The workspace and its connection are stored together in `%APPDATA%\Bisik\experiments\workspace.json`, protected with Windows DPAPI for the current user. Saved runs keep their original setup; later edits remain ready for a new run or Rerun saved raw.
+
 Start listens immediately while recognition connects; Done drains capture and final buffers. The reference remains scrollable/selectable. Real microphone levels drive quiet hints; silence does not stop a recording. Defaults: five-minute capture, five-second initial quiet hint, 120-second shared recognition after Stop and independently bounded 120-second trials; one to five randomized rounds, at most 100 cleanup calls. All generation precedes evaluation. The raw baseline costs no cleanup request. Judging is a separate call per distinct reference/output/terms/rubric/judge configuration; explicit probes and optional transient retries add calls. One sample is provisional evidence for that script/take, not universal superiority; small-sample p95 is not a reliable tail estimate.
 
 Scoring v1 uses NFKC word normalization (bounded to 4096 tokens), Wording = 100 × max(0, 1 − WER). Numbers/negation stay significant. Reviewed identifiers use exact ordinal canonical case versus configured wrong aliases/case variants; longest matches win, ambiguous aliases are flagged, absent required terms score zero. Empty term lists make Identifiers unavailable. The blinded fixed judge reports independent meaning/readability 0–100 and bounded evidence. Major/extreme semantic evidence caps effective meaning at 30/10, while preserving reported scores and readability. Warnings never exclude a valid row.
 
 Repeat wording/identifier factors average valid generated samples; meaning/readability average valid judged samples with per-sample caps. Speed uses median valid cleanup duration. Estimated Stop→final = shared measured Stop→raw + measured cleanup (including retries/parsing), excluding matrix queueing, recording, judge traffic and insertion. Speed = 100 × B/(B+t), default B=5 seconds. Default relative weights: Wording 5, Identifiers 25, Meaning 40, Readability 15, Speed 15. Missing positive-weight factors leave a row unranked; measured zero is valid. All-zero weights have no winner. Displayed 0.1-point ties share rank. The weights popup reranks cached scores immediately without requests and checkpoints the view preferences.
+
+Results show each candidate's saved prompt name beside its label; hover the prompt cell or select the row to read the full prompt. The raw transcript row has no cleanup prompt. Copied CSV/Excel tables include both the prompt name and full system prompt.
 
 Versioned reference/raw/prompts/results/receipts live in `%APPDATA%\Bisik\experiments\<id>`, with the connection in a separate DPAPI settings snapshot. Audio retention defaults off; only explicit retention copies audio, and owned capture temporaries are deleted. Interrupted checkpoints reopen as interrupted. Copy JSON/CSV/Excel tables and Export are explicit; these contain user content and prompts but exclude keys/endpoints/headers. Imported results can be inspected without credentials; rerunning requires the matching available connection. Treat exported content as private.
 
@@ -266,7 +280,19 @@ The definition uses the public ExperimentDefinition JSON schema; the take fixtur
 
 Normal dictation cleanup failure/deadline now retains authoritative final raw text with the original failure status. It never automatically copies/inserts it. Use the labelled tray Review recovered raw text or Insert recovered raw text command; explicit insertion captures and validates a new target. User cancellation, shutdown, partial STT and completed fast selection do not automatically recover.
 
-Optional cleanup vocabulary: Post-Processor > Vocabulary profile accepts canonical | context | comma-separated variants per line. The editable ABB template is optional; both empty fields retain legacy prompts. Profiles append after each preset, preserve ordinary happy, and distinguish C# APIs from tool names. Profiles are separate from experiment evaluation terms, appear in safe history snapshots, and invalidate cleanup/speculation identity while leaving exact reasoning capability evidence unchanged.
+Settings opens in a larger, resizable window, constrained to the monitor's working area. The
+recording indicator is a compact pill with a scrolling microphone meter and **Recording** text;
+processing pills show **Transcribing…** and **Cleaning up…** beside their animations. The meter
+uses a display-only dB scale to show ordinary quiet speech, without changing capture or VAD.
+Silence stays flat, and the overlay remains click-through and does not take focus.
+
+Optional cleanup vocabulary: **Settings > Vocabulary** offers a profile name and separate
+columns for canonical spelling, context, and comma-separated variants. Add/remove rows or
+load the editable ABB template; inline feedback identifies invalid entries. Apply/OK commits
+the active cell and saves the profile. Clear the name and table to omit guidance. Existing
+profiles load into the table automatically. Profiles append after each preset, preserve
+ordinary happy, and distinguish C# APIs from tool names. They remain separate from experiment
+evaluation terms and leave exact reasoning capability evidence unchanged.
 
 Recognition context is optional and bounded (1024-character domain prompt, 32 keywords, language hint). Exact model/API/transport field evidence controls emission; changing the route invalidates it. The explicit realtime switch selects transport and never forces delay. Known gpt-realtime-whisper retains language/delay but does not receive prompt/keywords. New aliases require explicit verified fields; multipart emits new fields only with matching evidence. Context is included in snapshots and warm-slot identity. Do not inject the reference script. Current live Azure hint/model contracts remain unverified; [Realtime transcription](https://developers.openai.com/api/docs/guides/realtime-transcription) describes OpenAI contracts, not Azure entitlement.
 

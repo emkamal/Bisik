@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Bisik.Core;
 using Bisik.Models;
+using NAudio.Wave;
 
 namespace Bisik.UI;
 
@@ -31,6 +32,9 @@ public sealed class HistoryForm : Form
     private bool _resourcesDisposed;
     private DataGridViewCell? _contextCell;
     private bool _suppressFilterRefresh;
+    private WaveOutEvent? _player;
+    private AudioFileReader? _playbackAudio;
+    private string? _playingPath;
 
     public HistoryForm()
         : this(historyLogger: null)
@@ -47,6 +51,8 @@ public sealed class HistoryForm : Form
         _historyLogger = historyLogger ?? new HistoryLogger();
         _writeClipboard = writeClipboard;
         Text = "Bisik History";
+        AutoScaleDimensions = new SizeF(96, 96);
+        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(900, 520);
         Size = new Size(1100, 640);
@@ -134,6 +140,7 @@ public sealed class HistoryForm : Form
             MultiSelect = true,
             ClipboardCopyMode = DataGridViewClipboardCopyMode.Disable,
             DataSource = _rows,
+            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize,
         };
         _grid.SelectionChanged += (_, _) =>
         {
@@ -156,6 +163,29 @@ public sealed class HistoryForm : Form
         _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.Language), "Language", 110));
         _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.Configuration), "Configuration snapshot", 300));
         _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.AudioFilePath), "Audio file", 200));
+        _grid.Columns.Add(new DataGridViewButtonColumn
+        {
+            Name = "Playback", Width = 90,
+            HeaderCell = new DataGridViewColumnHeaderCell { ToolTipText = "Play the original recording. Click Stop to end playback. Missing recordings cannot be played." },
+            HeaderText = "Audio",
+            SortMode = DataGridViewColumnSortMode.NotSortable,
+        });
+        _grid.Columns.Add(CreateTextColumn(nameof(HistoryRow.Status), "Status", 120));
+        _grid.Columns["Playback"].DisplayIndex = 1;
+        _grid.Columns[_grid.Columns.Count - 1].DisplayIndex = 2;
+        _grid.CellFormatting += (_, e) =>
+        {
+            if (e.RowIndex < 0 || _grid.Columns[e.ColumnIndex].Name != "Playback") return;
+            var path = (_grid.Rows[e.RowIndex].DataBoundItem as HistoryRow)?.Entry.AudioFilePath;
+            e.Value = path == _playingPath && _player is not null ? "Stop"
+                : File.Exists(path) ? "Play" : "Unavailable";
+            e.FormattingApplied = true;
+        };
+        _grid.CellContentClick += (_, e) =>
+        {
+            if (e.RowIndex >= 0 && _grid.Columns[e.ColumnIndex].Name == "Playback"
+                && _grid.Rows[e.RowIndex].DataBoundItem is HistoryRow row) TogglePlayback(row.Entry.AudioFilePath);
+        };
         AddCopyItems(_copyMenu);
         AddCopyItems(_rowMenu);
         _rowMenu.Items.Add(new ToolStripSeparator());
@@ -405,7 +435,7 @@ public sealed class HistoryForm : Form
         _copyButton.Enabled = _deleteButton.Enabled = _grid.SelectedRows.Count > 0;
     }
 
-    private readonly record struct HistoryRowKey(DateTimeOffset Timestamp, string Text, int Occurrence);
+    private readonly record struct HistoryRowKey(DateTimeOffset Timestamp, string Text, int Occurrence, Guid? Id);
 
     private static HistoryRowKey[] GetRowKeys(IEnumerable<TranscriptionEntry> entries)
     {
@@ -413,10 +443,10 @@ public sealed class HistoryForm : Form
         return entries.Select(entry =>
         {
             // Occurrences preserve separate rows even when timestamp and final text are identical.
-            var key = (entry.Timestamp, entry.Text);
+            var key = (entry.Timestamp, entry.Id is null ? entry.Text : "");
             var occurrence = occurrences.GetValueOrDefault(key);
             occurrences[key] = occurrence + 1;
-            return new HistoryRowKey(entry.Timestamp, entry.Text, occurrence);
+            return new HistoryRowKey(entry.Timestamp, key.Item2, entry.Id is null ? occurrence : 0, entry.Id);
         }).ToArray();
     }
 
@@ -527,6 +557,7 @@ public sealed class HistoryForm : Form
         nameof(HistoryRow.Language) => "The requested recognition language. 'auto' means automatic detection was requested, rather than a detected-language result.",
         nameof(HistoryRow.Configuration) => "Optional settings captured for this dictation, including models, audio, cleanup and prompts. Excludes keys, endpoint URLs and extra-header names/values. Blank when disabled or unavailable.",
         nameof(HistoryRow.AudioFilePath) => "Stored recording path. The file may subsequently have been moved or removed; older entries may have no path.",
+        nameof(HistoryRow.Status) => "Updates as recognition and cleanup finish. Failed, cancelled and no-speech dictations retain their recorded audio when History is enabled.",
         _ => throw new ArgumentOutOfRangeException(nameof(propertyName), propertyName, "A history column needs a help description."),
     };
 
@@ -604,7 +635,8 @@ public sealed class HistoryForm : Form
         if (entries.Length > 1 && MessageBox.Show(this, $"Delete {entries.Length} selected history entries?",
             "Delete History", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
             MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
-        foreach (var entry in entries) await _historyLogger.DeleteAsync(entry.Timestamp, entry.Text);
+        StopPlayback();
+        foreach (var entry in entries) await _historyLogger.DeleteAsync(entry.Timestamp, entry.Text, id: entry.Id);
         await RefreshRowsAsync();
     }
 
@@ -624,6 +656,7 @@ public sealed class HistoryForm : Form
         }
 
         await _historyLogger.ClearAsync();
+        StopPlayback();
         await RefreshRowsAsync();
     }
 
@@ -656,6 +689,12 @@ public sealed class HistoryForm : Form
 
     private sealed record HistoryRow(TranscriptionEntry Entry)
     {
+        public string Status => Entry.Status switch
+        {
+            HistoryEntryStatus.CleaningUp => "Cleaning up",
+            HistoryEntryStatus.NoSpeech => "No speech",
+            _ => Entry.Status.ToString(),
+        };
         public string Timestamp => Entry.Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz");
         public string Provider => Entry.Provider;
         public string Language => Entry.Language;
@@ -672,11 +711,69 @@ public sealed class HistoryForm : Form
         public string AudioFilePath => Entry.AudioFilePath ?? string.Empty;
     }
 
+    private void TogglePlayback(string? path)
+    {
+        var stopOnly = _player is not null && _playingPath == path;
+        StopPlayback();
+        if (stopOnly) return;
+        try
+        {
+            if (!File.Exists(path)) throw new FileNotFoundException("The recording has been moved or removed.");
+            _playbackAudio = new AudioFileReader(path);
+            _player = new WaveOutEvent();
+            _playingPath = path;
+            _player.PlaybackStopped += HandlePlaybackStopped;
+            _player.Init(_playbackAudio);
+            _player.Play();
+            _grid.InvalidateColumn(_grid.Columns["Playback"].Index);
+        }
+        catch (Exception exception)
+        {
+            StopPlayback();
+            ShowRefreshError(exception, "Could not play recording: " + exception.Message);
+        }
+    }
+
+    private void HandlePlaybackStopped(object? sender, StoppedEventArgs e)
+    {
+        if (_resourcesDisposed || !IsHandleCreated) return;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                if (!ReferenceEquals(sender, _player)) return;
+                StopPlayback();
+                if (e.Exception is { } error)
+                {
+                    ShowRefreshError(error, "Audio playback failed: " + error.Message);
+                }
+            });
+        }
+        catch (InvalidOperationException) { /* The history window closed before the playback callback. */ }
+    }
+
+    private void StopPlayback()
+    {
+        if (_player is { } player)
+        {
+            _player = null;
+            player.PlaybackStopped -= HandlePlaybackStopped;
+            try { player.Stop(); }
+            catch (Exception error) { ShowRefreshError(error, "Could not stop audio playback."); }
+            finally { player.Dispose(); }
+        }
+        _playbackAudio?.Dispose();
+        _playbackAudio = null;
+        _playingPath = null;
+        if (!_resourcesDisposed) _grid.InvalidateColumn(_grid.Columns["Playback"].Index);
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing && !_resourcesDisposed)
         {
             _resourcesDisposed = true;
+            StopPlayback();
             _refreshCancellation.Cancel();
             _historyLogger.Changed -= HandleHistoryChanged;
             _historyWatcher?.Dispose();

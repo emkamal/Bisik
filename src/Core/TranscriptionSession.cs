@@ -25,6 +25,7 @@ public sealed class TranscriptionSession : IAsyncDisposable
     public CancellationToken Token => _lifetime.Token;
     public IRealtimeTranscriber? Stream { get; }
     internal Task? Persistence { get; private set; }
+    internal bool HistoryAudioRetained { get; set; }
     internal SpeculativeCleanup? Speculation { get; set; }
     internal EventHandler<CompletedTranscriptEventArgs>? SnapshotHandler { get; set; }
     public bool HasFinalTranscript => _selection.HasTranscript;
