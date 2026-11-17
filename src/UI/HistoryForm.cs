@@ -21,6 +21,16 @@ public sealed class HistoryForm : Form
     private readonly ContextMenuStrip _rowMenu = new();
     private readonly ContextMenuStrip _copyMenu = new();
     private readonly ToolStripMenuItem _copyCellItem = new("Copy cell value");
+    private readonly ToolStripMenuItem _generateRawItem = new("Generate raw transcript");
+    private readonly ToolStripMenuItem _generateCleanedItem = new("Generate cleaned-up transcription");
+    private readonly ToolStripSeparator _recoverySeparator = new();
+    private readonly Func<TranscriptionEntry, bool, CancellationToken, Task<TranscriptionResult>>? _recoverHistory;
+    private readonly Func<bool> _canRecoverHistory;
+    private readonly Label _recoveryStatus = new() { AutoSize = true, Visible = false };
+    private readonly Button _cancelRecoveryButton = new() { Text = "Cancel recovery", AutoSize = true, Visible = false };
+    private CancellationTokenSource? _historyRecoveryCancellation;
+    private Task _historyRecoveryTask = Task.CompletedTask;
+    private TranscriptionEntry? _contextEntry;
     private readonly Label _refreshStatus = new() { AutoSize = true, Dock = DockStyle.Fill, Visible = false };
     private readonly System.Windows.Forms.Timer _refreshTimer = new() { Interval = 250 };
     private readonly CancellationTokenSource _refreshCancellation = new();
@@ -46,10 +56,24 @@ public sealed class HistoryForm : Form
     {
     }
 
-    internal HistoryForm(HistoryLogger? historyLogger, Action<DataObject> writeClipboard)
+    public HistoryForm(HistoryLogger historyLogger,
+        Func<TranscriptionEntry, bool, CancellationToken, Task<TranscriptionResult>> recoverHistory, Func<bool> canRecoverHistory)
+        : this(historyLogger, data => Clipboard.SetDataObject(data, true, 5, 50), recoverHistory, canRecoverHistory) { }
+
+    public Task CancelRecoveryAsync()
+    {
+        _historyRecoveryCancellation?.Cancel();
+        return _historyRecoveryTask;
+    }
+
+    internal HistoryForm(HistoryLogger? historyLogger, Action<DataObject> writeClipboard,
+        Func<TranscriptionEntry, bool, CancellationToken, Task<TranscriptionResult>>? recoverHistory = null,
+        Func<bool>? canRecoverHistory = null)
     {
         _historyLogger = historyLogger ?? new HistoryLogger();
         _writeClipboard = writeClipboard;
+        _recoverHistory = recoverHistory;
+        _canRecoverHistory = canRecoverHistory ?? (() => true);
         Text = "Bisik History";
         AutoScaleDimensions = new SizeF(96, 96);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -187,6 +211,10 @@ public sealed class HistoryForm : Form
                 && _grid.Rows[e.RowIndex].DataBoundItem is HistoryRow row) TogglePlayback(row.Entry.AudioFilePath);
         };
         AddCopyItems(_copyMenu);
+        _rowMenu.Items.AddRange([_generateRawItem, _generateCleanedItem, _recoverySeparator]);
+        _generateRawItem.Click += async (_, _) => await StartHistoryRecoveryAsync(false);
+        _generateCleanedItem.Click += async (_, _) => await StartHistoryRecoveryAsync(true);
+        _cancelRecoveryButton.Click += (_, _) => _historyRecoveryCancellation?.Cancel();
         AddCopyItems(_rowMenu);
         _rowMenu.Items.Add(new ToolStripSeparator());
         _rowMenu.Items.Add(_copyCellItem);
@@ -195,6 +223,7 @@ public sealed class HistoryForm : Form
         {
             e.Cancel = GetSelectedEntries().Length == 0;
             _copyCellItem.Enabled = _contextCell is not null;
+            UpdateRecoveryMenu();
         };
         _grid.CellMouseDown += HandleCellMouseDown;
         _grid.KeyDown += (_, e) =>
@@ -207,6 +236,7 @@ public sealed class HistoryForm : Form
             else if (e.KeyCode == Keys.Apps || (e.Shift && e.KeyCode == Keys.F10))
             {
                 _contextCell = _grid.CurrentCell;
+                _contextEntry = (_contextCell?.OwningRow.DataBoundItem as HistoryRow)?.Entry;
                 _rowMenu.Show(Cursor.Position);
                 e.SuppressKeyPress = true;
             }
@@ -231,18 +261,30 @@ public sealed class HistoryForm : Form
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            RowCount = 3,
+            RowCount = 4,
             ColumnCount = 1,
             Padding = new Padding(12),
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(filterBar, 0, 0);
         root.Controls.Add(_grid, 0, 1);
         root.Controls.Add(_refreshStatus, 0, 2);
+        var recoveryBar = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill };
+        recoveryBar.Controls.Add(_recoveryStatus);
+        recoveryBar.Controls.Add(_cancelRecoveryButton);
+        root.Controls.Add(recoveryBar, 0, 3);
 
         Controls.Add(root);
+        FormClosing += async (_, e) =>
+        {
+            if (_historyRecoveryTask.IsCompleted) return;
+            e.Cancel = true;
+            await CancelRecoveryAsync();
+            if (!IsDisposed) Close();
+        };
         Shown += async (_, _) =>
         {
             _historyLogger.Changed += HandleHistoryChanged;
@@ -432,6 +474,7 @@ public sealed class HistoryForm : Form
         finally { _grid.ResumeLayout(); }
         _rowsLoaded = true;
         _contextCell = null;
+        _contextEntry = null;
         _copyButton.Enabled = _deleteButton.Enabled = _grid.SelectedRows.Count > 0;
     }
 
@@ -586,7 +629,60 @@ public sealed class HistoryForm : Form
             row.Selected = true;
         }
         _contextCell = e.ColumnIndex >= 0 ? row.Cells[e.ColumnIndex] : null;
+        _contextEntry = (row.DataBoundItem as HistoryRow)?.Entry;
         _rowMenu.Show(Cursor.Position);
+    }
+
+    private void UpdateRecoveryMenu()
+    {
+        var entry = _contextEntry;
+        _generateRawItem.Visible = _recoverHistory is not null && entry is not null
+            && string.IsNullOrWhiteSpace(entry.RawText) && string.IsNullOrWhiteSpace(entry.Text);
+        _generateCleanedItem.Visible = _recoverHistory is not null && entry is not null
+            && (TranscriptionService.CanRecoverHistory(entry, true) || string.IsNullOrWhiteSpace(entry.Text));
+        var available = _historyRecoveryCancellation is null && _canRecoverHistory();
+        _generateRawItem.Enabled = available && entry is not null && TranscriptionService.CanRecoverHistory(entry, false);
+        _generateCleanedItem.Enabled = available && entry is not null && TranscriptionService.CanRecoverHistory(entry, true);
+        _recoverySeparator.Visible = _generateRawItem.Visible || _generateCleanedItem.Visible;
+        _generateRawItem.ToolTipText = _generateCleanedItem.ToolTipText = !available
+            ? "Close Settings and finish recording, Experiments or the current recovery first."
+            : "Uses current provider and cleanup settings and the row's saved language. A saved recording or raw text is required.";
+    }
+
+    private Task StartHistoryRecoveryAsync(bool cleanUp)
+    {
+        if (_recoverHistory is null || _contextEntry is null || _historyRecoveryCancellation is not null
+            || !_canRecoverHistory() || !TranscriptionService.CanRecoverHistory(_contextEntry, cleanUp)) return Task.CompletedTask;
+        var entry = _contextEntry;
+        _rowMenu.Close();
+        _historyRecoveryCancellation = new CancellationTokenSource();
+        return _historyRecoveryTask = RecoverHistoryRowAsync(entry, cleanUp, _historyRecoveryCancellation);
+    }
+
+    private async Task RecoverHistoryRowAsync(TranscriptionEntry entry, bool cleanUp, CancellationTokenSource cancellation)
+    {
+        _recoveryStatus.Text = cleanUp ? "Generating cleaned-up transcription…" : "Generating raw transcript…";
+        _recoveryStatus.Visible = _cancelRecoveryButton.Visible = true;
+        StopPlayback();
+        try
+        {
+            var result = await _recoverHistory!(entry, cleanUp, cancellation.Token);
+            if (_resourcesDisposed) return;
+            _recoveryStatus.Text = result.Succeeded ? "Transcription saved in History." : result.ErrorMessage;
+            await RefreshRowsAsync();
+        }
+        catch (OperationCanceledException) { if (!_resourcesDisposed) _recoveryStatus.Text = "History recovery cancelled."; }
+        catch (Exception exception)
+        {
+            if (!_resourcesDisposed) _recoveryStatus.Text = "History recovery failed: " + exception.Message;
+            new ErrorLogger(Path.GetDirectoryName(_historyLogger.HistoryPath)).Log(exception);
+        }
+        finally
+        {
+            _historyRecoveryCancellation = null;
+            cancellation.Dispose();
+            if (!_resourcesDisposed) _cancelRecoveryButton.Visible = false;
+        }
     }
 
     private TranscriptionEntry[] GetSelectedEntries() => _grid.SelectedRows.Cast<DataGridViewRow>()
@@ -773,6 +869,7 @@ public sealed class HistoryForm : Form
         if (disposing && !_resourcesDisposed)
         {
             _resourcesDisposed = true;
+            _historyRecoveryCancellation?.Cancel();
             StopPlayback();
             _refreshCancellation.Cancel();
             _historyLogger.Changed -= HandleHistoryChanged;

@@ -5,6 +5,17 @@ namespace Bisik.Models;
 
 public static class HistoryConfigurationSnapshot
 {
+    internal static JsonElement CaptureRecovery(AppSettings settings, TranscriptionEntry entry, bool recognizesAudio,
+        string? effectiveSystemPrompt)
+    {
+        var current = Capture(settings, entry.Language, effectiveSystemPrompt);
+        if (recognizesAudio || entry.ConfigurationSnapshot is not { ValueKind: JsonValueKind.Object } original) return current;
+        // Cleanup of saved raw text must retain the settings that produced that transcript.
+        var root = JsonNode.Parse(original.GetRawText())!.AsObject();
+        root["postProcessor"] = JsonNode.Parse(current.GetRawText())!["postProcessor"]!.DeepClone();
+        return JsonSerializer.SerializeToElement(root);
+    }
+
     public static JsonElement Capture(AppSettings settings, string language, string? effectiveSystemPrompt)
     {
         // Never serialize live connection secrets, even temporarily into a history JSON node.

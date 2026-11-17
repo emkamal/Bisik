@@ -125,6 +125,7 @@ static class Program
         private readonly WindowsTextOutput _textOutput;
         private readonly LatestResultStore _latestResult = new();
         private Task _recoveryTask = Task.CompletedTask;
+        private Task _historyRecoveryTask = Task.CompletedTask;
         private Task _prewarmSetup = Task.CompletedTask;
         private Task _prewarmCleanup = Task.CompletedTask;
         private DictationTarget? _dictationTarget;
@@ -239,7 +240,7 @@ static class Program
             {
                 if (_experimentOperation.IsActive || !_settingsTestDrain.IsCompleted || _sessionCancellation is not null || _vadMonitoringEnabled)
                 {
-                    _trayIcon.ShowBalloon("Bisik", "Stop or cancel dictation before opening Settings.");
+                    _trayIcon.ShowBalloon("Bisik", "Finish dictation, Experiments or History recovery before opening Settings.");
                     return;
                 }
                 if (_settingsForm is null || _settingsForm.IsDisposed)
@@ -332,7 +333,7 @@ static class Program
 
         private void ApplySettingsAndRebuildProviders(AppSettings fresh)
         {
-            if (_experimentOperation.IsActive) throw new InvalidOperationException("Finish Experiments before applying settings.");
+            if (_experimentOperation.IsActive) throw new InvalidOperationException("Finish Experiments or History recovery before applying settings.");
             if (_sessionCancellation is not null || _processing || _vadMonitoringEnabled)
                 throw new InvalidOperationException("Stop or cancel dictation before applying settings.");
             var gesture = HotkeyManager.ParseHotkey(fresh.Hotkey);
@@ -388,7 +389,7 @@ static class Program
             {
                 if (_historyForm is null || _historyForm.IsDisposed)
                 {
-                    _historyForm = new HistoryForm(_historyLogger);
+                    _historyForm = new HistoryForm(_historyLogger, RecoverHistoryAsync, CanRecoverHistory);
                     _historyForm.FormClosed += (_, _) => _historyForm = null;
                     _historyForm.Show();
                     return;
@@ -410,6 +411,35 @@ static class Program
             catch (Exception exception)
             {
                 HandleRuntimeException(exception, "History window");
+            }
+        }
+
+        private bool CanRecoverHistory() => !_isShuttingDown && !_experimentOperation.IsActive
+            && _sessionCancellation is null && !_processing && !_vadMonitoringEnabled
+            && _settingsForm is not { Visible: true } && _settingsTestDrain.IsCompleted && _recoveryTask.IsCompleted;
+
+        private Task<TranscriptionResult> RecoverHistoryAsync(TranscriptionEntry entry, bool cleanUp, CancellationToken ct)
+        {
+            if (!CanRecoverHistory() || _experimentOperation.TryEnter() is not { } lease)
+                return Task.FromResult(new TranscriptionResult(false, "", entry.RawText ?? "",
+                    ErrorMessage: "Finish the active operation before recovering History."));
+            // Reuse the operation lease so capture, settings and experiments cannot race recovery.
+            var task = RecoverHistoryCoreAsync(entry, cleanUp, _settings.Snapshot(), lease, ct);
+            _historyRecoveryTask = task;
+            return task;
+        }
+
+        private async Task<TranscriptionResult> RecoverHistoryCoreAsync(TranscriptionEntry entry, bool cleanUp,
+            AppSettings settings, IDisposable lease, CancellationToken ct)
+        {
+            using (lease)
+            using (var cancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdownCancellation.Token))
+            {
+                var service = CreateTranscriptionService(settings);
+                var result = await Task.Run(() => service.RecoverHistoryAsync(entry, settings, cleanUp, cancellation.Token));
+                if (!result.Succeeded && !cancellation.IsCancellationRequested)
+                    _trayIcon.ShowBalloon("History recovery failed", result.ErrorMessage, ToolTipIcon.Error);
+                return result;
             }
         }
 
@@ -463,6 +493,8 @@ static class Program
             try { if (_settingsForm is not null) await _settingsForm.CancelConnectionTestAsync(); await _settingsTestDrain; }
             catch (Exception ex) { _errorLogger.Log(ex); }
             try { if (_experimentsForm is not null) await _experimentsForm.CloseAsync(); }
+            catch (Exception ex) { _errorLogger.Log(ex); }
+            try { if (_historyForm is not null) await _historyForm.CancelRecoveryAsync(); await _historyRecoveryTask; }
             catch (Exception ex) { _errorLogger.Log(ex); }
             try
             {

@@ -446,6 +446,108 @@ public sealed class HistoryFormTests : IDisposable
         });
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task Recovery_menu_generates_the_right_clicked_row_inside_a_multi_selection(bool hasRaw, bool cleanUp)
+    {
+        var logger = new HistoryLogger(_directory);
+        Directory.CreateDirectory(_directory);
+        var audio = Path.Combine(_directory, "saved.wav");
+        await File.WriteAllBytesAsync(audio, [1, 2, 3]);
+        var entry = Entry(DateTimeOffset.UtcNow, "") with { Id = Guid.NewGuid(), RawText = hasRaw ? "saved raw" : null,
+            AudioFilePath = audio, Status = HistoryEntryStatus.Failed };
+        await logger.AppendAsync(entry);
+        await logger.AppendAsync(Entry(entry.Timestamp.AddMinutes(1), "other row"));
+        await RunOnStaAsync(async () =>
+        {
+            var called = 0;
+            var service = new TranscriptionService(new Dictionary<ProviderType, ITranscriptionProvider>
+                { [ProviderType.OpenAi] = new FixedTranscriber() }, new FixedCleanup(), logger,
+                new ErrorLogger(_directory), () => { }, () => { });
+            using var form = new HistoryForm(logger, _ => throw new InvalidOperationException("Recovery must not copy text"),
+                (target, cleanup, ct) =>
+                {
+                    Assert.Equal(entry.Id, target.Id); Assert.Equal(cleanUp, cleanup); called++;
+                    return service.RecoverHistoryAsync(target, new AppSettings { Provider = new() { Type = ProviderType.OpenAi } }, cleanup, ct);
+                });
+            form.Show();
+            var grid = Field<DataGridView>(form, "_grid");
+            await WaitUntilAsync(() => grid.Rows.Count == 2);
+            grid.Rows[0].Selected = grid.Rows[1].Selected = true;
+            Invoke<object?>(form, "HandleCellMouseDown", null, new DataGridViewCellMouseEventArgs(2, 1, 0, 0,
+                new MouseEventArgs(MouseButtons.Right, 1, 0, 0, 0)));
+            Assert.Equal(2, grid.SelectedRows.Count);
+            var rawItem = Field<ToolStripMenuItem>(form, "_generateRawItem");
+            var cleanedItem = Field<ToolStripMenuItem>(form, "_generateCleanedItem");
+            Assert.Equal(!hasRaw, rawItem.Visible); Assert.True(cleanedItem.Enabled);
+            (cleanUp ? cleanedItem : rawItem).PerformClick();
+            var expected = cleanUp ? "cleaned result" : "raw result";
+            await WaitUntilAsync(() => RowText(grid, 1) == expected);
+            Assert.Equal(1, called); Assert.Equal("other row", RowText(grid, 0));
+            Assert.Equal(2, (await logger.ReadAllAsync()).Count);
+            Assert.Equal("Transcription saved in History.", Field<Label>(form, "_recoveryStatus").Text);
+        });
+    }
+
+    [Fact]
+    public async Task Recovery_menu_disables_missing_audio_and_busy_operations_and_hides_completed_cleanup()
+    {
+        var logger = new HistoryLogger(_directory);
+        var entry = Entry(DateTimeOffset.UtcNow, "") with { Id = Guid.NewGuid(), RawText = null, Status = HistoryEntryStatus.Cancelled };
+        await logger.AppendAsync(entry);
+        await RunOnStaAsync(async () =>
+        {
+            var available = true;
+            using var form = new HistoryForm(logger, _ => { }, (_, _, _) => throw new InvalidOperationException("Must not run"), () => available);
+            form.Show();
+            var grid = Field<DataGridView>(form, "_grid");
+            await WaitUntilAsync(() => grid.Rows.Count == 1);
+            void OpenMenu() => Invoke<object?>(form, "HandleCellMouseDown", null, new DataGridViewCellMouseEventArgs(2, 0, 0, 0,
+                new MouseEventArgs(MouseButtons.Right, 1, 0, 0, 0)));
+            OpenMenu();
+            var menu = Field<ContextMenuStrip>(form, "_rowMenu");
+            var raw = Field<ToolStripMenuItem>(form, "_generateRawItem");
+            var cleaned = Field<ToolStripMenuItem>(form, "_generateCleanedItem");
+            Assert.True(raw.Visible); Assert.False(raw.Enabled); Assert.False(cleaned.Enabled);
+            menu.Close();
+            entry = entry with { RawText = "saved raw" };
+            await logger.UpdateAsync(entry); await Invoke<Task>(form, "RefreshRowsAsync");
+            available = false; OpenMenu();
+            Assert.False(cleaned.Enabled); menu.Close();
+            available = true; OpenMenu();
+            Assert.True(cleaned.Enabled); Assert.False(raw.Visible); menu.Close();
+            entry = entry with { Text = "edited", PostProcessingApplied = true, Status = HistoryEntryStatus.Completed };
+            await logger.UpdateAsync(entry); await Invoke<Task>(form, "RefreshRowsAsync");
+            OpenMenu(); Assert.False(cleaned.Visible); Assert.False(raw.Visible); menu.Close();
+        });
+    }
+
+    [Fact]
+    public async Task Closing_history_cancels_recovery_and_waits_for_its_drain()
+    {
+        var logger = new HistoryLogger(_directory);
+        await logger.AppendAsync(Entry(DateTimeOffset.UtcNow, "") with { Id = Guid.NewGuid(), RawText = "raw", Status = HistoryEntryStatus.Failed });
+        await RunOnStaAsync(async () =>
+        {
+            var drain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            CancellationToken observed = default;
+            using var form = new HistoryForm(logger, _ => { }, async (_, _, ct) =>
+            {
+                observed = ct; await drain.Task; return new(false, "", "raw", ErrorMessage: "Cancelled");
+            });
+            form.Show();
+            await WaitUntilAsync(() => Field<DataGridView>(form, "_grid").Rows.Count == 1);
+            Invoke<object?>(form, "HandleCellMouseDown", null, new DataGridViewCellMouseEventArgs(2, 0, 0, 0,
+                new MouseEventArgs(MouseButtons.Right, 1, 0, 0, 0)));
+            Field<ToolStripMenuItem>(form, "_generateCleanedItem").PerformClick();
+            Assert.True(observed.CanBeCanceled);
+            form.Close(); Assert.True(observed.IsCancellationRequested); Assert.False(form.IsDisposed);
+            drain.SetResult(); await WaitUntilAsync(() => form.IsDisposed);
+        });
+    }
+
     private static T Field<T>(object instance, string name) => (T)instance.GetType()
         .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(instance)!;
     private static T Invoke<T>(object instance, string name, params object?[] args) => (T)instance.GetType()

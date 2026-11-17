@@ -80,6 +80,31 @@ public sealed class HistoryLogger
         NotifyChanged();
     }
 
+    internal async Task<bool> TryReplaceAsync(TranscriptionEntry expected, TranscriptionEntry replacement, CancellationToken ct)
+    {
+        if (!_historyEnabled) return false;
+        await _pathLock.WaitAsync(ct);
+        try
+        {
+            var entries = (await ReadAllCoreAsync(ct)).ToList();
+            var json = JsonSerializer.Serialize(expected, SerializerOptions);
+            var index = entries.FindIndex(e => (expected.Id is null || e.Id == expected.Id)
+                && JsonSerializer.Serialize(e, SerializerOptions) == json);
+            if (index < 0) return false;
+            // Compare before every recovery revision: deletion or an external edit must win.
+            if (expected.Id is not null) await AppendCoreAsync(replacement, ct);
+            else
+            {
+                // Give an older row an identity once, without duplicating it in the viewer.
+                entries[index] = replacement;
+                await RewriteHistoryAsync(entries, ct);
+            }
+        }
+        finally { _pathLock.Release(); }
+        NotifyChanged();
+        return true;
+    }
+
     private async Task AppendCoreAsync(TranscriptionEntry entry, CancellationToken ct)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_historyPath)!);

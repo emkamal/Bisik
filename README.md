@@ -151,6 +151,16 @@ Raw text appears as soon as recognition finishes; Final Text appears when output
 The **Audio** column plays the original recording; click **Stop** to end playback. Missing
 files show Unavailable. Failed, cancelled and no-speech dictations keep saved audio, and
 cleanup failures also keep completed raw text. Disabling History prevents this retention.
+
+Right-click an incomplete row to **Generate raw transcript** from its saved audio, or
+**Generate cleaned-up transcription** from saved raw text (recognizing the audio first if
+needed). Recovery uses the current provider/cleanup settings and the row's saved language;
+an explicit cleanup request works even when automatic cleanup is switched off. A completed
+raw-only row can also be cleaned up. Results update the same row without inserting or copying
+text automatically. The status bar reports completion or errors and offers **Cancel recovery**.
+Closing History cancels and drains the request. Recording, Settings and Experiments wait while
+recovery runs. Deleted/changed rows are not restored, and a cleanup failure keeps the raw text
+for another attempt.
 New rows have a stable ID; JSONL revisions are collapsed into one row when read or exported.
 
 Hover over any column header for its meaning, timing boundaries and unavailable-value behavior.

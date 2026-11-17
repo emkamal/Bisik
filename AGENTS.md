@@ -250,3 +250,5 @@ UI/ExperimentDetailsView.cs presents saved experiment text, metadata and evidenc
 UI/CleanupVocabularyEditor.cs edits optional cleanup vocabulary in a native three-column table with bounded validation. Preserve existing profiles when loading; compose prompts only in PostProcessorPresets.
 
 Recorded dictations append a History row after audio persistence, then append revisions with the same optional TranscriptionEntry.Id as recognition and cleanup finish. HistoryLogger exposes the latest revision per ID, preserves legacy rows without IDs, and does not resurrect deleted pending rows. Failed/cancelled/no-speech dictations retain saved audio when History is enabled. HistoryForm owns original-audio playback and disposes it on close.
+
+History recovery uses TranscriptionService.RecoverHistoryAsync with current settings and the saved row language. Reuse raw text for cleanup, persist recognition before cleanup, and update the same row through HistoryLogger's conditional replacement. The composition root owns the operation lease and shutdown drain; HistoryForm cancels/drains on close. Recovery never dispatches automatic output.

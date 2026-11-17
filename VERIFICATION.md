@@ -1,5 +1,21 @@
 # Verification — 2026-11-06
 
+## History recovery (12 November 2026)
+
+- 37 focused History recovery, History form and progressive History tests passed. Synthetic
+  provider/cleanup and native STA checks cover both audio actions, cleanup from saved raw text,
+  the right-clicked row within a multi-selection, missing audio/busy menus, failed cleanup
+  followed by retry without recognition, cancellation/close drain, legacy row identity,
+  saved language/configuration, and deletion/external edits winning over late results.
+- Two full-suite runs passed 414 of 415 tests, with zero skips. Both failed the existing
+  `History_options_load_save_and_disable_with_history_logging` test at SettingsManager's
+  `File.Replace` with "Unable to remove the file to be replaced." That test passed separately.
+  This persistence failure is also documented in the 11 November snapshot below.
+- Release built with zero warnings/errors and registered for the existing Start launcher;
+  the registered DLL hash matches Release. Receipts: `artifacts/history-recovery/*.trx`.
+- Live providers and the user's saved recordings were not called by these checks. Exit
+  Bisik and reopen the existing Start pin to load the updated build. Changes are uncommitted.
+
 ## Current latency implementation
 
 The source work is committed per the current user instruction. The installed application, active settings, startup registration and cloud resources were not changed. Live capture, phrase commits, speculative cleanup and prewarming remain off by default; reasoning and transcription delay default to omission. File capture is the rollback path.

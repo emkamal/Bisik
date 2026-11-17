@@ -126,6 +126,96 @@ public sealed class TranscriptionService(
         return TranscribeCoreAsync(audioFilePath, language, settings.Snapshot(), cancellationToken);
     }
 
+    public static bool CanRecoverHistory(TranscriptionEntry entry, bool cleanUp)
+    {
+        var hasRaw = !string.IsNullOrWhiteSpace(entry.RawText);
+        var hasAudio = File.Exists(entry.AudioFilePath);
+        if (!cleanUp) return !hasRaw && string.IsNullOrWhiteSpace(entry.Text) && hasAudio;
+        return (hasRaw || hasAudio) && (string.IsNullOrWhiteSpace(entry.Text)
+            || hasRaw && (entry.PostProcessingApplied == false
+                || entry.PostProcessingApplied is null && entry.Text == entry.RawText));
+    }
+
+    public async Task<TranscriptionResult> RecoverHistoryAsync(TranscriptionEntry entry, AppSettings settings,
+        bool cleanUp, CancellationToken ct)
+    {
+        if (!CanRecoverHistory(entry, cleanUp))
+            return new(false, "", entry.RawText ?? "", ErrorMessage: "This row has no incomplete transcription to recover.");
+        settings = settings.Snapshot();
+        settings = settings with { PostProcessor = settings.PostProcessor with { Enabled = cleanUp } };
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(TimeSpan.FromMinutes(2));
+        var token = deadline.Token;
+        var saved = false;
+        try
+        {
+            var needsRecognition = string.IsNullOrWhiteSpace(entry.RawText);
+            await SaveAsync(entry with { Id = entry.Id ?? Guid.NewGuid(),
+                Status = needsRecognition ? HistoryEntryStatus.Transcribing : HistoryEntryStatus.CleaningUp,
+                StopToResultDurationMs = null, CaptureToResultDurationMs = null,
+                ConfigurationSnapshot = entry.ConfigurationSnapshot is not null || settings.HistoryConfigurationEnabled
+                    ? HistoryConfigurationSnapshot.CaptureRecovery(settings, entry, needsRecognition,
+                        cleanUp ? PostProcessorPresets.ResolveSystemPrompt(settings.PostProcessor) : null) : null }, token);
+            if (needsRecognition)
+            {
+                PhaseChanged?.Invoke(ProcessingPhase.Transcribing);
+                var provider = ResolveProvider(settings.Provider);
+                var watch = Stopwatch.StartNew();
+                var raw = await TranscribeWithRetryAsync(provider, entry.AudioFilePath!, entry.Language, token).ConfigureAwait(false);
+                token.ThrowIfCancellationRequested();
+                await SaveAsync(entry with { RawText = raw, Provider = provider.Name,
+                    TranscriptionDurationMs = watch.ElapsedMilliseconds,
+                    DurationMs = watch.ElapsedMilliseconds, PostProcessingApplied = false, PostProcessingDurationMs = 0,
+                    Status = string.IsNullOrWhiteSpace(raw) ? HistoryEntryStatus.NoSpeech
+                        : cleanUp ? HistoryEntryStatus.CleaningUp : HistoryEntryStatus.Transcribing }, token);
+                if (string.IsNullOrWhiteSpace(raw))
+                    return new(false, "", "", ErrorMessage: "No speech was found in the saved recording.");
+            }
+
+            var output = entry.RawText!;
+            long cleanupMs = 0;
+            if (cleanUp)
+            {
+                PhaseChanged?.Invoke(ProcessingPhase.PostProcessing);
+                var watch = Stopwatch.StartNew();
+                output = await InvokeCleanupAsync(output, settings.PostProcessor, token).ConfigureAwait(false);
+                cleanupMs = watch.ElapsedMilliseconds;
+                if (string.IsNullOrWhiteSpace(output)) throw new InvalidDataException("Cleanup returned no text.");
+            }
+            token.ThrowIfCancellationRequested();
+            await SaveAsync(entry with { Text = output, Status = HistoryEntryStatus.Completed,
+                PostProcessingApplied = cleanUp, PostProcessingDurationMs = cleanupMs,
+                DurationMs = entry.TranscriptionDurationMs + cleanupMs,
+                // Preserve the original recording and timestamp when completing the same row.
+                StopToResultDurationMs = null, CaptureToResultDurationMs = null }, token);
+            return new(true, output, entry.RawText!, TranscriptionDurationMs: entry.TranscriptionDurationMs,
+                PostProcessingDurationMs: cleanupMs);
+        }
+        catch (Exception exception)
+        {
+            var cancelled = exception is OperationCanceledException && token.IsCancellationRequested;
+            if (saved)
+            {
+                using var saveDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                try { await SaveAsync(entry with { Status = cancelled ? HistoryEntryStatus.Cancelled : HistoryEntryStatus.Failed }, saveDeadline.Token); }
+                catch (Exception saveError) { _errorLogger.Log(saveError); }
+            }
+            if (!cancelled) _errorLogger.Log(exception);
+            return new(false, "", entry.RawText ?? "", ErrorMessage: cancelled
+                ? ct.IsCancellationRequested ? "History recovery cancelled." : "History recovery timed out. Try again."
+                : exception.Message);
+        }
+        finally { PhaseChanged?.Invoke(ProcessingPhase.None); }
+
+        async Task SaveAsync(TranscriptionEntry next, CancellationToken saveToken)
+        {
+            if (!await _historyLogger.TryReplaceAsync(entry, next, saveToken).ConfigureAwait(false))
+                throw new InvalidOperationException("The history row was removed or changed. Refresh History and try again.");
+            entry = next;
+            saved = true;
+        }
+    }
+
     private async Task<TranscriptionResult> TranscribeCoreAsync(
         string audioFilePath,
         string language,
